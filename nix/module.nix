@@ -38,6 +38,24 @@ in
       description = "Allow runtime config changes via the portal/API (e.g. setting the gitops repo URL).";
     };
 
+    autoApply = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Automatically nixos-rebuild when the gitops repo advances. False = manual apply via portal.";
+    };
+
+    applyMode = mkOption {
+      type = types.enum [ "switch" "boot" "test" "dry-activate" ];
+      default = "switch";
+      description = "nixos-rebuild mode used for apply jobs ('boot' is safer for VM tests).";
+    };
+
+    advertiseAddr = mkOption {
+      type = types.str;
+      default = "";
+      description = "LAN address other nodes use to reach this one (NATS cluster routes).";
+    };
+
     gitops = {
       repoUrl = mkOption {
         type = types.str;
@@ -76,7 +94,7 @@ in
       restartIfChanged = false;
       unitConfig.X-StopOnRemoval = false;
 
-      path = [ pkgs.git ];
+      path = [ pkgs.git pkgs.nixos-rebuild ];
 
       environment = {
         NIXMOX_DATA_DIR = cfg.dataDir;
@@ -84,12 +102,16 @@ in
         NIXMOX_GIT_BRANCH = cfg.gitops.branch;
         NIXMOX_GIT_POLL_INTERVAL_SECONDS = toString cfg.gitops.pollIntervalSeconds;
         NIXMOX_ALLOW_CONFIG_WRITE = boolToString cfg.allowConfigWrite;
+        NIXMOX_AUTO_APPLY = boolToString cfg.autoApply;
+        NIXMOX_APPLY_MODE = cfg.applyMode;
       } // optionalAttrs (cfg.gitops.repoUrl != "") {
         NIXMOX_GIT_REPO_URL = cfg.gitops.repoUrl;
       } // optionalAttrs (cfg.gitops.sshKeyPath != "") {
         NIXMOX_GIT_SSH_KEY_PATH = cfg.gitops.sshKeyPath;
       } // optionalAttrs (cfg.gitops.netrcPath != "") {
         NIXMOX_GIT_NETRC_PATH = cfg.gitops.netrcPath;
+      } // optionalAttrs (cfg.advertiseAddr != "") {
+        NIXMOX_ADVERTISE_ADDR = cfg.advertiseAddr;
       };
 
       serviceConfig = {

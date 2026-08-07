@@ -9,7 +9,9 @@
             <th>NixOS Version</th>
             <th>Uptime</th>
             <th>Agent Version</th>
+            <th>Applied</th>
             <th>Status</th>
+            <th>Actions</th>
         </tr>
     </thead>
     <tbody hx-get="/partials/hosts" hx-trigger="every 5s">
@@ -21,11 +23,22 @@
 {{define "hosts_partial"}}
 {{range .Hosts}}
 <tr>
-    <td>{{.Hostname}}</td>
-    <td>{{.NixOSVersion}}</td>
-    <td>{{.Uptime}}</td>
-    <td>{{.AgentVersion}}</td>
-    <td><span class="badge online">online</span></td>
+    <td><a href="/hosts/{{.Host.Hostname}}">{{.Host.Hostname}}</a></td>
+    <td>{{.Host.NixOSVersion}}</td>
+    <td>{{.Host.Uptime}}</td>
+    <td>{{.Host.AgentVersion}}</td>
+    <td>
+        {{if .Latest}}
+            <span title="gen {{.Latest.GenBefore}} → {{.Latest.GenAfter}} @ {{.Latest.Timestamp.Format "2006-01-02 15:04:05"}}">{{shortsha .Latest.GitSHA}}</span>
+            {{if eq .Latest.Status "failed"}}<span class="badge failed">failed</span>{{end}}
+        {{else}}—{{end}}
+    </td>
+    <td><span class="badge {{if .Online}}online{{else}}offline{{end}}">{{if .Online}}online{{else}}offline{{end}}</span></td>
+    <td>
+        <button hx-post="/api/v1/apply" hx-swap="none">Apply</button>
+        <button hx-post="/api/v1/rollback" hx-swap="none"
+            {{if .Latest}}title="roll back toward generation {{.Latest.GenBefore}}"{{end}}>Rollback</button>
+    </td>
 </tr>
 {{end}}
 {{end}}

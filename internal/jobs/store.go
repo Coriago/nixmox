@@ -16,10 +16,14 @@ type Job struct {
 	Kind      string    `json:"kind"`
 	Host      string    `json:"host"`
 	Args      []string  `json:"args"`
+	Mode      string    `json:"mode,omitempty"`
 	State     string    `json:"state"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	LogPath   string    `json:"log_path"`
+	GitSHA    string    `json:"git_sha,omitempty"`
+	GenBefore int       `json:"gen_before,omitempty"`
+	GenAfter  int       `json:"gen_after,omitempty"`
 }
 
 // Store defines the interface for job persistence.

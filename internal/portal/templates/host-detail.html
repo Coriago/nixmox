@@ -1,0 +1,51 @@
+{{define "content"}}
+{{with .Detail}}
+<div class="container">
+    <h1>{{.NodeID}}</h1>
+    <table class="table">
+        <tr><th>NixOS Version</th><td>{{.Host.NixOSVersion}}</td></tr>
+        <tr><th>Agent Version</th><td>{{.Host.AgentVersion}}</td></tr>
+        <tr><th>Uptime</th><td>{{.Host.Uptime}}</td></tr>
+        {{if .Latest}}
+        <tr><th>Last apply</th><td>{{.Latest.Status}} — {{shortsha .Latest.GitSHA}} (gen {{.Latest.GenBefore}} → {{.Latest.GenAfter}})</td></tr>
+        {{end}}
+    </table>
+
+    <h2>Apply history</h2>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Status</th>
+                <th>Git SHA</th>
+                <th>Gen before</th>
+                <th>Gen after</th>
+                <th>Job</th>
+            </tr>
+        </thead>
+        <tbody hx-get="/partials/hosts/{{.NodeID}}/applylog" hx-trigger="every 5s">
+            {{template "applylog_partial" $}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+{{end}}
+
+{{define "applylog_partial"}}
+{{with .Detail}}
+{{range .History}}
+<tr>
+    <td>{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
+    <td><span class="badge {{if eq .Status "success"}}online{{else}}failed{{end}}">{{.Status}}</span></td>
+    <td>{{shortsha .GitSHA}}</td>
+    <td>{{.GenBefore}}</td>
+    <td>{{.GenAfter}}</td>
+    <td><a href="/jobs">{{.JobID}}</a></td>
+</tr>
+{{end}}
+{{end}}
+{{end}}
+
+{{define "host-detail.html"}}
+{{template "base.html" .}}
+{{end}}

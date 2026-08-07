@@ -1,0 +1,28 @@
+{{define "content"}}
+<div class="container">
+    <h1>Cluster setup</h1>
+    <p>This node is not part of a cluster.</p>
+
+    <section>
+        <h2>Create new cluster</h2>
+        <form hx-post="/api/v1/cluster/create" hx-swap="none"
+              hx-on::after-request="if(event.detail.xhr.status < 300) location.reload()">
+            <label>Cluster name <input type="text" name="name" required></label>
+            <button type="submit">Create</button>
+        </form>
+    </section>
+
+    <section>
+        <h2>Join existing cluster</h2>
+        <form hx-post="/api/v1/cluster/join/initiate" hx-swap="none"
+              hx-on::after-request="if(event.detail.xhr.status < 300) location.reload()">
+            <label>Peer address <input type="text" name="seed" placeholder="192.168.1.10:8080" required></label>
+            <button type="submit">Join</button>
+        </form>
+    </section>
+</div>
+{{end}}
+
+{{define "setup.html"}}
+{{template "base.html" .}}
+{{end}}

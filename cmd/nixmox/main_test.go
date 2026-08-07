@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -63,7 +65,7 @@ func TestServe(t *testing.T) {
 
 	prev := cfg
 	t.Cleanup(func() { cfg = prev })
-	cfg = &config.Config{DataDir: t.TempDir(), HTTPAddr: addr, LogLevel: "error"}
+	cfg = &config.Config{DataDir: t.TempDir(), HTTPAddr: addr, LogLevel: "error", Hostname: "testnode"}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	serveCmd.SetContext(ctx)
@@ -99,21 +101,48 @@ func TestServe(t *testing.T) {
 	}
 }
 
-func TestJoinStub(t *testing.T) {
-	buf := new(bytes.Buffer)
-	rootCmd.SetOut(buf)
-	rootCmd.SetErr(buf)
-	rootCmd.SetArgs([]string{"join", "192.168.1.1:6222"})
+func TestJoinUnreachableAgent(t *testing.T) {
+	prev := cfg
+	t.Cleanup(func() { cfg = prev })
 
-	err := rootCmd.Execute()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	cfg = &config.Config{HTTPAddr: addr}
+	err = joinCmd.RunE(joinCmd, []string{"192.0.2.1:8080"})
 	if err == nil {
-		t.Fatal("join stub returned nil error, expected non-nil")
+		t.Fatal("expected error when local agent is unreachable")
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("join error missing 'not yet implemented': %v", err)
+	if !strings.Contains(err.Error(), "cannot reach local agent") {
+		t.Errorf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "192.168.1.1:6222") {
-		t.Errorf("join error missing peer address: %v", err)
+}
+
+func TestJoinViaLocalAgent(t *testing.T) {
+	prev := cfg
+	t.Cleanup(func() { cfg = prev })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/cluster/join/initiate" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"clustered","cluster_name":"homelab","member_count":2}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg = &config.Config{HTTPAddr: strings.TrimPrefix(srv.URL, "http://")}
+	buf := new(bytes.Buffer)
+	joinCmd.SetOut(buf)
+	if err := joinCmd.RunE(joinCmd, []string{"192.0.2.1:8080"}); err != nil {
+		t.Fatalf("join via local agent: %v", err)
+	}
+	if !strings.Contains(buf.String(), "homelab") {
+		t.Errorf("expected cluster name in output, got %q", buf.String())
 	}
 }
 

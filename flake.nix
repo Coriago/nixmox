@@ -27,15 +27,13 @@
           device = "/dev/vda1";
           fsType = "ext4";
         };
-
-        services.nixmox = {
-          enable = true;
-          package = nixmox;
-        };
       };
     in
     {
-      packages.${system}.default = nixmox;
+      packages.${system} = {
+        default = nixmox;
+        demo = import ./nix/demo.nix { inherit pkgs self; };
+      };
 
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
@@ -49,6 +47,9 @@
       nixosModules.default = import ./nix/module.nix;
 
       checks.${system} = {
+        gitops-apply = import ./nix/checks/gitops-apply.nix {
+          inherit self pkgs;
+        };
         gitops-pull = import ./nix/checks/gitops-pull.nix {
           inherit self pkgs;
         };
@@ -66,6 +67,7 @@
           modules = [
             self.nixosModules.default
             (mkNodeConfig "node1")
+            (import ./nix/vm-common.nix { name = "node1"; index = 1; package = nixmox; })
           ];
         };
         node2 = lib.nixosSystem {
@@ -73,6 +75,7 @@
           modules = [
             self.nixosModules.default
             (mkNodeConfig "node2")
+            (import ./nix/vm-common.nix { name = "node2"; index = 2; package = nixmox; })
           ];
         };
         node3 = lib.nixosSystem {
@@ -80,8 +83,14 @@
           modules = [
             self.nixosModules.default
             (mkNodeConfig "node3")
+            (import ./nix/vm-common.nix { name = "node3"; index = 3; package = nixmox; })
           ];
         };
+      };
+
+      apps.${system}.demo = {
+        type = "app";
+        program = "${self.packages.${system}.demo}/bin/nixmox-demo";
       };
     };
 }

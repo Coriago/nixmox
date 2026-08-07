@@ -64,10 +64,12 @@ func (r *Runner) run(ctx context.Context, j Job) {
 		cmd = exec.CommandContext(ctx, "echo", j.Args...)
 	case "dry-build":
 		cmd = exec.CommandContext(ctx, "nixos-rebuild", append([]string{"dry-build"}, j.Args...)...)
-	case "apply":
-		cmd = exec.CommandContext(ctx, "nixos-rebuild", append([]string{"switch"}, j.Args...)...)
-	case "rollback":
-		cmd = exec.CommandContext(ctx, "nixos-rebuild", append([]string{"switch"}, j.Args...)...)
+	case "apply", "rollback":
+		mode := j.Mode
+		if mode == "" {
+			mode = "switch"
+		}
+		cmd = exec.CommandContext(ctx, "nixos-rebuild", append([]string{mode}, j.Args...)...)
 	default:
 		r.failJob(j, fmt.Errorf("unknown job kind: %s", j.Kind))
 		return

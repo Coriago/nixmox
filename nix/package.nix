@@ -4,7 +4,7 @@ buildGoModule {
   pname = "nixmox";
   version = "0.0.1";
   src = ../.;
-  vendorHash = null;
+  vendorHash = "sha256-Als1RPMXpCk7SSCU2bGm5k46mbCStHMUVUT2wEByDiM=";
   subPackages = [ "cmd/nixmox" ];
   inherit ldflags;
 

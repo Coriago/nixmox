@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"nixmox/internal/apply"
+	"nixmox/internal/cluster"
 	"nixmox/internal/config"
 	"nixmox/internal/gitops"
 	"nixmox/internal/hostinfo"
@@ -71,16 +78,57 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize gitops: %w", err)
 		}
 
+		hostname := hostinfo.Get(cfg).Hostname
+
+		records, err := cluster.NewLocalRecordStore(cfg.DataDir)
+		if err != nil {
+			return fmt.Errorf("failed to initialize applylog: %w", err)
+		}
+		switchStore := cluster.NewSwitchingRecordStore(records)
+		applyMgr := apply.NewManager(cfg, gitMgr, switchStore, runner, store, hostname)
+		runner.OnTerminal = applyMgr.HandleTerminal
+
+		clusterIP := cfg.AdvertiseAddr
+		if clusterIP == "" {
+			clusterIP = "127.0.0.1"
+		}
+		sup := cluster.NewSupervisor(cfg, cfg.DataDir, clusterIP)
+		view := cluster.NewView()
+		rt := cluster.NewRuntime(view, switchStore, func() cluster.HostPayload {
+			h := hostinfo.Get(cfg)
+			payload := cluster.HostPayload{
+				NodeID:       cfg.Hostname,
+				Hostname:     h.Hostname,
+				NixOSVersion: h.NixOSVersion,
+				AgentVersion: h.AgentVersion,
+				Uptime:       h.Uptime,
+				PulledSHA:    gitMgr.State().LastPulledSHA,
+			}
+			if latest, ok, err := switchStore.Latest(cfg.Hostname); err == nil && ok {
+				rec := latest
+				payload.ApplyRecord = &rec
+			}
+			return payload
+		})
+		sup.OnReconfigure = rt.Rearm
+		if err := sup.Start(context.Background()); err != nil {
+			return fmt.Errorf("failed to start embedded nats: %w", err)
+		}
+
 		p, err := portal.New()
 		if err != nil {
 			return fmt.Errorf("failed to initialize portal: %w", err)
 		}
-		p.Hostname = hostinfo.Get(cfg).Hostname
+		p.Hostname = hostname
 
 		srv := server.New(cfg, store, runner)
 		srv.SetGitOps(gitMgr)
+		srv.SetApply(applyMgr, switchStore)
+		srv.SetCluster(sup, view)
 		srv.MountHandlers(p, server.NoopAuth{})
 		srv.MountGitOps(p)
+		srv.MountApply(p)
+		srv.MountCluster(p)
 
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -88,9 +136,7 @@ var serveCmd = &cobra.Command{
 		var cron *jobs.Cron
 		if cfg.GitPollInterval > 0 {
 			cron = jobs.NewCron()
-			poller := gitops.NewPoller(gitMgr, func(sha string) {
-				log.Printf("gitops: update available (%s)", sha)
-			})
+			poller := gitops.NewPoller(gitMgr, applyMgr.OnNewSHA)
 			spec := fmt.Sprintf("@every %ds", cfg.GitPollInterval)
 			if _, err := cron.AddFunc(spec, func() { poller.Tick(context.Background()) }); err != nil {
 				return fmt.Errorf("invalid git poll interval: %w", err)
@@ -105,6 +151,8 @@ var serveCmd = &cobra.Command{
 
 		// Stop runner after HTTP server stops accepting requests
 		runner.Stop()
+		rt.Stop()
+		sup.Stop()
 
 		fmt.Fprintln(cmd.OutOrStdout(), "Server stopped cleanly")
 		return nil
@@ -140,7 +188,22 @@ var joinCmd = &cobra.Command{
 	Short: "Join an existing nixmox cluster",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return fmt.Errorf("join: not yet implemented (peer=%s)", args[0])
+		// The CLI POSTs to the local agent's join/initiate endpoint — the same
+		// code path the portal's join form uses (single implementation in the
+		// cluster supervisor).
+		body, _ := json.Marshal(map[string]string{"seed": args[0]})
+		url := "http://" + cfg.HTTPAddr + "/api/v1/cluster/join/initiate"
+		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("join: cannot reach local agent at %s (is `nixmox serve` running?): %w", cfg.HTTPAddr, err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("join failed: %s", strings.TrimSpace(string(out)))
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "joined: %s\n", strings.TrimSpace(string(out)))
+		return nil
 	},
 }
 

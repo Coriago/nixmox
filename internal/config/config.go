@@ -36,6 +36,14 @@ type Config struct {
 	NetrcPath       string `yaml:"git_netrc_path"`
 
 	AllowConfigWrite bool `yaml:"allow_config_write"`
+
+	AutoApply bool   `yaml:"auto_apply"`
+	ApplyMode string `yaml:"apply_mode"`
+
+	AdvertiseAddr string `yaml:"advertise_addr"`
+	ClusterHost   string `yaml:"cluster_host"`
+
+	Hostname string `yaml:"hostname"`
 }
 
 // DefaultConfig returns the built-in defaults.
@@ -48,6 +56,8 @@ func DefaultConfig() Config {
 		LogLevel:        "info",
 		GitBranch:       "main",
 		GitPollInterval: 60,
+		ApplyMode:       "switch",
+		ClusterHost:     "0.0.0.0",
 	}
 }
 
@@ -63,6 +73,12 @@ func Load(configFile string) (*Config, error) {
 	}
 
 	loadEnv(&cfg)
+
+	if cfg.Hostname == "" {
+		if h, err := os.Hostname(); err == nil {
+			cfg.Hostname = h
+		}
+	}
 
 	return &cfg, nil
 }
@@ -116,6 +132,21 @@ func loadEnv(cfg *Config) {
 	}
 	if v := os.Getenv(envPrefix + "ALLOW_CONFIG_WRITE"); v != "" {
 		cfg.AllowConfigWrite = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv(envPrefix + "AUTO_APPLY"); v != "" {
+		cfg.AutoApply = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv(envPrefix + "APPLY_MODE"); v != "" {
+		cfg.ApplyMode = v
+	}
+	if v := os.Getenv(envPrefix + "ADVERTISE_ADDR"); v != "" {
+		cfg.AdvertiseAddr = v
+	}
+	if v := os.Getenv(envPrefix + "CLUSTER_HOST"); v != "" {
+		cfg.ClusterHost = v
+	}
+	if v := os.Getenv(envPrefix + "HOSTNAME"); v != "" {
+		cfg.Hostname = v
 	}
 }
 

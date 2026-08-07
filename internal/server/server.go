@@ -6,18 +6,23 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"nixmox/internal/cluster"
 	"nixmox/internal/config"
 	"nixmox/internal/gitops"
 	"nixmox/internal/jobs"
 )
 
 type Server struct {
-	Mux    *chi.Mux
-	srv    *http.Server
-	Config *config.Config
-	Store  jobs.Store
-	Runner *jobs.Runner
-	Git    GitOpsManager
+	Mux     *chi.Mux
+	srv     *http.Server
+	Config  *config.Config
+	Store   jobs.Store
+	Runner  *jobs.Runner
+	Git     GitOpsManager
+	Apply   ApplyManager
+	Records cluster.RecordStore
+	Cluster ClusterAPI
+	View    *cluster.View
 }
 
 // GitOpsManager is the server's seam to the gitops layer (real Manager in
@@ -28,8 +33,24 @@ type GitOpsManager interface {
 	Ensure(ctx context.Context) (string, error)
 }
 
+// ApplyManager is the server's seam to the apply layer.
+type ApplyManager interface {
+	Apply(ctx context.Context) (jobs.Job, error)
+	Rollback(ctx context.Context) (jobs.Job, error)
+}
+
 func (s *Server) SetGitOps(g GitOpsManager) {
 	s.Git = g
+}
+
+func (s *Server) SetApply(a ApplyManager, r cluster.RecordStore) {
+	s.Apply = a
+	s.Records = r
+}
+
+func (s *Server) SetCluster(c ClusterAPI, v *cluster.View) {
+	s.Cluster = c
+	s.View = v
 }
 
 func New(cfg *config.Config, store jobs.Store, runner *jobs.Runner) *Server {
