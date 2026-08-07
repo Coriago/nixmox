@@ -20,8 +20,7 @@
         networking.hostName = name;
         system.stateVersion = "24.11";
 
-        boot.loader.systemd-boot.enable = true;
-        boot.loader.efi.canTouchEfiVariables = false;
+        boot.loader.grub.device = "nodev";
 
         fileSystems."/" = {
           device = "/dev/vda1";
