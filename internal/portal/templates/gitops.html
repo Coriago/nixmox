@@ -1,0 +1,34 @@
+{{define "content"}}
+<div class="container">
+    <h1>GitOps</h1>
+    <div id="gitops-status" hx-get="/partials/gitops" hx-trigger="every 5s">
+        {{template "gitops_partial" .}}
+    </div>
+    {{if .GitOps.AllowConfigWrite}}
+    <form hx-put="/api/v1/gitops" hx-target="#gitops-status" hx-swap="innerHTML">
+        <label>Repo URL <input type="text" name="repo_url" value="{{.GitOps.State.RepoURL}}"></label>
+        <label>Branch <input type="text" name="branch" value="{{.GitOps.State.Branch}}"></label>
+        <button type="submit">Save</button>
+    </form>
+    {{end}}
+    <button hx-post="/api/v1/gitops/pull" hx-target="#gitops-status" hx-swap="innerHTML">Pull now</button>
+</div>
+{{end}}
+
+{{define "gitops_partial"}}
+{{with .GitOps}}
+<table class="table">
+    <tr><th>Repo URL</th><td>{{if .State.RepoURL}}{{.State.RepoURL}}{{else}}not configured{{end}}</td></tr>
+    <tr><th>Branch</th><td>{{.State.Branch}}</td></tr>
+    <tr><th>Last pulled SHA</th><td>{{if .State.LastPulledSHA}}{{.State.LastPulledSHA}}{{else}}—{{end}}</td></tr>
+    <tr><th>Update available</th><td>{{if .State.UpdateAvailable}}<span class="badge warn">yes</span>{{else}}no{{end}}</td></tr>
+    <tr><th>Poll interval</th><td>{{.PollInterval}}s</td></tr>
+    {{if .SSHKeyPath}}<tr><th>SSH key</th><td>{{.SSHKeyPath}}</td></tr>{{end}}
+    {{if .NetrcPath}}<tr><th>netrc</th><td>{{.NetrcPath}}</td></tr>{{end}}
+</table>
+{{end}}
+{{end}}
+
+{{define "gitops.html"}}
+{{template "base.html" .}}
+{{end}}

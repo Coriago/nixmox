@@ -1,0 +1,31 @@
+{{template "base.html" .}}
+
+{{define "content"}}
+<h2>Hosts</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Hostname</th>
+            <th>NixOS Version</th>
+            <th>Uptime</th>
+            <th>Agent Version</th>
+            <th>Status</th>
+        </tr>
+    </thead>
+    <tbody hx-get="/partials/hosts" hx-trigger="every 5s">
+        {{template "hosts_partial" .}}
+    </tbody>
+</table>
+{{end}}
+
+{{define "hosts_partial"}}
+{{range .Hosts}}
+<tr>
+    <td>{{.Hostname}}</td>
+    <td>{{.NixOSVersion}}</td>
+    <td>{{.Uptime}}</td>
+    <td>{{.AgentVersion}}</td>
+    <td><span class="badge online">online</span></td>
+</tr>
+{{end}}
+{{end}}

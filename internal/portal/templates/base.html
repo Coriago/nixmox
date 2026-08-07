@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>nixmox</title>
+    <script src="/assets/htmx.min.js"></script>
+    <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+    <header>
+        <h1>nixmox</h1>
+        <nav>
+            <a href="/">Hosts</a>
+            <a href="/jobs">Jobs</a>
+            <a href="/gitops">GitOps</a>
+        </nav>
+        <div class="host-info">Node: {{ .Hostname }}</div>
+    </header>
+    <main>
+        {{block "content" .}}{{end}}
+    </main>
+</body>
+</html>
