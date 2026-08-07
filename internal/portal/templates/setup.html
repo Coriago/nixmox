@@ -3,10 +3,12 @@
     <h1>Cluster setup</h1>
     <p>This node is not part of a cluster.</p>
 
+    <div id="setup-error" class="error" role="alert"></div>
+
     <section>
         <h2>Create new cluster</h2>
         <form hx-post="/api/v1/cluster/create" hx-swap="none"
-              hx-on::after-request="if(event.detail.xhr.status < 300) location.reload()">
+              hx-on::after-request="if(event.detail.xhr.status < 300){location.reload()}else{document.getElementById('setup-error').textContent = event.detail.xhr.responseText}">
             <label>Cluster name <input type="text" name="name" required></label>
             <button type="submit">Create</button>
         </form>
@@ -15,9 +17,12 @@
     <section>
         <h2>Join existing cluster</h2>
         <form hx-post="/api/v1/cluster/join/initiate" hx-swap="none"
-              hx-on::after-request="if(event.detail.xhr.status < 300) location.reload()">
-            <label>Peer address <input type="text" name="seed" placeholder="192.168.1.10:8080" required></label>
+              hx-on::after-request="if(event.detail.xhr.status < 300){location.reload()}else{document.getElementById('setup-error').textContent = event.detail.xhr.responseText}">
+            <label>Peer address <input type="text" name="seed" placeholder="192.168.42.1:8080" required></label>
             <button type="submit">Join</button>
+            <p class="hint">Use the address <em>other nodes</em> use to reach the seed — in the
+            demo that's the VM LAN address (e.g. 192.168.42.1:8080), not the localhost
+            port-forward your browser uses.</p>
         </form>
     </section>
 </div>
