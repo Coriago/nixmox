@@ -27,8 +27,21 @@
             {{template "applylog_partial" $}}
         </tbody>
     </table>
+
+    <h2>Latest job log</h2>
+    {{if .LocalLogs}}
+        {{if .RecentJobID}}<p>Job <a href="/jobs/{{.RecentJobID}}">{{.RecentJobID}}</a></p>{{end}}
+        <pre class="log" hx-get="/partials/hosts/{{.NodeID}}/joblog" hx-trigger="every 2s">{{template "hostjoblog_partial" $}}</pre>
+    {{else}}
+        <p class="hint">Job logs live on the host's own disk — open this host's portal to view them.</p>
+    {{end}}
 </div>
 {{end}}
+{{end}}
+
+{{define "hostjoblog_partial"}}
+{{with .Detail}}{{range .RecentLog}}{{.}}
+{{else}}(no jobs yet){{end}}{{end}}
 {{end}}
 
 {{define "applylog_partial"}}
@@ -40,7 +53,7 @@
     <td>{{shortsha .GitSHA}}</td>
     <td>{{.GenBefore}}</td>
     <td>{{.GenAfter}}</td>
-    <td><a href="/jobs">{{.JobID}}</a></td>
+    <td><a href="/jobs/{{.JobID}}">{{.JobID}}</a></td>
 </tr>
 {{end}}
 {{end}}

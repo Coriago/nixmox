@@ -38,7 +38,7 @@ in
       { from = "host"; host.port = 8080 + index; guest.port = 8080; }
       { from = "host"; host.port = 2220 + index; guest.port = 22; }
     ];
-    virtualisation.memorySize = 2048;
+    virtualisation.memorySize = 4096;
     virtualisation.cores = 2;
     virtualisation.graphics = false;
   };

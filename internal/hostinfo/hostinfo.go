@@ -26,7 +26,10 @@ var (
 )
 
 func Get(cfg *config.Config) HostInfo {
-	hostname, _ := os.Hostname()
+	hostname := cfg.Hostname
+	if hostname == "" {
+		hostname, _ = os.Hostname()
+	}
 	if hostname == "" {
 		hostname = "unknown"
 	}

@@ -74,15 +74,6 @@ func (s *Server) MountHandlers(p *portal.Portal, auth Middleware) {
 			return
 		}
 
-		logData, _ := os.ReadFile(job.LogPath)
-		lines := strings.Split(string(logData), "\n")
-		if len(lines) > 0 && lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
-		if len(lines) > 100 {
-			lines = lines[len(lines)-100:]
-		}
-
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":         job.ID,
@@ -92,7 +83,7 @@ func (s *Server) MountHandlers(p *portal.Portal, auth Middleware) {
 			"state":      job.State,
 			"created_at": job.CreatedAt,
 			"updated_at": job.UpdatedAt,
-			"log":        lines,
+			"log":        readLogTail(job, 100),
 		})
 	})
 
@@ -152,12 +143,60 @@ func (s *Server) MountHandlers(p *portal.Portal, auth Middleware) {
 		p.HostsPartial(w, s.hostRows())
 	})
 
+	s.Mux.Get("/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		job, err := s.Store.Get(chi.URLParam(r, "id"))
+		if err != nil {
+			http.Error(w, "unknown job", http.StatusNotFound)
+			return
+		}
+		p.JobDetail(w, portal.JobDetailView{Job: job, Log: readLogTail(job, 500)})
+	})
+
+	s.Mux.Get("/partials/jobs/{id}/log", func(w http.ResponseWriter, r *http.Request) {
+		job, err := s.Store.Get(chi.URLParam(r, "id"))
+		if err != nil {
+			http.Error(w, "unknown job", http.StatusNotFound)
+			return
+		}
+		p.JobLogPartial(w, portal.JobDetailView{Job: job, Log: readLogTail(job, 500)})
+	})
+
 	s.Mux.Get("/partials/jobs", func(w http.ResponseWriter, r *http.Request) {
 		list, _ := s.Store.List()
 		p.JobsPartial(w, list)
 	})
 
 	s.Mux.Handle("/assets/*", p.AssetsHandler())
+}
+
+func readLogTail(job jobs.Job, maxLines int) []string {
+	logData, _ := os.ReadFile(job.LogPath)
+	lines := strings.Split(string(logData), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return lines
+}
+
+func (s *Server) fillRecentJobLog(view *portal.HostDetailView, local bool) {
+	view.LocalLogs = local
+	if !local || s.Store == nil {
+		return
+	}
+	list, err := s.Store.List()
+	if err != nil {
+		return
+	}
+	for _, j := range list {
+		if j.Host == view.NodeID {
+			view.RecentJobID = j.ID
+			view.RecentLog = readLogTail(j, 200)
+			return
+		}
+	}
 }
 
 func (s *Server) hostRows() []portal.HostRow {
@@ -278,7 +317,20 @@ func (s *Server) MountApply(p *portal.Portal) {
 		if s.Records != nil {
 			view.History, _ = s.Records.History(nodeID)
 		}
+		s.fillRecentJobLog(&view, nodeID == h.Hostname)
 		p.HostDetail(w, view)
+	})
+
+	s.Mux.Get("/partials/hosts/{nodeID}/joblog", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := chi.URLParam(r, "nodeID")
+		h := hostinfo.Get(s.Config)
+		if nodeID != h.Hostname {
+			http.Error(w, "job logs are local to each host", http.StatusNotFound)
+			return
+		}
+		view := portal.HostDetailView{NodeID: nodeID, LocalLogs: true}
+		s.fillRecentJobLog(&view, true)
+		p.HostJobLogPartial(w, view)
 	})
 
 	s.Mux.Get("/partials/hosts/{nodeID}/applylog", func(w http.ResponseWriter, r *http.Request) {

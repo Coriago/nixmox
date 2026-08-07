@@ -95,3 +95,8 @@ button:disabled {
 .error { color: #ff6b6b; padding: 0.5em 0; min-height: 1.2em; }
 .error:empty { display: none; }
 .hint { color: #999; font-size: 0.85em; max-width: 42em; }
+
+.badge.state-applied, .badge.state-success { background: #2d6a4f; }
+.badge.state-failed { background: #9d0208; }
+.badge.state-building, .badge.state-applying, .badge.state-pending { background: #b08900; }
+pre.log { background: #111; color: #ddd; padding: 1em; overflow-x: auto; max-height: 32em; overflow-y: auto; font-size: 0.85em; }

@@ -19,6 +19,7 @@ type Portal struct {
 	jobsTmpl       *template.Template
 	gitopsTmpl     *template.Template
 	hostDetailTmpl *template.Template
+	jobDetailTmpl  *template.Template
 	setupTmpl      *template.Template
 	fs             fs.FS
 
@@ -34,6 +35,7 @@ type PageData struct {
 	Jobs     []jobs.Job
 	GitOps   *GitOpsView
 	Detail   *HostDetailView
+	Job      *JobDetailView
 }
 
 // HostRow pairs a host with its latest apply record (nil = never applied).
@@ -44,10 +46,18 @@ type HostRow struct {
 }
 
 type HostDetailView struct {
-	NodeID  string
-	Host    hostinfo.HostInfo
-	Latest  *cluster.Record
-	History []cluster.Record
+	NodeID      string
+	Host        hostinfo.HostInfo
+	Latest      *cluster.Record
+	History     []cluster.Record
+	RecentJobID string
+	RecentLog   []string
+	LocalLogs   bool
+}
+
+type JobDetailView struct {
+	Job jobs.Job
+	Log []string
 }
 
 type GitOpsView struct {
@@ -93,12 +103,17 @@ func New() (*Portal, error) {
 	if err != nil {
 		return nil, err
 	}
+	jobDetailTmpl, err := parsePage("templates/job-detail.html")
+	if err != nil {
+		return nil, err
+	}
 	return &Portal{
 		portalTmpl:     portalTmpl,
 		jobsTmpl:       jobsTmpl,
 		gitopsTmpl:     gitopsTmpl,
 		hostDetailTmpl: hostDetailTmpl,
 		setupTmpl:      setupTmpl,
+		jobDetailTmpl:  jobDetailTmpl,
 		fs:             embeddedFS,
 	}, nil
 }
@@ -139,6 +154,18 @@ func (p *Portal) HostDetail(w http.ResponseWriter, view HostDetailView) {
 
 func (p *Portal) HostDetailPartial(w http.ResponseWriter, view HostDetailView) {
 	p.hostDetailTmpl.ExecuteTemplate(w, "applylog_partial", PageData{Hostname: p.Hostname, Detail: &view})
+}
+
+func (p *Portal) HostJobLogPartial(w http.ResponseWriter, view HostDetailView) {
+	p.hostDetailTmpl.ExecuteTemplate(w, "hostjoblog_partial", PageData{Hostname: p.Hostname, Detail: &view})
+}
+
+func (p *Portal) JobDetail(w http.ResponseWriter, view JobDetailView) {
+	p.jobDetailTmpl.ExecuteTemplate(w, "job-detail.html", PageData{Hostname: p.Hostname, Job: &view})
+}
+
+func (p *Portal) JobLogPartial(w http.ResponseWriter, view JobDetailView) {
+	p.jobDetailTmpl.ExecuteTemplate(w, "joblog_partial", PageData{Hostname: p.Hostname, Job: &view})
 }
 
 func (p *Portal) AssetsHandler() http.Handler {

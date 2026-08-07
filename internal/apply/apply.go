@@ -138,7 +138,9 @@ func (m *Manager) startJob(ctx context.Context, kind string, args []string, sha 
 		return jobs.Job{}, err
 	}
 	j, _ = m.store.Get(j.ID)
-	if err := m.runner.Start(ctx, j); err != nil {
+	// Jobs are daemon-scoped, not request-scoped: a request context would
+	// cancel the moment the HTTP response is written, killing the job.
+	if err := m.runner.Start(context.Background(), j); err != nil {
 		return jobs.Job{}, err
 	}
 	return j, nil
