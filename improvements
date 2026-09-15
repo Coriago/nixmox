@@ -1,0 +1,16 @@
+primary improvements:
+start and shutdown hosts
+make the UI more pretty and better functionality. Maybe try and look a bit more like proxmox UI
+more host information like cpu, network, memory. show current drives/partitions and size. network interfaces with the status and ip for each of them.
+
+later:
+auto discovery over network? This could show on either side so the existing cluster could show "Add host: blah ip: 122.22.2.1 to the cluster?" or on the new nodes ui "cluster found at ip: <> name: foo"
+more detail about what changes would be applied from a gitops update and when a new update is available
+logs for daemon/backend not just job logs in the UI
+ability to remove hosts, removed host goes back into unjoined state and cluster shrinks
+
+much later:
+ability to add new hosts using nixos anywhere or wipe hosts with nixos anywhere. 
+apply all with cluster rollout stratedgies so an apply does not happen all at once.
+static vars for hosts that can be referenced in config using json file imports? maybe stored as state outside gitops?
+dynamic vars possible? like an ip address or something once it is known?
