@@ -3,13 +3,15 @@ package cluster
 import (
 	"encoding/json"
 	"errors"
+	"nixmox/internal/statefile"
 	"os"
 	"path/filepath"
 )
 
 // nodeIdentity is the persisted cluster identity at {dataDir}/node.json.
-// nodeID equals the hostname in the POC (join rejects hostname collisions).
+// Node IDs are stable hostnames; operators must keep them unique.
 type nodeIdentity struct {
+	Left        bool     `json:"left,omitempty"`
 	NodeID      string   `json:"node_id"`
 	Hostname    string   `json:"hostname"`
 	ClusterName string   `json:"cluster_name"`
@@ -29,9 +31,5 @@ func loadIdentity(dataDir string) (nodeIdentity, error) {
 }
 
 func saveIdentity(dataDir string, id nodeIdentity) error {
-	data, err := json.MarshalIndent(id, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dataDir, "node.json"), data, 0o640)
+	return statefile.Write(filepath.Join(dataDir, "node.json"), id)
 }

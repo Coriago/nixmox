@@ -4,6 +4,7 @@
     <h1>{{.NodeID}}</h1>
     <table class="table">
         <tr><th>NixOS Version</th><td>{{.Host.NixOSVersion}}</td></tr>
+        <tr><th>Kernel</th><td>{{.Host.Kernel}}</td></tr>
         <tr><th>Agent Version</th><td>{{.Host.AgentVersion}}</td></tr>
         <tr><th>Uptime</th><td>{{.Host.Uptime}}</td></tr>
         {{if .Latest}}
@@ -11,6 +12,13 @@
         {{end}}
     </table>
 
+    <div class="actions">
+      <button hx-post="/api/v1/hosts/{{.NodeID}}/actions/apply" hx-swap="none">Apply</button>
+      <button hx-post="/api/v1/hosts/{{.NodeID}}/actions/reboot" hx-vals='{"confirm":"{{.NodeID}}"}' hx-confirm="Reboot this host in one minute?" hx-swap="none">Reboot</button>
+      <button class="danger" hx-post="/api/v1/hosts/{{.NodeID}}/actions/shutdown" hx-vals='{"confirm":"{{.NodeID}}"}' hx-confirm="Shut down this host in one minute?" hx-swap="none">Shutdown</button>
+      <button class="danger" hx-post="/api/v1/hosts/{{.NodeID}}/actions/leave" hx-vals='{"confirm":"{{.NodeID}}"}' hx-confirm="Remove this host from its cluster? It will return to setup." hx-swap="none">Leave cluster</button>
+    </div>
+    <div data-live="/partials/hosts/{{.NodeID}}/resources">{{template "resources" $}}</div>
     <h2>Apply history</h2>
     <table class="table">
         <thead>

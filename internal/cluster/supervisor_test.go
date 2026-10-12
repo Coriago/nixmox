@@ -117,6 +117,10 @@ func TestSupervisorTwoNodeJoin(t *testing.T) {
 		routes := seed.Embedded().Srv.NumRoutes()
 		leader := seed.Embedded().Srv.JetStreamIsLeader()
 		peers := seed.Embedded().Srv.JetStreamClusterPeers()
+		// This API returns peers only on the leader; the seed may be a follower.
+		if len(peers) == 0 {
+			peers = joiner.Embedded().Srv.JetStreamClusterPeers()
+		}
 		t.Logf("seed: routes=%d leader=%v peers=%v", routes, leader, peers)
 		if routes >= 2 && len(peers) >= 1 {
 			return

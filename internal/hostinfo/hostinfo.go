@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 )
 
 type HostInfo struct {
+	Resources    Resources     `json:"resources"`
 	Hostname     string        `json:"hostname"`
 	NixOSVersion string        `json:"nixos_version"`
 	Kernel       string        `json:"kernel"`
@@ -54,7 +54,7 @@ func Get(cfg *config.Config) HostInfo {
 	}
 
 	kernel := "unknown"
-	if out, err := exec.Command("uname", "-r").Output(); err == nil {
+	if out, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
 		kernel = strings.TrimSpace(string(out))
 	}
 
@@ -69,6 +69,7 @@ func Get(cfg *config.Config) HostInfo {
 	}
 
 	return HostInfo{
+		Resources:    resources(),
 		Hostname:     hostname,
 		NixOSVersion: nixosVersion,
 		Kernel:       kernel,

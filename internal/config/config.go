@@ -23,11 +23,16 @@ var (
 
 // Config holds all nixmox runtime settings.
 type Config struct {
-	DataDir     string `yaml:"data_dir"`
-	HTTPAddr    string `yaml:"http_addr"`
-	NATSPort    int    `yaml:"nats_port"`
-	ClusterPort int    `yaml:"cluster_port"`
-	LogLevel    string `yaml:"log_level"`
+	InputsFile      string `yaml:"inputs_file"`
+	JoinSeed        string `yaml:"join_seed"`
+	EnablePower     bool   `yaml:"enable_power"`
+	EnableProvision bool   `yaml:"enable_provision"`
+	Discovery       bool   `yaml:"discovery"`
+	DataDir         string `yaml:"data_dir"`
+	HTTPAddr        string `yaml:"http_addr"`
+	NATSPort        int    `yaml:"nats_port"`
+	ClusterPort     int    `yaml:"cluster_port"`
+	LogLevel        string `yaml:"log_level"`
 
 	GitRepoURL      string `yaml:"git_repo_url"`
 	GitBranch       string `yaml:"git_branch"`
@@ -80,6 +85,9 @@ func Load(configFile string) (*Config, error) {
 		}
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
@@ -94,6 +102,17 @@ func loadFile(path string, cfg *Config) error {
 const envPrefix = "NIXMOX_"
 
 func loadEnv(cfg *Config) {
+	if v := os.Getenv(envPrefix + "INPUTS_FILE"); v != "" {
+		cfg.InputsFile = v
+	}
+	if v := os.Getenv(envPrefix + "JOIN_SEED"); v != "" {
+		cfg.JoinSeed = v
+	}
+	for key, dst := range map[string]*bool{"ENABLE_POWER": &cfg.EnablePower, "ENABLE_PROVISION": &cfg.EnableProvision, "DISCOVERY": &cfg.Discovery} {
+		if v := os.Getenv(envPrefix + key); v != "" {
+			*dst = v == "true" || v == "1" || v == "yes"
+		}
+	}
 	if v := os.Getenv(envPrefix + "DATA_DIR"); v != "" {
 		cfg.DataDir = v
 	}

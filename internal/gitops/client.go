@@ -46,7 +46,7 @@ func (c ExecClient) Clone(ctx context.Context, url, branch, dir string) error {
 	if branch != "" {
 		args = append(args, "--branch", branch)
 	}
-	args = append(args, url, dir)
+	args = append(args, "--", url, dir)
 	_, err := c.run(ctx, "", args...)
 	return err
 }

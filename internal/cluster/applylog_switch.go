@@ -5,9 +5,8 @@ import (
 )
 
 // SwitchingRecordStore writes through to local disk always and mirrors to the
-// cluster KV when clustered. Reads prefer the remote view when clustered so
-// the portal sees the shared state. M4's apply code is untouched: it only
-// ever sees the RecordStore interface.
+// cluster KV when clustered. Local records are authoritative for this node;
+// remote reads fill in other nodes without blocking local status on NATS.
 type SwitchingRecordStore struct {
 	local  RecordStore
 	remote atomic.Value // RecordStore (KV-backed), set on cluster arm
@@ -39,15 +38,25 @@ func (s *SwitchingRecordStore) Record(nodeID string, r Record) error {
 }
 
 func (s *SwitchingRecordStore) Latest(nodeID string) (Record, bool, error) {
+	if r, ok, err := s.local.Latest(nodeID); err == nil && ok {
+		return r, ok, nil
+	}
 	if remote := s.remoteOrNil(); remote != nil {
-		return remote.Latest(nodeID)
+		if r, ok, err := remote.Latest(nodeID); err == nil && ok {
+			return r, ok, nil
+		}
 	}
 	return s.local.Latest(nodeID)
 }
 
 func (s *SwitchingRecordStore) History(nodeID string) ([]Record, error) {
+	if records, err := s.local.History(nodeID); err == nil && len(records) > 0 {
+		return records, nil
+	}
 	if remote := s.remoteOrNil(); remote != nil {
-		return remote.History(nodeID)
+		if records, err := remote.History(nodeID); err == nil && len(records) > 0 {
+			return records, nil
+		}
 	}
 	return s.local.History(nodeID)
 }

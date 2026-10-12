@@ -1,8 +1,8 @@
 {{template "base.html" .}}
 
 {{define "content"}}
-<h2>Hosts</h2>
-<table>
+<div class="toolbar"><div><h1>{{.Cluster.ClusterName}}</h1><span class="hint">Cluster hosts · live inventory and configuration status</span></div><a href="/manage">Rollout & operations →</a></div>
+<div class="table-scroll"><table>
     <thead>
         <tr>
             <th>Hostname</th>
@@ -17,7 +17,7 @@
     <tbody hx-get="/partials/hosts" hx-trigger="every 5s">
         {{template "hosts_partial" .}}
     </tbody>
-</table>
+</table></div>
 {{end}}
 
 {{define "hosts_partial"}}
@@ -35,9 +35,11 @@
     </td>
     <td><span class="badge {{if .Online}}online{{else}}offline{{end}}">{{if .Online}}online{{else}}offline{{end}}</span></td>
     <td>
-        <button hx-post="/api/v1/apply" hx-swap="none">Apply</button>
-        <button hx-post="/api/v1/rollback" hx-swap="none"
-            {{if .Latest}}title="roll back toward generation {{.Latest.GenBefore}}"{{end}}>Rollback</button>
+        <button hx-post="/api/v1/hosts/{{.Host.Hostname}}/actions/apply" hx-swap="none" {{if not .Online}}disabled{{end}}>Apply</button>
+        <button hx-post="/api/v1/hosts/{{.Host.Hostname}}/actions/rollback" hx-swap="none"
+            {{if not .Online}}disabled{{end}} hx-confirm="Roll back this host?" {{if .Latest}}title="roll back toward generation {{.Latest.GenBefore}}"{{end}}>Rollback</button>
+ <button hx-post="/api/v1/hosts/{{.Host.Hostname}}/actions/start" hx-swap="none">Start (WoL)</button>
+ <button class="danger" hx-post="/api/v1/hosts/{{.Host.Hostname}}/actions/shutdown" hx-vals='{"confirm":"{{.Host.Hostname}}"}' hx-confirm="Shut down {{.Host.Hostname}} in one minute?" hx-swap="none" {{if not .Online}}disabled{{end}}>Shutdown</button>
     </td>
 </tr>
 {{end}}

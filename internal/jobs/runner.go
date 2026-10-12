@@ -64,6 +64,10 @@ func (r *Runner) run(ctx context.Context, j Job) {
 		cmd = exec.CommandContext(ctx, "echo", j.Args...)
 	case "dry-build":
 		cmd = exec.CommandContext(ctx, "nixos-rebuild", append([]string{"dry-build"}, j.Args...)...)
+	case "shutdown", "reboot":
+		cmd = exec.CommandContext(ctx, "shutdown", j.Args...)
+	case "provision":
+		cmd = exec.CommandContext(ctx, "nixos-anywhere", j.Args...)
 	case "apply", "rollback":
 		mode := j.Mode
 		if mode == "" {
@@ -124,8 +128,13 @@ func (r *Runner) run(ctx context.Context, j Job) {
 
 func (r *Runner) streamLog(id string, rdr io.Reader) {
 	scanner := bufio.NewScanner(rdr)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
 	for scanner.Scan() {
 		r.store.AppendLog(id, scanner.Text()+"\n")
+	}
+	if err := scanner.Err(); err != nil {
+		r.store.AppendLog(id, "log stream truncated: "+err.Error()+"\n")
+		_, _ = io.Copy(io.Discard, rdr)
 	}
 }
 

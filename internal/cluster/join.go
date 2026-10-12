@@ -29,8 +29,10 @@ type JoinResponse struct {
 }
 
 func normalizeHTTPAddr(addr string) string {
-	addr = strings.TrimPrefix(strings.TrimPrefix(addr, "http://"), "https://")
-	return "http://" + strings.TrimSuffix(addr, "/")
+	if !strings.Contains(addr, "://") {
+		addr = "http://" + addr
+	}
+	return strings.TrimSuffix(addr, "/")
 }
 
 func FetchBootstrap(ctx context.Context, httpAddr string) (ClusterState, error) {
@@ -43,6 +45,9 @@ func FetchBootstrap(ctx context.Context, httpAddr string) (ClusterState, error) 
 		return ClusterState{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ClusterState{}, fmt.Errorf("bootstrap: %s", resp.Status)
+	}
 	var st ClusterState
 	return st, json.NewDecoder(resp.Body).Decode(&st)
 }

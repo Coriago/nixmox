@@ -146,17 +146,23 @@ func TestJoinViaLocalAgent(t *testing.T) {
 	}
 }
 
-func TestStatusStub(t *testing.T) {
-	buf := new(bytes.Buffer)
-	rootCmd.SetOut(buf)
-	rootCmd.SetErr(buf)
-	rootCmd.SetArgs([]string{"status"})
-
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Fatal("status stub returned nil error, expected non-nil")
+func TestStatus(t *testing.T) {
+	previous := cfg
+	defer func() { cfg = previous }()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/bootstrap" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"status":"clustered","cluster_name":"test"}`)
+	}))
+	defer srv.Close()
+	cfg = &config.Config{HTTPAddr: strings.TrimPrefix(srv.URL, "http://")}
+	var out bytes.Buffer
+	statusCmd.SetOut(&out)
+	if err := statusCmd.RunE(statusCmd, nil); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("status error missing 'not yet implemented': %v", err)
+	if !strings.Contains(out.String(), "clustered") {
+		t.Fatal(out.String())
 	}
 }

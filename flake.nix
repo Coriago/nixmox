@@ -9,12 +9,14 @@
       pkgs = nixpkgs.legacyPackages.${system};
       lib = nixpkgs.lib;
 
-      nixmox = pkgs.callPackage ./nix/package.nix {
+      mkPackage = target: nixpkgs.legacyPackages.${target}.callPackage ./nix/package.nix {
         ldflags = [
           "-X nixmox/internal/config.Version=0.0.1"
           "-X nixmox/internal/config.Commit=${self.rev or self.dirtyRev or "unknown"}"
         ];
       };
+
+      nixmox = mkPackage system;
 
       mkNodeConfig = name: {
         networking.hostName = name;
@@ -32,7 +34,34 @@
       packages.${system} = {
         default = nixmox;
         demo = import ./nix/demo.nix { inherit pkgs self; };
+        installer-iso = (self.lib.mkInstaller {
+          inherit system;
+          format = "iso";
+        }).config.system.build.isoImage;
       };
+
+      lib.mkInstaller = { system ? "x86_64-linux", format ? "iso", sshKeys ? [] }:
+        assert lib.assertMsg (builtins.elem format [ "iso" "sd" ]) "installer format must be iso or sd";
+        assert lib.assertMsg (format != "sd" || system == "aarch64-linux") "the generic SD profile requires aarch64-linux";
+        nixpkgs.lib.nixosSystem {
+          inherit system;
+          modules = [
+            (if format == "iso"
+             then "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
+             else "${nixpkgs}/nixos/modules/installer/sd-card/sd-image-aarch64.nix")
+            (import ./nix/installer.nix {
+              package = self.packages.${system}.default;
+              inherit sshKeys;
+            })
+          ];
+        };
+
+      packages.aarch64-linux.default = mkPackage "aarch64-linux";
+
+      packages.aarch64-linux.installer-sd = (self.lib.mkInstaller {
+        system = "aarch64-linux";
+        format = "sd";
+      }).config.system.build.sdImage;
 
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
@@ -46,6 +75,9 @@
       nixosModules.default = import ./nix/module.nix;
 
       checks.${system} = {
+        cluster-lifecycle = import ./nix/checks/cluster-lifecycle.nix {
+          inherit self pkgs;
+        };
         gitops-apply = import ./nix/checks/gitops-apply.nix {
           inherit self pkgs;
         };
@@ -88,6 +120,7 @@
       };
 
       apps.${system}.demo = {
+        meta.description = "Run the three-node nixmox demo";
         type = "app";
         program = "${self.packages.${system}.demo}/bin/nixmox-demo";
       };

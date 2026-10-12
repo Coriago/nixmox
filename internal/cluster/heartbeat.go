@@ -9,17 +9,26 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"nixmox/internal/hostinfo"
 )
 
 type HostPayload struct {
-	NodeID       string        `json:"node_id"`
-	Hostname     string        `json:"hostname"`
-	NixOSVersion string        `json:"nixos_version"`
-	AgentVersion string        `json:"agent_version"`
-	Uptime       time.Duration `json:"uptime"`
-	PulledSHA    string        `json:"pulled_sha"`
-	ApplyRecord  *Record       `json:"apply_record,omitempty"`
-	Online       bool          `json:"online"`
+	Kernel       string             `json:"kernel"`
+	Resources    hostinfo.Resources `json:"resources"`
+	HTTPAddress  string             `json:"http_address"`
+	ClusterRoute string             `json:"cluster_route"`
+	NodeID       string             `json:"node_id"`
+	Hostname     string             `json:"hostname"`
+	NixOSVersion string             `json:"nixos_version"`
+	AgentVersion string             `json:"agent_version"`
+	Uptime       time.Duration      `json:"uptime"`
+	PulledSHA    string             `json:"pulled_sha"`
+	ApplyRecord  *Record            `json:"apply_record,omitempty"`
+	Online       bool               `json:"online"`
+}
+
+func (p HostPayload) Info() hostinfo.HostInfo {
+	return hostinfo.HostInfo{Hostname: p.Hostname, NixOSVersion: p.NixOSVersion, AgentVersion: p.AgentVersion, Uptime: p.Uptime, Resources: p.Resources, Kernel: p.Kernel}
 }
 
 // View is the in-memory, watcher-fed picture of the cluster's hosts. It is
@@ -27,10 +36,11 @@ type HostPayload struct {
 type View struct {
 	mu    sync.RWMutex
 	hosts map[string]HostPayload
+	seen  map[string]time.Time
 }
 
 func NewView() *View {
-	return &View{hosts: map[string]HostPayload{}}
+	return &View{hosts: map[string]HostPayload{}, seen: map[string]time.Time{}}
 }
 
 func (v *View) Upsert(p HostPayload) {
@@ -38,6 +48,7 @@ func (v *View) Upsert(p HostPayload) {
 	defer v.mu.Unlock()
 	p.Online = true
 	v.hosts[p.NodeID] = p
+	v.seen[p.NodeID] = time.Now()
 }
 
 func (v *View) MarkOffline(nodeID string) {
@@ -53,7 +64,11 @@ func (v *View) List() []HostPayload {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	out := make([]HostPayload, 0, len(v.hosts))
-	for _, p := range v.hosts {
+	for id, p := range v.hosts {
+		// MaxAge expiry need not emit a KV deletion. Liveness also expires locally.
+		if p.Online && time.Since(v.seen[id]) > hostsBucketTTL {
+			p.Online = false
+		}
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
@@ -109,7 +124,7 @@ func (h *Heartbeater) Run(ctx context.Context) {
 // WatchHosts feeds the View from KV watch events: puts upsert, deletes (TTL
 // expiry or removal) mark the host offline.
 func WatchHosts(ctx context.Context, kv jetstream.KeyValue, view *View) error {
-	w, err := kv.Watch(ctx, "hosts.*")
+	w, err := kv.Watch(ctx, "hosts.>")
 	if err != nil {
 		return err
 	}
@@ -126,7 +141,11 @@ func WatchHosts(ctx context.Context, kv jetstream.KeyValue, view *View) error {
 				if entry == nil {
 					continue
 				}
-				if entry.Operation() == jetstream.KeyValueDelete || entry.Operation() == jetstream.KeyValuePurge {
+				if entry.Operation() == jetstream.KeyValuePurge {
+					view.Remove(nodeIDFromKey(entry.Key()))
+					continue
+				}
+				if entry.Operation() == jetstream.KeyValueDelete {
 					view.MarkOffline(nodeIDFromKey(entry.Key()))
 					continue
 				}

@@ -1,24 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>nixmox</title>
-    <script src="/assets/htmx.min.js"></script>
-    <link rel="stylesheet" href="/assets/style.css">
+ <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+ <title>nixmox · node console</title><link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+ <script src="/assets/htmx.min.js" defer></script><script src="/assets/console.js" defer></script>
+ <link rel="stylesheet" href="/assets/style.css">
 </head>
-<body>
-    <header>
-        <h1>nixmox</h1>
-        <nav>
-            <a href="/">Hosts</a>
-            <a href="/jobs">Jobs</a>
-            <a href="/gitops">GitOps</a>
-        </nav>
-        <div class="host-info">Node: {{ .Hostname }}</div>
-    </header>
-    <main>
-        {{block "content" .}}{{end}}
-    </main>
+<body data-host="{{.Hostname}}">
+ <header><a class="brand" href="/">nix<span>mox</span></a><span class="subtitle">Infrastructure console</span><span id="connection" class="badge">Connecting…</span><div class="host-info">{{.Hostname}}</div></header>
+ <aside><div class="nav-label">DATACENTER</div><nav aria-label="Main navigation"><a href="/">▦ &nbsp; Hosts & cluster</a><a href="/gitops">⇄ &nbsp; GitOps</a><a href="/jobs">≡ &nbsp; Tasks</a><a href="/manage">⚙ &nbsp; Operations</a></nav><div class="nav-label">LOCAL NODE</div><a href="/hosts/{{.Hostname}}">● &nbsp; {{.Hostname}}</a><p class="hint">Declarative systems.<br>One place to operate.</p></aside>
+ <main><div id="notice" role="status" aria-live="polite"></div>{{block "content" .}}{{end}}</main>
 </body>
 </html>

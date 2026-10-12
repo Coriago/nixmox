@@ -2,7 +2,11 @@ package server
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"nixmox/internal/discovery"
+	"nixmox/internal/logbuf"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,16 +17,25 @@ import (
 )
 
 type Server struct {
-	Mux     *chi.Mux
-	srv     *http.Server
-	Config  *config.Config
-	Store   jobs.Store
-	Runner  *jobs.Runner
-	Git     GitOpsManager
-	Apply   ApplyManager
-	Records cluster.RecordStore
-	Cluster ClusterAPI
-	View    *cluster.View
+	lifetime    context.Context
+	cancel      context.CancelFunc
+	workers     sync.WaitGroup
+	operationMu sync.Mutex
+	rolloutMu   sync.Mutex
+	rollout     Rollout
+	Logs        *logbuf.Buffer
+	Discoveries *discovery.Registry
+	Client      *http.Client
+	Mux         *chi.Mux
+	srv         *http.Server
+	Config      *config.Config
+	Store       jobs.Store
+	Runner      *jobs.Runner
+	Git         GitOpsManager
+	Apply       ApplyManager
+	Records     cluster.RecordStore
+	Cluster     ClusterAPI
+	View        *cluster.View
 }
 
 // GitOpsManager is the server's seam to the gitops layer (real Manager in
@@ -55,15 +68,20 @@ func (s *Server) SetCluster(c ClusterAPI, v *cluster.View) {
 
 func New(cfg *config.Config, store jobs.Store, runner *jobs.Runner) *Server {
 	mux := chi.NewRouter()
+	lifetime, cancel := context.WithCancel(context.Background())
 
 	s := &Server{
+		lifetime: lifetime, cancel: cancel,
 		Mux:    mux,
+		Client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		Config: cfg,
 		Store:  store,
 		Runner: runner,
 		srv: &http.Server{
-			Addr:    cfg.HTTPAddr,
-			Handler: mux,
+			Addr:              cfg.HTTPAddr,
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			Handler:           mux,
 		},
 	}
 
@@ -71,6 +89,8 @@ func New(cfg *config.Config, store jobs.Store, runner *jobs.Runner) *Server {
 }
 
 func (s *Server) Start(ctx context.Context) error {
+	defer func() { s.cancel(); s.workers.Wait() }()
+	s.srv.BaseContext = func(net.Listener) context.Context { return ctx }
 	errCh := make(chan error, 1)
 	go func() {
 		if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

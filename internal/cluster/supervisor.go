@@ -32,10 +32,12 @@ type Supervisor struct {
 	// must not block join handshakes. The cluster Runtime arms off this.
 	OnReconfigure func(ctx context.Context, emb *natsx.EmbeddedServer)
 
-	mu    sync.RWMutex
-	emb   *natsx.EmbeddedServer
-	ident nodeIdentity
-	gen   int
+	transition       sync.Mutex
+	generationCancel context.CancelFunc
+	mu               sync.RWMutex
+	emb              *natsx.EmbeddedServer
+	ident            nodeIdentity
+	gen              int
 	// inClusterMode tracks whether the embedded server runs with a Cluster
 	// block. A created-but-alone cluster stays in standalone JetStream mode
 	// until the first peer joins (clustered JS requires a real route).
@@ -79,6 +81,8 @@ func (s *Supervisor) startLocked(spec natsx.ClusterSpec) error {
 	if err != nil {
 		return err
 	}
+	genCtx, genCancel := context.WithCancel(context.Background())
+	s.generationCancel = genCancel
 	s.emb = emb
 	s.inClusterMode = spec.Name != ""
 	s.gen++
@@ -87,8 +91,10 @@ func (s *Supervisor) startLocked(spec natsx.ClusterSpec) error {
 	// Meta-leader election needs routes up on BOTH sides of a join, so it
 	// can't block the join handshake: wait async, then arm the runtime.
 	go func() {
-		if err := natsx.WaitReady(emb.JS, 90*time.Second); err != nil {
-			log.Printf("cluster: %v", err)
+		if err := natsx.WaitReadyContext(genCtx, emb.JS, 90*time.Second); err != nil {
+			if genCtx.Err() == nil {
+				log.Printf("cluster: %v", err)
+			}
 			return
 		}
 		s.mu.RLock()
@@ -96,7 +102,7 @@ func (s *Supervisor) startLocked(spec natsx.ClusterSpec) error {
 		hook := s.OnReconfigure
 		s.mu.RUnlock()
 		if current && hook != nil {
-			hook(context.Background(), emb)
+			hook(genCtx, emb)
 		}
 	}()
 	return nil
@@ -106,6 +112,9 @@ func (s *Supervisor) startLocked(spec natsx.ClusterSpec) error {
 // cluster spec. Callers must NOT hold locks that heartbeat/watchers need.
 func (s *Supervisor) Reconfigure(ctx context.Context, spec natsx.ClusterSpec) error {
 	s.mu.Lock()
+	if s.generationCancel != nil {
+		s.generationCancel()
+	}
 	if s.emb != nil {
 		s.emb.Stop()
 		s.emb = nil
@@ -117,6 +126,9 @@ func (s *Supervisor) Reconfigure(ctx context.Context, spec natsx.ClusterSpec) er
 
 func (s *Supervisor) Stop() {
 	s.mu.Lock()
+	if s.generationCancel != nil {
+		s.generationCancel()
+	}
 	defer s.mu.Unlock()
 	if s.emb != nil {
 		s.emb.Stop()
@@ -128,6 +140,12 @@ func (s *Supervisor) Embedded() *natsx.EmbeddedServer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.emb
+}
+
+func (s *Supervisor) AutoJoinAllowed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ident.ClusterName == "" && !s.ident.Left
 }
 
 func (s *Supervisor) State(memberCount int) ClusterState {
@@ -143,10 +161,12 @@ func (s *Supervisor) State(memberCount int) ClusterState {
 }
 
 // CreateCluster turns a standalone node into a single-node cluster.
-// Cluster names are immutable for the POC: create-once, no renames.
+// Cluster names are immutable while joined: create-once, no renames.
 // The embedded server stays in standalone JetStream mode until the first
 // peer joins — clustered JetStream cannot start without a real route.
 func (s *Supervisor) CreateCluster(ctx context.Context, name string) error {
+	s.transition.Lock()
+	defer s.transition.Unlock()
 	if name == "" {
 		return fmt.Errorf("cluster name is required")
 	}
@@ -159,10 +179,13 @@ func (s *Supervisor) CreateCluster(ctx context.Context, name string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ident.ClusterName = name
-	if err := saveIdentity(s.dataDir, s.ident); err != nil {
+	next := s.ident
+	next.ClusterName = name
+	next.Left = false
+	if err := saveIdentity(s.dataDir, next); err != nil {
 		return err
 	}
+	s.ident = next
 	log.Printf("cluster: created %q (standalone until first peer joins)", name)
 	return nil
 }
@@ -171,6 +194,8 @@ func (s *Supervisor) CreateCluster(ctx context.Context, name string) error {
 // (host:port of the seed's HTTP API). The CLI and portal both funnel here
 // via the server's /api/v1/cluster/join/initiate handler — one code path.
 func (s *Supervisor) JoinCluster(ctx context.Context, seedHTTPAddr string) error {
+	s.transition.Lock()
+	defer s.transition.Unlock()
 	s.mu.RLock()
 	existing := s.ident.ClusterName
 	s.mu.RUnlock()
@@ -200,6 +225,7 @@ func (s *Supervisor) JoinCluster(ctx context.Context, seedHTTPAddr string) error
 
 	s.mu.Lock()
 	s.ident.ClusterName = resp.ClusterName
+	s.ident.Left = false
 	s.ident.Routes = routes
 	if err := saveIdentity(s.dataDir, s.ident); err != nil {
 		s.mu.Unlock()
@@ -219,9 +245,11 @@ func (s *Supervisor) JoinCluster(ctx context.Context, seedHTTPAddr string) error
 // JetStream (reconfiguring with the joiner as its first route); the HTTP
 // server keeps serving throughout. Returns what the joiner needs.
 func (s *Supervisor) AcceptJoin(req JoinRequest) (JoinResponse, error) {
+	s.transition.Lock()
+	defer s.transition.Unlock()
 	s.mu.RLock()
 	name := s.ident.ClusterName
-	routes := s.ident.Routes
+	routes := append([]string(nil), s.ident.Routes...)
 	clustered := s.inClusterMode
 	s.mu.RUnlock()
 
@@ -231,11 +259,14 @@ func (s *Supervisor) AcceptJoin(req JoinRequest) (JoinResponse, error) {
 	if req.TargetClusterName != name {
 		return JoinResponse{}, ErrClusterNameMismatch
 	}
+	if req.NodeID == s.cfg.Hostname {
+		return JoinResponse{}, fmt.Errorf("hostname collision: %s", req.NodeID)
+	}
 	if req.ClusterAddr == "" {
 		return JoinResponse{}, fmt.Errorf("join request missing cluster_addr")
 	}
 
-	if !clustered {
+	{
 		s.mu.Lock()
 		s.ident.Routes = dedupe(append(s.ident.Routes, req.ClusterAddr))
 		if err := saveIdentity(s.dataDir, s.ident); err != nil {
@@ -245,10 +276,12 @@ func (s *Supervisor) AcceptJoin(req JoinRequest) (JoinResponse, error) {
 		spec := natsx.ClusterSpec{Name: name, Routes: s.ident.Routes}
 		s.mu.Unlock()
 
-		if err := s.Reconfigure(context.Background(), spec); err != nil {
-			return JoinResponse{}, fmt.Errorf("cluster-mode transition: %w", err)
+		if !clustered {
+			if err := s.Reconfigure(context.Background(), spec); err != nil {
+				return JoinResponse{}, fmt.Errorf("cluster-mode transition: %w", err)
+			}
 		}
-		log.Printf("cluster: accepted first peer %s — clustered JetStream up", req.NodeID)
+		log.Printf("cluster: accepted peer %s", req.NodeID)
 	}
 
 	self := fmt.Sprintf("nats://%s:%d", s.clusterIP, s.cfg.ClusterPort)

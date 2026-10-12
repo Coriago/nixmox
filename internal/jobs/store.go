@@ -3,8 +3,10 @@ package jobs
 import (
 	"encoding/json"
 	"fmt"
+	"nixmox/internal/statefile"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -35,6 +37,8 @@ type Store interface {
 	AppendLog(id string, line string) error
 }
 
+var validID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$`)
+
 type fileStore struct {
 	dir string
 	mu  sync.Mutex
@@ -58,6 +62,9 @@ func (s *fileStore) logPath(id string) string {
 }
 
 func (s *fileStore) Create(j Job) error {
+	if !validID.MatchString(j.ID) {
+		return fmt.Errorf("invalid job ID")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -71,6 +78,9 @@ func (s *fileStore) Create(j Job) error {
 }
 
 func (s *fileStore) Get(id string) (Job, error) {
+	if !validID.MatchString(id) {
+		return Job{}, fmt.Errorf("invalid job ID")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -107,6 +117,10 @@ func (s *fileStore) List() ([]Job, error) {
 }
 
 func (s *fileStore) Update(j Job) error {
+	if !validID.MatchString(j.ID) {
+		return fmt.Errorf("invalid job ID")
+	}
+	j.LogPath = s.logPath(j.ID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -119,6 +133,9 @@ func (s *fileStore) Update(j Job) error {
 }
 
 func (s *fileStore) AppendLog(id string, line string) error {
+	if !validID.MatchString(id) {
+		return fmt.Errorf("invalid job ID")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -142,24 +159,7 @@ func (s *fileStore) AppendLog(id string, line string) error {
 // writeJob writes a job to disk atomically.
 // Caller must hold s.mu.
 func (s *fileStore) writeJob(j Job) error {
-	data, err := json.Marshal(j)
-	if err != nil {
-		return fmt.Errorf("marshal job: %w", err)
-	}
-
-	path := s.jobPath(j.ID)
-	tmpPath := path + ".tmp"
-
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return fmt.Errorf("write tmp job file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename tmp job file: %w", err)
-	}
-
-	return nil
+	return statefile.Write(s.jobPath(j.ID), j)
 }
 
 // readJob reads a job from disk.

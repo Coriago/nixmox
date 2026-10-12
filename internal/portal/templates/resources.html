@@ -1,0 +1,11 @@
+{{define "resources"}}{{with .Detail.Host.Resources}}
+<div class="metrics">
+ <article><span>CPU utilization</span><strong>{{printf "%.1f" .CPUPercent}}%</strong><progress max="100" value="{{.CPUPercent}}"></progress><small>{{.CPUCount}} cores · {{.CPUModel}}</small></article>
+ <article><span>Memory available</span><strong>{{bytes .MemoryAvailable}}</strong><small>of {{bytes .MemoryTotal}} total</small></article>
+ <article><span>System load</span><strong class="load">{{.Load}}</strong><small>1 / 5 / 15 minute averages, running tasks, last PID</small></article>
+</div>
+<h2>Network interfaces</h2>
+<div class="table-scroll"><table><thead><tr><th>Interface</th><th>Status</th><th>Addresses</th><th>MAC</th><th>Received / sent</th></tr></thead><tbody>{{range .Interfaces}}<tr><td>{{.Name}}</td><td><span class="badge">{{.Status}}</span></td><td>{{range .Addresses}}<div>{{.}}</div>{{end}}</td><td>{{.MAC}}</td><td>{{bytes .RXBytes}} / {{bytes .TXBytes}}</td></tr>{{else}}<tr><td colspan="5">No interface data available</td></tr>{{end}}</tbody></table></div>
+<h2>Disks & partitions</h2>
+<div class="table-scroll"><table><thead><tr><th>Device</th><th>Type</th><th>Size</th><th>Mount points</th></tr></thead><tbody>{{range .Drives}}<tr><td>/dev/{{.Name}}</td><td>{{if .Partition}}Partition{{else}}Block device{{end}}</td><td>{{bytes .Size}}</td><td>{{range .Mounts}}{{.}} {{else}}—{{end}}</td></tr>{{else}}<tr><td colspan="4">No block-device data available</td></tr>{{end}}</tbody></table></div>
+{{end}}{{end}}

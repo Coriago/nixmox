@@ -24,8 +24,9 @@ type Runtime struct {
 	Switch    *SwitchingRecordStore
 	payloadFn func() HostPayload
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	stopped bool
 }
 
 func NewRuntime(view *View, sw *SwitchingRecordStore, payloadFn func() HostPayload) *Runtime {
@@ -35,15 +36,19 @@ func NewRuntime(view *View, sw *SwitchingRecordStore, payloadFn func() HostPaylo
 func (rt *Runtime) Rearm(ctx context.Context, emb *natsx.EmbeddedServer) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	if rt.stopped || ctx.Err() != nil {
+		return
+	}
 
 	if rt.cancel != nil {
 		rt.cancel()
 		rt.cancel = nil
 	}
+	rt.Switch.SetRemote(nil)
 	if emb == nil {
 		return
 	}
-	rtCtx, cancel := context.WithCancel(context.Background())
+	rtCtx, cancel := context.WithCancel(ctx)
 	rt.cancel = cancel
 
 	hostsKV, err := natsx.EnsureKV(ctx, emb.JS, "hosts", natsx.BucketConfig{TTL: hostsBucketTTL})
@@ -59,6 +64,29 @@ func (rt *Runtime) Rearm(ctx context.Context, emb *natsx.EmbeddedServer) {
 
 	hb := NewHeartbeater(hostsKV, rt.payloadFn().NodeID, heartbeatEvery, rt.payloadFn)
 	go hb.Run(rtCtx)
+	go func() {
+		scaler := ReplicaScaler{Buckets: []string{"hosts", "applylog"}, PeerCount: func() int {
+			n := 0
+			for _, h := range rt.View.List() {
+				if h.Online {
+					n++
+				}
+			}
+			return n
+		}, Scale: func(ctx context.Context, bucket string, n int) error {
+			return natsx.ScaleReplicas(ctx, emb.JS, bucket, n)
+		}}
+		tick := time.NewTicker(replicaScanEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-rtCtx.Done():
+				return
+			case <-tick.C:
+				scaler.Check(rtCtx)
+			}
+		}
+	}()
 	if err := WatchHosts(rtCtx, hostsKV, rt.View); err != nil {
 		log.Printf("cluster runtime: watch hosts: %v", err)
 	}
@@ -68,6 +96,8 @@ func (rt *Runtime) Rearm(ctx context.Context, emb *natsx.EmbeddedServer) {
 
 func (rt *Runtime) Stop() {
 	rt.mu.Lock()
+	rt.stopped = true
+	rt.Switch.SetRemote(nil)
 	defer rt.mu.Unlock()
 	if rt.cancel != nil {
 		rt.cancel()

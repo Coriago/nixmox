@@ -70,7 +70,7 @@ func (m *Manager) Apply(ctx context.Context) (jobs.Job, error) {
 	if sha == "" {
 		return jobs.Job{}, fmt.Errorf("nothing pulled yet — pull the gitops repo first")
 	}
-	args := []string{"--flake", m.repoDir + "#" + m.nodeID}
+	args := []string{"--impure", "--flake", "git+file://" + m.repoDir + "?rev=" + sha + "#" + m.nodeID}
 	return m.startJob(ctx, "apply", args, sha)
 }
 
@@ -83,16 +83,24 @@ func (m *Manager) Rollback(ctx context.Context) (jobs.Job, error) {
 	if ok {
 		sha = latest.GitSHA
 	}
-	return m.startJob(ctx, "rollback", []string{"--rollback"}, sha)
+	// Rollback uses existing generations; do not evaluate an unrelated
+	// /etc/nixos configuration merely to rebuild nixos-rebuild itself.
+	return m.startJob(ctx, "rollback", []string{"--rollback", "--no-reexec"}, sha)
 }
 
 // OnNewSHA is the gitops poller callback: auto-apply when enabled.
-func (m *Manager) OnNewSHA(sha string) {
+func (m *Manager) OnNewSHA(sha string) { m.OnNewSHAContext(context.Background(), sha) }
+
+func (m *Manager) OnNewSHAContext(ctx context.Context, sha string) {
 	log.Printf("gitops: update available (%s)", sha)
 	if !m.cfg.AutoApply {
 		return
 	}
-	if _, err := m.Apply(context.Background()); err != nil {
+	if _, err := m.git.Ensure(ctx); err != nil {
+		log.Printf("auto-apply pull: %v", err)
+		return
+	}
+	if _, err := m.Apply(ctx); err != nil {
 		log.Printf("auto-apply: %v", err)
 	}
 }
@@ -121,27 +129,8 @@ func (m *Manager) HandleTerminal(j jobs.Job) {
 }
 
 func (m *Manager) startJob(ctx context.Context, kind string, args []string, sha string) (jobs.Job, error) {
-	now := time.Now().Truncate(time.Millisecond)
-	j := jobs.Job{
-		ID:        fmt.Sprintf("job-%d", now.UnixNano()),
-		Kind:      kind,
-		Host:      m.nodeID,
-		Args:      args,
-		Mode:      m.cfg.ApplyMode,
-		State:     "pending",
-		CreatedAt: now,
-		UpdatedAt: now,
-		GitSHA:    sha,
-		GenBefore: LatestGeneration(m.profilesDir),
-	}
-	if err := m.store.Create(j); err != nil {
-		return jobs.Job{}, err
-	}
-	j, _ = m.store.Get(j.ID)
-	// Jobs are daemon-scoped, not request-scoped: a request context would
-	// cancel the moment the HTTP response is written, killing the job.
-	if err := m.runner.Start(context.Background(), j); err != nil {
-		return jobs.Job{}, err
-	}
-	return j, nil
+	return m.runner.Submit(jobs.Job{
+		Kind: kind, Host: m.nodeID, Args: args, Mode: m.cfg.ApplyMode,
+		GitSHA: sha, GenBefore: LatestGeneration(m.profilesDir),
+	})
 }

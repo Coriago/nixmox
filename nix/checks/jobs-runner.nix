@@ -12,7 +12,7 @@ pkgs.testers.runNixOSTest {
 
     services.nixmox = {
       enable = true;
-      package = self.packages.${pkgs.system}.default;
+      package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
     };
   };
 

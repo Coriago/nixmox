@@ -29,7 +29,7 @@ type RecordStore interface {
 
 // LocalRecordStore keeps per-node apply history as JSONL under
 // {dataDir}/applylog/<nodeID>.jsonl, pruned to the last applyLogKeep entries.
-// M5 replaces this with a KV-backed store implementing the same interface.
+// SwitchingRecordStore mirrors local records to a KV-backed implementation.
 type LocalRecordStore struct {
 	dir string
 	mu  sync.Mutex

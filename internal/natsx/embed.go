@@ -5,6 +5,8 @@ package natsx
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/url"
@@ -25,9 +27,11 @@ type ClusterSpec struct {
 }
 
 type EmbeddedServer struct {
-	Srv *server.Server
-	NC  *nats.Conn
-	JS  jetstream.JetStream
+	options server.Options
+	Srv     *server.Server
+	NC      *nats.Conn
+	JS      jetstream.JetStream
+	Sys     *nats.Conn
 }
 
 // NewOptions builds server.Options. ClientPort listens on 127.0.0.1 (local
@@ -75,6 +79,17 @@ func NewOptions(serverName string, clientPort, clusterPort int, clusterHost, dat
 }
 
 func Start(opts server.Options) (*EmbeddedServer, error) {
+	// System-account credentials are ephemeral and only used on loopback.
+	var secret [32]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		return nil, err
+	}
+	password := hex.EncodeToString(secret[:])
+	sys := server.NewAccount("$SYS")
+	opts.Accounts = append(opts.Accounts, sys)
+	opts.SystemAccount = "$SYS"
+	opts.Users = []*server.User{{Username: "nixmox-system", Password: password, Account: sys}, {Username: "nixmox-local"}}
+	opts.NoAuthUser = "nixmox-local"
 	srv, err := server.NewServer(&opts)
 	if err != nil {
 		return nil, fmt.Errorf("new nats server: %w", err)
@@ -99,27 +114,43 @@ func Start(opts server.Options) (*EmbeddedServer, error) {
 		srv.Shutdown()
 		return nil, fmt.Errorf("jetstream context: %w", err)
 	}
-	return &EmbeddedServer{Srv: srv, NC: nc, JS: js}, nil
+	system, err := nats.Connect(srv.ClientURL(), nats.UserInfo("nixmox-system", password))
+	if err != nil {
+		nc.Close()
+		srv.Shutdown()
+		return nil, err
+	}
+	return &EmbeddedServer{Srv: srv, NC: nc, JS: js, Sys: system, options: opts}, nil
 }
 
 // WaitReady polls until JetStream answers on this node — leader or follower.
 // (JetStreamIsLeader alone never becomes true on followers, so it cannot
 // gate readiness.) Meta-leader election takes ~4–9s on fresh clusters.
 func WaitReady(js jetstream.JetStream, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_, err := js.AccountInfo(ctx)
-		cancel()
+	return WaitReadyContext(context.Background(), js, timeout)
+}
+func WaitReadyContext(parent context.Context, js jetstream.JetStream, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	for {
+		attempt, stop := context.WithTimeout(ctx, 2*time.Second)
+		_, err := js.AccountInfo(attempt)
+		stop()
 		if err == nil {
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("jetstream readiness: %w", ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
-	return fmt.Errorf("jetstream not ready within %s", timeout)
 }
 
 func (e *EmbeddedServer) Stop() {
+	if e.Sys != nil {
+		e.Sys.Close()
+	}
 	if e.NC != nil {
 		e.NC.Close()
 	}

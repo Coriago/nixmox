@@ -1,10 +1,14 @@
+// Package portal renders server-owned HTML; streaming reuses the same fragments.
 package portal
 
 import (
+	"bytes"
 	"embed"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
+
 	"nixmox/internal/cluster"
 	"nixmox/internal/gitops"
 	"nixmox/internal/hostinfo"
@@ -15,19 +19,9 @@ import (
 var embeddedFS embed.FS
 
 type Portal struct {
-	portalTmpl     *template.Template
-	jobsTmpl       *template.Template
-	gitopsTmpl     *template.Template
-	hostDetailTmpl *template.Template
-	jobDetailTmpl  *template.Template
-	setupTmpl      *template.Template
-	fs             fs.FS
-
+	pages    map[string]*template.Template
 	Hostname string
 }
-
-// PageData is the unified template context for every page; base.html relies on
-// Hostname being present regardless of which page is rendered.
 type PageData struct {
 	Hostname string
 	Cluster  cluster.ClusterState
@@ -37,14 +31,11 @@ type PageData struct {
 	Detail   *HostDetailView
 	Job      *JobDetailView
 }
-
-// HostRow pairs a host with its latest apply record (nil = never applied).
 type HostRow struct {
 	Host   hostinfo.HostInfo
 	Latest *cluster.Record
 	Online bool
 }
-
 type HostDetailView struct {
 	NodeID      string
 	Host        hostinfo.HostInfo
@@ -54,12 +45,10 @@ type HostDetailView struct {
 	RecentLog   []string
 	LocalLogs   bool
 }
-
 type JobDetailView struct {
 	Job jobs.Job
 	Log []string
 }
-
 type GitOpsView struct {
 	State            gitops.State
 	PollInterval     int
@@ -74,100 +63,85 @@ func shortSHA(s string) string {
 	}
 	return s
 }
+func bytesLabel(n uint64) string {
+	v := float64(n)
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	return fmt.Sprintf("%.1f %s", v, units[i])
+}
 
-var tmplFuncs = template.FuncMap{"shortsha": shortSHA}
+var tmplFuncs = template.FuncMap{"shortsha": shortSHA, "bytes": bytesLabel}
 
 func parsePage(pages ...string) (*template.Template, error) {
-	files := append([]string{"templates/base.html"}, pages...)
-	return template.New("").Funcs(tmplFuncs).ParseFS(embeddedFS, files...)
+	return template.New("").Funcs(tmplFuncs).ParseFS(embeddedFS, append([]string{"templates/base.html", "templates/resources.html"}, pages...)...)
 }
-
 func New() (*Portal, error) {
-	portalTmpl, err := parsePage("templates/portal.html")
-	if err != nil {
-		return nil, err
+	p := &Portal{pages: map[string]*template.Template{}}
+	for _, name := range []string{"portal", "jobs", "gitops", "host-detail", "job-detail", "setup", "manage"} {
+		t, err := parsePage("templates/" + name + ".html")
+		if err != nil {
+			return nil, err
+		}
+		p.pages[name] = t
 	}
-	jobsTmpl, err := parsePage("templates/jobs.html")
-	if err != nil {
-		return nil, err
-	}
-	gitopsTmpl, err := parsePage("templates/gitops.html")
-	if err != nil {
-		return nil, err
-	}
-	hostDetailTmpl, err := parsePage("templates/host-detail.html")
-	if err != nil {
-		return nil, err
-	}
-	setupTmpl, err := parsePage("templates/setup.html")
-	if err != nil {
-		return nil, err
-	}
-	jobDetailTmpl, err := parsePage("templates/job-detail.html")
-	if err != nil {
-		return nil, err
-	}
-	return &Portal{
-		portalTmpl:     portalTmpl,
-		jobsTmpl:       jobsTmpl,
-		gitopsTmpl:     gitopsTmpl,
-		hostDetailTmpl: hostDetailTmpl,
-		setupTmpl:      setupTmpl,
-		jobDetailTmpl:  jobDetailTmpl,
-		fs:             embeddedFS,
-	}, nil
+	return p, nil
 }
-
-// Index renders the setup screen while unclustered, the hosts table once clustered.
-func (p *Portal) Index(w http.ResponseWriter, rows []HostRow, state cluster.ClusterState) {
-	data := PageData{Hostname: p.Hostname, Hosts: rows, Cluster: state}
-	if state.Status == "clustered" {
-		p.portalTmpl.ExecuteTemplate(w, "portal.html", data)
+func (p *Portal) render(w http.ResponseWriter, page, fragment string, data PageData) {
+	data.Hostname = p.Hostname
+	var b bytes.Buffer
+	if err := p.pages[page].ExecuteTemplate(&b, fragment, data); err != nil {
+		http.Error(w, "render page: "+err.Error(), 500)
 		return
 	}
-	p.setupTmpl.ExecuteTemplate(w, "setup.html", data)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(b.Bytes())
 }
-
+func (p *Portal) Index(w http.ResponseWriter, rows []HostRow, state cluster.ClusterState) {
+	page := "portal"
+	if state.Status != "clustered" {
+		page = "setup"
+	}
+	p.render(w, page, page+".html", PageData{Hosts: rows, Cluster: state})
+}
 func (p *Portal) HostsPartial(w http.ResponseWriter, rows []HostRow) {
-	p.portalTmpl.ExecuteTemplate(w, "hosts_partial", PageData{Hostname: p.Hostname, Hosts: rows})
+	p.render(w, "portal", "hosts_partial", PageData{Hosts: rows})
 }
-
 func (p *Portal) Jobs(w http.ResponseWriter, list []jobs.Job) {
-	p.jobsTmpl.ExecuteTemplate(w, "jobs.html", PageData{Hostname: p.Hostname, Jobs: list})
+	p.render(w, "jobs", "jobs.html", PageData{Jobs: list})
 }
-
 func (p *Portal) JobsPartial(w http.ResponseWriter, list []jobs.Job) {
-	p.jobsTmpl.ExecuteTemplate(w, "jobs_partial", PageData{Hostname: p.Hostname, Jobs: list})
+	p.render(w, "jobs", "jobs_partial", PageData{Jobs: list})
 }
-
-func (p *Portal) GitOps(w http.ResponseWriter, view GitOpsView) {
-	p.gitopsTmpl.ExecuteTemplate(w, "gitops.html", PageData{Hostname: p.Hostname, GitOps: &view})
+func (p *Portal) GitOps(w http.ResponseWriter, v GitOpsView) {
+	p.render(w, "gitops", "gitops.html", PageData{GitOps: &v})
 }
-
-func (p *Portal) GitOpsPartial(w http.ResponseWriter, view GitOpsView) {
-	p.gitopsTmpl.ExecuteTemplate(w, "gitops_partial", PageData{Hostname: p.Hostname, GitOps: &view})
+func (p *Portal) GitOpsPartial(w http.ResponseWriter, v GitOpsView) {
+	p.render(w, "gitops", "gitops_partial", PageData{GitOps: &v})
 }
-
-func (p *Portal) HostDetail(w http.ResponseWriter, view HostDetailView) {
-	p.hostDetailTmpl.ExecuteTemplate(w, "host-detail.html", PageData{Hostname: p.Hostname, Detail: &view})
+func (p *Portal) HostDetail(w http.ResponseWriter, v HostDetailView) {
+	p.render(w, "host-detail", "host-detail.html", PageData{Detail: &v})
 }
-
-func (p *Portal) HostDetailPartial(w http.ResponseWriter, view HostDetailView) {
-	p.hostDetailTmpl.ExecuteTemplate(w, "applylog_partial", PageData{Hostname: p.Hostname, Detail: &view})
+func (p *Portal) HostDetailPartial(w http.ResponseWriter, v HostDetailView) {
+	p.render(w, "host-detail", "applylog_partial", PageData{Detail: &v})
 }
-
-func (p *Portal) HostJobLogPartial(w http.ResponseWriter, view HostDetailView) {
-	p.hostDetailTmpl.ExecuteTemplate(w, "hostjoblog_partial", PageData{Hostname: p.Hostname, Detail: &view})
+func (p *Portal) HostJobLogPartial(w http.ResponseWriter, v HostDetailView) {
+	p.render(w, "host-detail", "hostjoblog_partial", PageData{Detail: &v})
 }
-
-func (p *Portal) JobDetail(w http.ResponseWriter, view JobDetailView) {
-	p.jobDetailTmpl.ExecuteTemplate(w, "job-detail.html", PageData{Hostname: p.Hostname, Job: &view})
+func (p *Portal) JobDetail(w http.ResponseWriter, v JobDetailView) {
+	p.render(w, "job-detail", "job-detail.html", PageData{Job: &v})
 }
-
-func (p *Portal) JobLogPartial(w http.ResponseWriter, view JobDetailView) {
-	p.jobDetailTmpl.ExecuteTemplate(w, "joblog_partial", PageData{Hostname: p.Hostname, Job: &view})
+func (p *Portal) JobLogPartial(w http.ResponseWriter, v JobDetailView) {
+	p.render(w, "job-detail", "joblog_partial", PageData{Job: &v})
 }
-
+func (p *Portal) Resources(w http.ResponseWriter, h hostinfo.HostInfo) {
+	p.render(w, "host-detail", "resources", PageData{Detail: &HostDetailView{Host: h}})
+}
+func (p *Portal) Manage(w http.ResponseWriter) { p.render(w, "manage", "manage.html", PageData{}) }
 func (p *Portal) AssetsHandler() http.Handler {
-	return http.FileServer(http.FS(p.fs))
+	assets, _ := fs.Sub(embeddedFS, "assets")
+	return http.StripPrefix("/assets/", http.FileServer(http.FS(assets)))
 }
