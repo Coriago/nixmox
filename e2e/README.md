@@ -11,6 +11,10 @@ revision. Keep this folder inside the repository; copying only `e2e/` loses that
 parent input. Use a recent Nix with relative flake input support (the VM's pinned
 Nix supports this).
 
+The demo uses QEMU direct kernel boot, so its shared module disables GRUB
+installation onto the unpartitioned VM root disk. This fixture tests live `switch`
+activation; it does not claim that a reboot will boot the newly built kernel.
+
 The shared VM module preserves the demo hostname, cluster interface, filesystem
 and console when switching. The deployed configuration additionally installs:
 

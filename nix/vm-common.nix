@@ -7,6 +7,10 @@ let
   ip = "192.168.42.${toString index}";
 in
 {
+  # These demo VMs boot the kernel supplied by QEMU. Their root disks have no
+  # BIOS boot partition, so switching must not try to install GRUB onto them.
+  boot.loader.grub.enable = false;
+
   networking.hostName = name;
 
   networking.useDHCP = true;
