@@ -125,16 +125,17 @@
         };
       };
 
-      apps.${system}.github-e2e = {
-        type = "app";
-        meta.description = "Boot a disposable VM and apply the e2e flake pulled from GitHub main";
-        program = "${self.packages.${system}.github-e2e}/bin/nixmox-github-e2e";
-      };
-
-      apps.${system}.demo = {
-        meta.description = "Run the three-node nixmox demo";
-        type = "app";
-        program = "${self.packages.${system}.demo}/bin/nixmox-demo";
+      apps.${system} = {
+        github-e2e = {
+          type = "app";
+          meta.description = "Boot a disposable VM and apply the e2e flake pulled from GitHub main";
+          program = "${self.packages.${system}.github-e2e}/bin/nixmox-github-e2e";
+        };
+        demo = {
+          meta.description = "Run the three-node nixmox demo";
+          type = "app";
+          program = "${self.packages.${system}.demo}/bin/nixmox-demo";
+        };
       };
     };
 }

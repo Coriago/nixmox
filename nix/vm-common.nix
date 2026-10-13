@@ -51,6 +51,8 @@ in
     # Seed only the bootstrap closure, rather than exposing the host's entire
     # Nix store to the guest's deployment build.
     virtualisation.useNixStoreImage = true;
+    virtualisation.writableStore = true;
+    virtualisation.writableStoreUseTmpfs = false;
     virtualisation.cores = 2;
     virtualisation.graphics = false;
   };

@@ -6,11 +6,19 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/nixmox-github-e2e.XXXXXX")
 api=http://127.0.0.1:8081
 vm_pid=
 cleanup() {
+  local result=$?
   if [[ -n "$vm_pid" ]]; then
+    if [[ "${NIXMOX_E2E_KEEP_ALIVE:-0}" == 1 ]] && kill -0 "$vm_pid" 2>/dev/null; then
+      echo "Test exit status: $result. VM retained for inspection at $api."
+      echo "SSH: ssh -p 2221 root@localhost (password: nixos). Stop it with: kill $vm_pid"
+      echo "E2E artifacts: $work"
+      wait "$vm_pid" || true
+    fi
     kill "$vm_pid" 2>/dev/null || true
     wait "$vm_pid" 2>/dev/null || true
   fi
   echo "E2E artifacts: $work"
+  return "$result"
 }
 trap cleanup EXIT
 
@@ -26,6 +34,7 @@ export NIX_DISK_IMAGE="$work/node1.qcow2"
   -netdev user,id=e2ecluster,net=192.168.42.0/24,restrict=on \
   -device virtio-net-pci,netdev=e2ecluster,mac=52:54:00:12:34:01 >"$work/console.log" 2>&1 &
 vm_pid=$!
+echo "VM PID: $vm_pid; portal: $api; artifacts: $work"
 
 request() { curl --fail-with-body --silent --show-error --max-time 30 "$@"; }
 for ((i=0; i<180; i++)); do

@@ -34,6 +34,16 @@ Then run from the repository root:
 nix run .#github-e2e
 ```
 
+To keep the VM running after success or failure for interactive inspection:
+
+```sh
+NIXMOX_E2E_KEEP_ALIVE=1 nix run .#github-e2e
+```
+
+The portal is at <http://localhost:8081>; SSH is `ssh -p 2221 root@localhost`
+with the demo password `nixos`. The runner prints its VM PID and log directory.
+Use the printed `kill` command to stop the retained VM.
+
 This boots a fresh local `node1` demo VM and uses its API to:
 
 1. Verify the bootstrap has neither the marker nor `hello`.
@@ -48,7 +58,8 @@ The runner requires KVM, Internet access and free local ports 8081/2221. It shut
 down its VM on completion and prints a unique `/tmp/nixmox-github-e2e.*` directory
 containing its disk, serial console, tested SHA, job responses/logs and history.
 The VM has 4 GiB RAM and a sparse 16 GiB disk; its read-only seed store contains
-only the bootstrap closure, not the host’s whole Nix store.
+only the bootstrap closure, not the host’s whole Nix store. A writable overlay
+on the guest disk stores downloads and locally built paths across daemon restarts.
 Builds can take up to an hour; errors fail the test and retain the artifacts.
 It is an opt-in `nix run` app because ordinary Nix build checks have no network.
 The existing offline checks remain useful lower-level regression tests.

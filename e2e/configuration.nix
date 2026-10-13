@@ -18,6 +18,8 @@
     memorySize = 4096;
     diskSize = 16384;
     useNixStoreImage = true;
+    writableStore = true;
+    writableStoreUseTmpfs = false;
     cores = 2;
     graphics = false;
   };
