@@ -14,6 +14,12 @@ import (
 
 // Job represents a single execution task.
 type Job struct {
+	Name      string    `json:"name,omitempty"`
+	Command   string    `json:"command,omitempty"`
+	Directory string    `json:"directory,omitempty"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+	ExitCode  *int      `json:"exit_code,omitempty"`
+	Error     string    `json:"error,omitempty"`
 	ID        string    `json:"id"`
 	Kind      string    `json:"kind"`
 	Host      string    `json:"host"`
@@ -145,10 +151,6 @@ func (s *fileStore) AppendLog(id string, line string) error {
 		return fmt.Errorf("open log file: %w", err)
 	}
 	defer f.Close()
-
-	if len(line) > 0 && line[len(line)-1] != '\n' {
-		line += "\n"
-	}
 
 	if _, err := f.WriteString(line); err != nil {
 		return fmt.Errorf("write log line: %w", err)

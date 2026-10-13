@@ -5,7 +5,9 @@ package apply
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -53,7 +55,7 @@ type Manager struct {
 }
 
 func NewManager(cfg *config.Config, git *gitops.Manager, records cluster.RecordStore, runner *jobs.Runner, store jobs.Store, nodeID string) *Manager {
-	return &Manager{
+	m := &Manager{
 		cfg:         cfg,
 		git:         git,
 		records:     records,
@@ -63,15 +65,50 @@ func NewManager(cfg *config.Config, git *gitops.Manager, records cluster.RecordS
 		repoDir:     cfg.DataDirPath("git", "repo"),
 		profilesDir: "/nix/var/nix/profiles",
 	}
+	for _, kind := range []string{"apply", "rollback", "dry-build"} {
+		runner.Register(kind, m.execute)
+	}
+	return m
+}
+
+func (m *Manager) execute(ctx context.Context, j *jobs.Job, out io.Writer) error {
+	if j.Kind != "rollback" && j.GitSHA == "" {
+		return fmt.Errorf("nothing pulled yet — pull the gitops repo first")
+	}
+	j.GenBefore = LatestGeneration(m.profilesDir)
+	if err := m.store.Update(*j); err != nil {
+		return err
+	}
+	mode := j.Mode
+	if j.Kind == "dry-build" {
+		mode = "dry-build"
+	}
+	err := jobs.RunCommand(ctx, j, out, "nixos-rebuild", append([]string{mode}, j.Args...)...)
+	j.GenAfter = LatestGeneration(m.profilesDir)
+	return err
 }
 
 func (m *Manager) Apply(ctx context.Context) (jobs.Job, error) {
+	return m.build(ctx, "apply")
+}
+
+func (m *Manager) DryBuild(ctx context.Context) (jobs.Job, error) {
+	return m.build(ctx, "dry-build")
+}
+
+func (m *Manager) build(ctx context.Context, kind string) (jobs.Job, error) {
 	sha := m.git.State().LastPulledSHA
-	if sha == "" {
-		return jobs.Job{}, fmt.Errorf("nothing pulled yet — pull the gitops repo first")
+	target := m.cfg.FlakeAttribute
+	if target == "" {
+		target = m.nodeID
 	}
-	args := []string{"--impure", "--flake", "git+file://" + m.repoDir + "?rev=" + sha + "#" + m.nodeID}
-	return m.startJob(ctx, "apply", args, sha)
+	query := url.Values{"rev": {sha}}
+	if m.cfg.FlakeDirectory != "" {
+		query.Set("dir", m.cfg.FlakeDirectory)
+	}
+	ref := url.URL{Scheme: "git+file", Path: m.repoDir, RawQuery: query.Encode(), Fragment: target}
+	args := []string{"--impure", "--no-reexec", "--flake", ref.String()}
+	return m.startJob(ctx, kind, args, sha)
 }
 
 func (m *Manager) Rollback(ctx context.Context) (jobs.Job, error) {
@@ -120,7 +157,7 @@ func (m *Manager) HandleTerminal(j jobs.Job) {
 		Status:    status,
 		GitSHA:    j.GitSHA,
 		GenBefore: j.GenBefore,
-		GenAfter:  LatestGeneration(m.profilesDir),
+		GenAfter:  j.GenAfter,
 		JobID:     j.ID,
 	}
 	if err := m.records.Record(m.nodeID, r); err != nil {

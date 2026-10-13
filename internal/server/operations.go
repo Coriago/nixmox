@@ -271,7 +271,7 @@ func (s *Server) provision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "valid SSH target, flake#host and exact target confirmation required", 400)
 		return
 	}
-	j, err := s.Runner.Submit(jobs.Job{Kind: "provision", Host: req.Target, Args: []string{"--flake", req.Flake, "--target-host", req.Target}})
+	j, err := s.Runner.Submit(jobs.Job{Kind: "provision", Host: s.Config.Hostname, Args: []string{"--flake", req.Flake, "--target-host", req.Target}})
 	if err != nil {
 		http.Error(w, err.Error(), 409)
 		return

@@ -13,6 +13,7 @@ in
   };
 
   options.services.nixmox = {
+    enableCustomTasks = mkEnableOption "custom command tasks on the trusted management network";
     enablePower = mkEnableOption "host power controls (trusted management network only)";
     enableProvision = mkEnableOption "destructive nixos-anywhere provisioning";
     discovery = mkEnableOption "untrusted LAN discovery advertisements";
@@ -76,6 +77,16 @@ in
     };
 
     gitops = {
+      flakeDirectory = mkOption {
+        type = types.str;
+        default = "";
+        description = "Relative directory containing flake.nix inside the Git repository. Empty selects its root.";
+      };
+      flakeAttribute = mkOption {
+        type = types.str;
+        default = "";
+        description = "nixosConfigurations attribute to apply. Empty selects the local hostname.";
+      };
       repoUrl = mkOption {
         type = types.str;
         default = "";
@@ -126,6 +137,9 @@ in
       environment = {
         NIXMOX_DATA_DIR = cfg.dataDir;
         NIXMOX_INPUTS_FILE = cfg.inputsFile;
+        NIXMOX_ENABLE_CUSTOM_TASKS = boolToString cfg.enableCustomTasks;
+        NIXMOX_FLAKE_DIRECTORY = cfg.gitops.flakeDirectory;
+        NIXMOX_FLAKE_ATTRIBUTE = cfg.gitops.flakeAttribute;
         NIXMOX_ENABLE_POWER = boolToString cfg.enablePower;
         NIXMOX_ENABLE_PROVISION = boolToString cfg.enableProvision;
         NIXMOX_DISCOVERY = boolToString cfg.discovery;

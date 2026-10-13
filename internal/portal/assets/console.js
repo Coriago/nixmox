@@ -125,6 +125,38 @@
       }
     });
   }
+  const taskHost = $("#task-host");
+  if (taskHost) {
+    const local = document.body.dataset.host;
+    const addHost = (id, online = true) => {
+      if (!id || [...taskHost.options].some(o => o.value === id)) return;
+      const option = new Option(id + (online ? "" : " (offline)"), id);
+      option.disabled = !online;
+      taskHost.add(option);
+    };
+    addHost(local);
+    request("/api/v1/hosts").then(hosts => hosts.forEach(h => addHost(h.node_id || h.hostname, h.online !== false))).catch(e => notice(e.message, true));
+    const taskPath = () => "/api/v1/hosts/" + encodeURIComponent(taskHost.value) + "/jobs";
+    const showJob = j => { location.href = "/hosts/" + encodeURIComponent(taskHost.value) + "/jobs/" + encodeURIComponent(j.id); };
+    $("#task-history").onclick = () => { location.href = "/hosts/" + encodeURIComponent(taskHost.value) + "/jobs"; };
+    $("#dry-build").onclick = async () => {
+      try { showJob(await request(taskPath(), "POST", {kind: "dry-build"})); }
+      catch(e) { notice(e.message, true); }
+    };
+    $("#custom-task").onsubmit = async e => {
+      e.preventDefault();
+      const button = e.target.querySelector("button");
+      button.disabled = true;
+      try {
+        const body = Object.fromEntries(new FormData(e.target));
+        body.kind = "command";
+        body.args = JSON.parse(body.args);
+        if (!Array.isArray(body.args) || body.args.some(a => typeof a !== "string")) throw new Error("Arguments must be a JSON array of strings");
+        showJob(await request(taskPath(), "POST", body));
+      } catch(e) { notice(e.message, true); }
+      finally { button.disabled = false; }
+    };
+  }
   async function discovery() {
     const list = $("#discovered");
     if (!list) return;

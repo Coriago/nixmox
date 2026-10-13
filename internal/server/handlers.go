@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	"nixmox/internal/hostinfo"
 	"nixmox/internal/jobs"
 	"nixmox/internal/portal"
@@ -56,98 +55,14 @@ func (s *Server) MountHandlers(p *portal.Portal, auth Middleware) {
 		json.NewEncoder(w).Encode(s.Cluster.State(count))
 	})
 
-	s.Mux.Get("/api/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		list, err := s.Store.List()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(list)
-	})
-
-	s.Mux.Get("/api/v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
-		job, err := s.Store.Get(id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":         job.ID,
-			"kind":       job.Kind,
-			"host":       job.Host,
-			"args":       job.Args,
-			"state":      job.State,
-			"created_at": job.CreatedAt,
-			"updated_at": job.UpdatedAt,
-			"log":        readLogTail(job, 100),
-		})
-	})
-
-	s.Mux.Post("/api/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Kind string   `json:"kind"`
-			Args []string `json:"args"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if req.Kind != "echo" && req.Kind != "dry-build" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "kind not supported"})
-			return
-		}
-
-		job, err := s.Runner.Submit(jobs.Job{Kind: req.Kind, Host: s.Config.Hostname, Args: req.Args})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"id": job.ID})
-	})
+	s.mountJobs(p)
 
 	s.Mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		p.Index(w, s.hostRows(), s.clusterState())
 	})
 
-	s.Mux.Get("/jobs", func(w http.ResponseWriter, r *http.Request) {
-		list, _ := s.Store.List()
-		p.Jobs(w, list)
-	})
-
 	s.Mux.Get("/partials/hosts", func(w http.ResponseWriter, r *http.Request) {
 		p.HostsPartial(w, s.hostRows())
-	})
-
-	s.Mux.Get("/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
-		job, err := s.Store.Get(chi.URLParam(r, "id"))
-		if err != nil {
-			http.Error(w, "unknown job", http.StatusNotFound)
-			return
-		}
-		p.JobDetail(w, portal.JobDetailView{Job: job, Log: readLogTail(job, 500)})
-	})
-
-	s.Mux.Get("/partials/jobs/{id}/log", func(w http.ResponseWriter, r *http.Request) {
-		job, err := s.Store.Get(chi.URLParam(r, "id"))
-		if err != nil {
-			http.Error(w, "unknown job", http.StatusNotFound)
-			return
-		}
-		p.JobLogPartial(w, portal.JobDetailView{Job: job, Log: readLogTail(job, 500)})
-	})
-
-	s.Mux.Get("/partials/jobs", func(w http.ResponseWriter, r *http.Request) {
-		list, _ := s.Store.List()
-		p.JobsPartial(w, list)
 	})
 
 	s.Mux.Handle("/assets/*", p.AssetsHandler())

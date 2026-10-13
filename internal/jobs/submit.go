@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// Submit is the single creation path for daemon-scoped tasks. A rejected task
-// is terminal, never an orphaned pending job. Start serializes work per host.
+// Submit persists a task before admitting it to the daemon-scoped FIFO queue.
 func (r *Runner) Submit(j Job) (Job, error) {
+	r.submitMu.Lock()
+	defer r.submitMu.Unlock()
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		return Job{}, err

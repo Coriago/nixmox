@@ -44,7 +44,7 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 		return err
 	}
 	runner := jobs.NewRunner(store)
-	defer runner.Stop()
+	defer runner.Shutdown()
 	git, err := GitOps(cfg)
 	if err != nil {
 		return err
@@ -56,6 +56,7 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	mirror := cluster.NewSwitchingRecordStore(records)
 	manager := apply.NewManager(cfg, git, mirror, runner, store, cfg.Hostname)
 	runner.OnTerminal = manager.HandleTerminal
+
 	clusterIP := cfg.AdvertiseAddr
 	if clusterIP == "" {
 		clusterIP = "127.0.0.1"
@@ -114,6 +115,9 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	srv.MountGitOps(p)
 	srv.MountApply(p)
 	srv.MountCluster(p)
+	if err := runner.Recover(); err != nil {
+		return err
+	}
 	if cfg.GitPollInterval > 0 {
 		poller := gitops.NewPoller(git, func(sha string) { manager.OnNewSHAContext(ctx, sha) })
 		spawn(func() {

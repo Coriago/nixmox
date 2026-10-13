@@ -6,6 +6,7 @@
         <tr><th>Kind</th><td>{{.Job.Kind}}</td></tr>
         <tr><th>Host</th><td>{{.Job.Host}}</td></tr>
         <tr><th>State</th><td><span class="badge state-{{.Job.State}}">{{.Job.State}}</span></td></tr>
+        <tr><th>Command</th><td><code>{{.Job.Command}}</code></td></tr>
         <tr><th>Args</th><td><code>{{range .Job.Args}}{{.}} {{end}}</code></td></tr>
         {{if .Job.GitSHA}}<tr><th>Git SHA</th><td>{{.Job.GitSHA}}</td></tr>{{end}}
         {{if .Job.GenBefore}}<tr><th>Generations</th><td>{{.Job.GenBefore}} → {{.Job.GenAfter}}</td></tr>{{end}}
@@ -14,14 +15,14 @@
     </table>
 
     <h2>Log</h2>
-    <pre class="log" hx-get="/partials/jobs/{{.Job.ID}}/log" hx-trigger="every 2s">{{template "joblog_partial" $}}</pre>
+    <div hx-get="/partials/hosts/{{.Job.Host}}/jobs/{{.Job.ID}}/log" hx-trigger="every 2s">{{template "joblog_partial" $}}</div>
 </div>
 {{end}}
 {{end}}
 
 {{define "joblog_partial"}}
-{{with .Job}}{{range .Log}}{{.}}
-{{else}}(no log output yet){{end}}{{end}}
+{{with .Job}}<p>State: <strong>{{.Job.State}}</strong>{{if .Job.ExitCode}} · Exit code: {{.Job.ExitCode}}{{end}}</p><pre class="log">{{range .Log}}{{.}}
+{{else}}(no log output yet){{end}}</pre>{{end}}
 {{end}}
 
 {{define "job-detail.html"}}

@@ -119,6 +119,20 @@ The NixOS module exposes these values as `config.nixmox-inputs`:
 
 Apply jobs pass `--impure` so Nix can read the local JSON. Pure/remote evaluation cannot see host-local inputs: provide defaults or explicitly distribute inputs in that workflow. Saving inputs does not automatically rebuild or immediately change hardware. **Do not put secrets in inputs**; evaluated values can enter the Nix store.
 
+## Live GitHub end-to-end test
+
+The separate [`e2e/`](e2e/README.md) flake provides real VM deployment
+configurations with a marker, an extra package, and an activation service.
+After committing and pushing the fixture and accompanying changes to GitHub
+`main`, run `nix run .#github-e2e`. It boots a fresh demo VM, pulls this repository,
+builds `e2e#node1` inside the guest, runs `switch`, and verifies the active system
+and job history. The runner records the exact Git SHA and retains logs.
+
+Set `services.nixmox.gitops.flakeDirectory` for a flake in a repository
+subdirectory and `gitops.flakeAttribute` when the configuration attribute differs
+from the hostname. YAML/environment equivalents are `flake_directory` /
+`NIXMOX_FLAKE_DIRECTORY` and `flake_attribute` / `NIXMOX_FLAKE_ATTRIBUTE`.
+
 ## Development and verification
 
 ```sh

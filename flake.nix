@@ -33,6 +33,12 @@
     {
       packages.${system} = {
         default = nixmox;
+        github-e2e = pkgs.writeShellApplication {
+          name = "nixmox-github-e2e";
+          runtimeInputs = [ pkgs.curl pkgs.jq pkgs.coreutils ];
+          runtimeEnv.NIXMOX_E2E_VM = self.nixosConfigurations.node1.config.system.build.vm;
+          text = builtins.readFile ./e2e/run.sh;
+        };
         demo = import ./nix/demo.nix { inherit pkgs self; };
         installer-iso = (self.lib.mkInstaller {
           inherit system;
@@ -117,6 +123,12 @@
             (import ./nix/vm-common.nix { name = "node3"; index = 3; package = nixmox; })
           ];
         };
+      };
+
+      apps.${system}.github-e2e = {
+        type = "app";
+        meta.description = "Boot a disposable VM and apply the e2e flake pulled from GitHub main";
+        program = "${self.packages.${system}.github-e2e}/bin/nixmox-github-e2e";
       };
 
       apps.${system}.demo = {

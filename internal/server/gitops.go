@@ -1,8 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"nixmox/internal/jobs"
 	"nixmox/internal/portal"
 	"strings"
 )
@@ -25,12 +29,26 @@ func isHTMX(r *http.Request) bool {
 }
 
 func (s *Server) MountGitOps(p *portal.Portal) {
+	s.Runner.Register("git-pull", func(ctx context.Context, j *jobs.Job, out io.Writer) error {
+		if s.Git == nil {
+			return fmt.Errorf("gitops not available")
+		}
+		fmt.Fprintln(out, "Pulling configured GitOps repository")
+		sha, err := s.Git.Ensure(ctx)
+		if err == nil {
+			j.GitSHA = sha
+			fmt.Fprintln(out, "Pulled", sha)
+		}
+		return err
+	})
 	s.Mux.Get("/api/v1/gitops", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		v := s.gitOpsView()
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"repo_url":           v.State.RepoURL,
 			"branch":             v.State.Branch,
+			"flake_directory":    s.Config.FlakeDirectory,
+			"flake_attribute":    s.Config.FlakeAttribute,
 			"last_pulled_sha":    v.State.LastPulledSHA,
 			"update_available":   v.State.UpdateAvailable,
 			"poll_interval":      v.PollInterval,
@@ -87,17 +105,12 @@ func (s *Server) MountGitOps(p *portal.Portal) {
 			http.Error(w, "gitops not available", http.StatusServiceUnavailable)
 			return
 		}
-		sha, err := s.Git.Ensure(r.Context())
+		j, err := s.Runner.Submit(jobs.Job{Kind: "git-pull", Host: s.Config.Hostname})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, err.Error(), 503)
 			return
 		}
-		if isHTMX(r) {
-			p.GitOpsPartial(w, s.gitOpsView())
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"last_pulled_sha": sha})
+		respond(w, 202, j)
 	})
 
 	s.Mux.Get("/gitops", func(w http.ResponseWriter, r *http.Request) {

@@ -1,152 +1,227 @@
 package jobs
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
+	"sort"
 	"sync"
+	"syscall"
 	"time"
 )
 
-// ErrHostBusy is returned when a job is already running for the host.
-var ErrHostBusy = errors.New("host is busy")
+// Action runs within the host queue. It may enrich the persisted job metadata.
+// Register actions at composition time; transports only validate and submit jobs.
+type Action func(context.Context, *Job, io.Writer) error
 
-// Runner executes jobs in goroutines.
+type queuedJob struct {
+	ctx context.Context
+	job Job
+}
+
 type Runner struct {
 	store      Store
-	mu         sync.Map
+	mu         sync.Mutex
+	submitMu   sync.Mutex
+	queues     map[string][]queuedJob
+	actions    map[string]Action
 	wg         sync.WaitGroup
-	OnTerminal func(job Job)
+	ctx        context.Context
+	cancel     context.CancelFunc
+	closed     bool
+	OnTerminal func(Job)
 }
 
-// NewRunner creates a new job runner.
 func NewRunner(store Store) *Runner {
-	return &Runner{
-		store:      store,
-		OnTerminal: func(job Job) {},
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Runner{store: store, queues: make(map[string][]queuedJob), actions: make(map[string]Action), ctx: ctx, cancel: cancel, OnTerminal: func(Job) {}}
+	for kind, command := range map[string]string{"echo": "echo", "shutdown": "shutdown", "reboot": "shutdown", "provision": "nixos-anywhere"} {
+		r.Register(kind, Command(command))
+	}
+	r.Register("command", func(ctx context.Context, j *Job, out io.Writer) error {
+		if j.Command == "" {
+			return fmt.Errorf("command is required")
+		}
+		return RunCommand(ctx, j, out, j.Command, j.Args...)
+	})
+	for _, kind := range []string{"apply", "rollback", "dry-build"} {
+		r.Register(kind, func(ctx context.Context, j *Job, out io.Writer) error {
+			mode := j.Mode
+			if j.Kind == "dry-build" {
+				mode = "dry-build"
+			}
+			if mode == "" {
+				mode = "switch"
+			}
+			return RunCommand(ctx, j, out, "nixos-rebuild", append([]string{mode}, j.Args...)...)
+		})
+	}
+	return r
+}
+
+func (r *Runner) Register(kind string, action Action) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.actions[kind] = action
+}
+
+func Command(command string) Action {
+	return func(ctx context.Context, j *Job, out io.Writer) error {
+		return RunCommand(ctx, j, out, command, j.Args...)
 	}
 }
 
-// Start begins execution of a job in a goroutine.
+// RunCommand is shared by built-in and custom actions. No shell is implicit.
+// A process group ensures cancellation reaches child processes as well.
+func RunCommand(ctx context.Context, j *Job, out io.Writer, command string, args ...string) error {
+	fmt.Fprintf(out, "$ %s %q\n", command, args)
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Dir = j.Directory
+	cmd.Stdout, cmd.Stderr = out, out
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		code = -1
+		var e *exec.ExitError
+		if errors.As(err, &e) {
+			code = e.ExitCode()
+		}
+	}
+	j.ExitCode = &code
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+// Start enqueues a persisted job. Each host has one FIFO worker.
 func (r *Runner) Start(ctx context.Context, j Job) error {
-	v, _ := r.mu.LoadOrStore(j.Host, &sync.Mutex{})
-	hostMu := v.(*sync.Mutex)
-
-	if !hostMu.TryLock() {
-		return ErrHostBusy
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return fmt.Errorf("runner is shutting down")
 	}
-
-	j.State = "building"
-	j.UpdatedAt = time.Now().Truncate(time.Millisecond)
-	if err := r.store.Update(j); err != nil {
-		hostMu.Unlock()
-		return fmt.Errorf("update job state: %w", err)
+	_, running := r.queues[j.Host]
+	r.queues[j.Host] = append(r.queues[j.Host], queuedJob{ctx, j})
+	if !running {
+		r.wg.Add(1)
+		go r.drain(j.Host)
 	}
-
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
-		defer hostMu.Unlock()
-
-		r.run(ctx, j)
-	}()
-
 	return nil
 }
 
-func (r *Runner) run(ctx context.Context, j Job) {
-	var cmd *exec.Cmd
-	switch j.Kind {
-	case "echo":
-		cmd = exec.CommandContext(ctx, "echo", j.Args...)
-	case "dry-build":
-		cmd = exec.CommandContext(ctx, "nixos-rebuild", append([]string{"dry-build"}, j.Args...)...)
-	case "shutdown", "reboot":
-		cmd = exec.CommandContext(ctx, "shutdown", j.Args...)
-	case "provision":
-		cmd = exec.CommandContext(ctx, "nixos-anywhere", j.Args...)
-	case "apply", "rollback":
-		mode := j.Mode
-		if mode == "" {
-			mode = "switch"
+func (r *Runner) drain(host string) {
+	defer r.wg.Done()
+	for {
+		r.mu.Lock()
+		queue := r.queues[host]
+		if len(queue) == 0 || r.closed {
+			delete(r.queues, host)
+			r.mu.Unlock()
+			return
 		}
-		cmd = exec.CommandContext(ctx, "nixos-rebuild", append([]string{mode}, j.Args...)...)
-	default:
-		r.failJob(j, fmt.Errorf("unknown job kind: %s", j.Kind))
-		return
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		r.failJob(j, fmt.Errorf("stdout pipe: %w", err))
-		return
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		r.failJob(j, fmt.Errorf("stderr pipe: %w", err))
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		r.failJob(j, fmt.Errorf("start command: %w", err))
-		return
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		r.streamLog(j.ID, stdout)
-	}()
-
-	go func() {
-		defer wg.Done()
-		r.streamLog(j.ID, stderr)
-	}()
-
-	wg.Wait()
-
-	err = cmd.Wait()
-	if err != nil {
-		if ctx.Err() != nil {
-			r.store.AppendLog(j.ID, "context canceled\n")
+		next := queue[0]
+		r.queues[host] = queue[1:]
+		action := r.actions[next.job.Kind]
+		r.mu.Unlock()
+		ctx, cancel := context.WithCancel(r.ctx)
+		stop := context.AfterFunc(next.ctx, cancel)
+		if next.ctx.Err() != nil {
+			cancel()
 		}
+		r.run(ctx, next.job, action)
+		stop()
+		cancel()
+	}
+}
+
+type jobWriter struct {
+	store Store
+	id    string
+}
+
+func (w jobWriter) Write(p []byte) (int, error) {
+	if err := w.store.AppendLog(w.id, string(p)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (r *Runner) run(ctx context.Context, j Job, action Action) {
+	j.State = "building"
+	j.StartedAt = time.Now().UTC()
+	j.UpdatedAt = j.StartedAt
+	if err := r.store.Update(j); err != nil {
+		r.failJob(j, fmt.Errorf("persist running state: %w", err))
+		return
+	}
+	var err error
+	if action == nil {
+		err = fmt.Errorf("unknown job kind: %s", j.Kind)
+	} else {
+		err = action(ctx, &j, jobWriter{r.store, j.ID})
+	}
+	if err != nil {
 		r.failJob(j, err)
 		return
 	}
-
 	j.State = "applied"
-	j.UpdatedAt = time.Now().Truncate(time.Millisecond)
-	r.store.Update(j)
-	r.OnTerminal(j)
-}
-
-func (r *Runner) streamLog(id string, rdr io.Reader) {
-	scanner := bufio.NewScanner(rdr)
-	scanner.Buffer(make([]byte, 4096), 1<<20)
-	for scanner.Scan() {
-		r.store.AppendLog(id, scanner.Text()+"\n")
-	}
-	if err := scanner.Err(); err != nil {
-		r.store.AppendLog(id, "log stream truncated: "+err.Error()+"\n")
-		_, _ = io.Copy(io.Discard, rdr)
-	}
+	r.finish(j)
 }
 
 func (r *Runner) failJob(j Job, err error) {
-	r.store.AppendLog(j.ID, err.Error()+"\n")
+	j.Error = err.Error()
+	if e := r.store.AppendLog(j.ID, "\n"+err.Error()+"\n"); e != nil {
+		log.Printf("job %s log: %v", j.ID, e)
+	}
 	j.State = "failed"
-	j.UpdatedAt = time.Now().Truncate(time.Millisecond)
-	r.store.Update(j)
+	r.finish(j)
+}
+func (r *Runner) finish(j Job) {
+	j.UpdatedAt = time.Now().UTC()
+	if err := r.store.Update(j); err != nil {
+		log.Printf("job %s persist terminal state: %v", j.ID, err)
+		return
+	}
+	log.Printf("job %s (%s on %s): %s %s", j.ID, j.Kind, j.Host, j.State, j.Error)
 	r.OnTerminal(j)
 }
 
-// Stop waits for all running jobs to finish.
-func (r *Runner) Stop() {
+// Recover resumes only jobs that never started. Interrupted commands are never
+// retried automatically because their external effects may already have occurred.
+func (r *Runner) Recover() error {
+	list, err := r.store.List()
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(list, func(i, j int) bool { return list[i].CreatedAt.Before(list[j].CreatedAt) })
+	for _, j := range list {
+		switch j.State {
+		case "building", "applying":
+			r.failJob(j, fmt.Errorf("daemon interrupted this job; inspect effects before retrying"))
+		case "pending":
+			if err := r.Start(context.Background(), j); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Stop waits for the queue to drain (used by batch callers and tests).
+func (r *Runner) Stop() { r.wg.Wait() }
+
+// Shutdown cancels running commands and leaves pending jobs durable for restart.
+func (r *Runner) Shutdown() {
+	r.mu.Lock()
+	r.closed = true
+	r.cancel()
+	r.mu.Unlock()
 	r.wg.Wait()
 }

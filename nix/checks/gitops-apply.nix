@@ -89,7 +89,7 @@ pkgs.testers.runNixOSTest {
         timeout=60,
     )
     machine.succeed("curl -sf localhost:8080/api/v1/gitops/preview | jq -e '.files | contains(\"flake.nix\")'")
-    machine.succeed("curl -sf -XPOST localhost:8080/api/v1/gitops/pull")
+    run_job("gitops/pull")
     run_job("apply")
     machine.succeed("test $(readlink -f /nix/var/nix/profiles/system) = ${v2}")
     run_job("rollback")

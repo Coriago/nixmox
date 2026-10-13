@@ -45,6 +45,7 @@ func newGitOpsTestServer(t *testing.T, cfg *config.Config, fake *fakeGitOps) *Se
 		t.Fatalf("NewFileStore: %v", err)
 	}
 	s := New(cfg, store, jobs.NewRunner(store))
+	t.Cleanup(s.Runner.Stop)
 	s.SetGitOps(fake)
 	p, err := portal.New()
 	if err != nil {
@@ -102,17 +103,21 @@ func TestGitOpsEndpoints(t *testing.T) {
 		}
 	})
 
-	t.Run("pull returns new sha", func(t *testing.T) {
+	t.Run("pull is recorded as a job", func(t *testing.T) {
 		s := newGitOpsTestServer(t, &config.Config{}, fake)
 		rr := httptest.NewRecorder()
 		s.Mux.ServeHTTP(rr, httptest.NewRequest("POST", "/api/v1/gitops/pull", nil))
-		if rr.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d", rr.Code)
+		if rr.Code != 202 {
+			t.Fatal(rr.Code, rr.Body.String())
 		}
-		var resp map[string]string
-		json.NewDecoder(rr.Body).Decode(&resp)
-		if resp["last_pulled_sha"] != "abc123" {
-			t.Errorf("expected abc123, got %v", resp)
+		var j jobs.Job
+		if err := json.Unmarshal(rr.Body.Bytes(), &j); err != nil {
+			t.Fatal(err)
+		}
+		s.Runner.Stop()
+		got, err := s.Store.Get(j.ID)
+		if err != nil || got.State != "applied" || got.GitSHA != "abc123" {
+			t.Fatal(got, err)
 		}
 	})
 

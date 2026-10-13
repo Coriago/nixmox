@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -80,24 +79,6 @@ func TestRunner(t *testing.T) {
 		if !terminalFired {
 			t.Error("OnTerminal not fired")
 		}
-	})
-
-	t.Run("host busy", func(t *testing.T) {
-		j1 := Job{ID: "job-busy-1", Kind: "echo", Host: "host3", Args: []string{"hello"}}
-		j2 := Job{ID: "job-busy-2", Kind: "echo", Host: "host3", Args: []string{"world"}}
-		store.Create(j1)
-		store.Create(j2)
-
-		v, _ := runner.mu.LoadOrStore("host3", &sync.Mutex{})
-		hostMu := v.(*sync.Mutex)
-		hostMu.Lock()
-
-		err := runner.Start(context.Background(), j2)
-		if err != ErrHostBusy {
-			t.Errorf("Start = %v, want ErrHostBusy", err)
-		}
-
-		hostMu.Unlock()
 	})
 
 	t.Run("context canceled", func(t *testing.T) {

@@ -80,7 +80,7 @@ func TestFileStore(t *testing.T) {
 		t.Errorf("List sort order wrong: %s, %s", list[0].ID, list[1].ID)
 	}
 
-	if err := store.AppendLog("job-1", "line 1"); err != nil {
+	if err := store.AppendLog("job-1", "line 1\n"); err != nil {
 		t.Fatalf("AppendLog: %v", err)
 	}
 	if err := store.AppendLog("job-1", "line 2\n"); err != nil {

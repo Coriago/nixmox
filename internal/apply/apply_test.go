@@ -2,9 +2,11 @@ package apply
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,6 +87,7 @@ func newApplyFixture(t *testing.T, autoApply bool, mode string) *applyFixture {
 		t.Fatal(err)
 	}
 	runner := jobs.NewRunner(store)
+	t.Cleanup(runner.Stop)
 	m := NewManager(cfg, gitMgr, records, runner, store, "node1")
 	m.profilesDir = profiles
 	runner.OnTerminal = m.HandleTerminal
@@ -163,8 +166,14 @@ func TestApplyRequiresPulledSHA(t *testing.T) {
 	store, _ := jobs.NewFileStore(dataDir)
 	m := NewManager(cfg, gitMgr, records, jobs.NewRunner(store), store, "node1")
 
-	if _, err := m.Apply(context.Background()); err == nil {
-		t.Error("Apply without a pulled SHA should error")
+	j, err := m.Apply(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.runner.Stop()
+	got, _ := store.Get(j.ID)
+	if got.State != "failed" || !strings.Contains(got.Error, "nothing pulled") {
+		t.Fatal(got)
 	}
 }
 
@@ -188,5 +197,23 @@ func TestHandleTerminalIgnoresOtherKinds(t *testing.T) {
 	fx.mgr.HandleTerminal(jobs.Job{Kind: "echo", State: "applied"})
 	if _, ok, _ := fx.records.Latest("node1"); ok {
 		t.Error("echo jobs must not produce apply records")
+	}
+}
+
+func TestApplyPinsDirectoryAndConfiguration(t *testing.T) {
+	fx := newApplyFixture(t, false, "switch")
+	fx.mgr.cfg.FlakeDirectory = "e2e"
+	fx.mgr.cfg.FlakeAttribute = "node2"
+	j, err := fx.mgr.Apply(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx.mgr.runner.Stop()
+	ref, err := url.Parse(j.Args[len(j.Args)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.Scheme != "git+file" || ref.Query().Get("dir") != "e2e" || ref.Query().Get("rev") != "deadbeef" || ref.Fragment != "node2" {
+		t.Fatal(ref)
 	}
 }

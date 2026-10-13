@@ -12,7 +12,7 @@
     </form>
     {{end}}
     <h2>Change preview</h2><p class="hint">Git commits and file changes from the last applied revision to the available revision. This is not an evaluated NixOS activation plan.</p><button id="preview-button">Preview changes</button><pre id="preview">Choose Preview changes after a pull or update check.</pre>
-    <button hx-post="/api/v1/gitops/pull" hx-target="#gitops-status" hx-swap="innerHTML">Pull now</button>
+    <button hx-post="/api/v1/gitops/pull" hx-swap="none">Pull now</button>
 </div>
 {{end}}
 

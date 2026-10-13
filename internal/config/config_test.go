@@ -8,8 +8,8 @@ import (
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.DataDir != "/var/lib/nixmox" {
-		t.Errorf("DataDir default: got %q, want %q", cfg.DataDir, "/var/lib/nixmox")
+	if cfg.DataDir != defaultDataDir() {
+		t.Errorf("DataDir default: got %q, want %q", cfg.DataDir, defaultDataDir())
 	}
 	if cfg.HTTPAddr != "127.0.0.1:8080" {
 		t.Errorf("HTTPAddr default: got %q, want %q", cfg.HTTPAddr, "127.0.0.1:8080")

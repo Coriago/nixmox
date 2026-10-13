@@ -42,8 +42,11 @@ type Config struct {
 
 	AllowConfigWrite bool `yaml:"allow_config_write"`
 
-	AutoApply bool   `yaml:"auto_apply"`
-	ApplyMode string `yaml:"apply_mode"`
+	EnableCustomTasks bool   `yaml:"enable_custom_tasks"`
+	FlakeDirectory    string `yaml:"flake_directory"`
+	FlakeAttribute    string `yaml:"flake_attribute"`
+	AutoApply         bool   `yaml:"auto_apply"`
+	ApplyMode         string `yaml:"apply_mode"`
 
 	AdvertiseAddr string `yaml:"advertise_addr"`
 	ClusterHost   string `yaml:"cluster_host"`
@@ -51,10 +54,25 @@ type Config struct {
 	Hostname string `yaml:"hostname"`
 }
 
+// Unprivileged launches keep mutable state in the user's state directory.
+// The system module explicitly supplies its own data directory.
+func defaultDataDir() string {
+	if os.Geteuid() == 0 {
+		return "/var/lib/nixmox"
+	}
+	if dir := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(dir) {
+		return filepath.Join(dir, "nixmox")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "state", "nixmox")
+	}
+	return "./.nixmox"
+}
+
 // DefaultConfig returns the built-in defaults.
 func DefaultConfig() Config {
 	return Config{
-		DataDir:         "/var/lib/nixmox",
+		DataDir:         defaultDataDir(),
 		HTTPAddr:        "127.0.0.1:8080",
 		NATSPort:        4222,
 		ClusterPort:     6222,
@@ -85,6 +103,11 @@ func Load(configFile string) (*Config, error) {
 		}
 	}
 
+	var err error
+	cfg.DataDir, err = filepath.Abs(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -102,13 +125,19 @@ func loadFile(path string, cfg *Config) error {
 const envPrefix = "NIXMOX_"
 
 func loadEnv(cfg *Config) {
+	if v := os.Getenv(envPrefix + "FLAKE_DIRECTORY"); v != "" {
+		cfg.FlakeDirectory = v
+	}
+	if v := os.Getenv(envPrefix + "FLAKE_ATTRIBUTE"); v != "" {
+		cfg.FlakeAttribute = v
+	}
 	if v := os.Getenv(envPrefix + "INPUTS_FILE"); v != "" {
 		cfg.InputsFile = v
 	}
 	if v := os.Getenv(envPrefix + "JOIN_SEED"); v != "" {
 		cfg.JoinSeed = v
 	}
-	for key, dst := range map[string]*bool{"ENABLE_POWER": &cfg.EnablePower, "ENABLE_PROVISION": &cfg.EnableProvision, "DISCOVERY": &cfg.Discovery} {
+	for key, dst := range map[string]*bool{"ENABLE_CUSTOM_TASKS": &cfg.EnableCustomTasks, "ENABLE_POWER": &cfg.EnablePower, "ENABLE_PROVISION": &cfg.EnableProvision, "DISCOVERY": &cfg.Discovery} {
 		if v := os.Getenv(envPrefix + key); v != "" {
 			*dst = v == "true" || v == "1" || v == "yes"
 		}

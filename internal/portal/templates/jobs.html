@@ -1,7 +1,19 @@
 {{define "content"}}
 <div class="container">
     <h1>Jobs</h1>
-    <button onclick="fetch('/api/v1/jobs', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({kind: 'dry-build', args: []})})">New dry-build</button>
+    <p>Tasks run sequentially on the selected host and remain in its history.</p>
+    <label>Host <select id="task-host"></select></label>
+    <button id="task-history">View host history</button>
+    <button id="dry-build">Queue GitOps dry-build</button>
+    <form id="custom-task">
+      <h2>Custom task</h2>
+      <p>Requires custom tasks enabled on the target host. Commands run with that agent's permissions.</p>
+      <label>Name <input name="name" placeholder="Check storage"></label>
+      <label>Executable <input name="command" required placeholder="df"></label>
+      <label>Arguments (JSON array) <textarea name="args" required>["-h"]</textarea></label>
+      <label>Working directory (optional, absolute) <input name="directory" placeholder="/tmp"></label>
+      <button type="submit">Queue task</button>
+    </form>
     <table class="table">
         <thead>
             <tr>
@@ -12,7 +24,7 @@
                 <th>Created At</th>
             </tr>
         </thead>
-        <tbody id="jobs-table" hx-get="/partials/jobs" hx-trigger="every 2s">
+        <tbody id="jobs-table" hx-get="/partials/hosts/{{.Hostname}}/jobs" hx-trigger="every 2s">
             {{template "jobs_partial" .}}
         </tbody>
     </table>
@@ -22,8 +34,8 @@
 {{define "jobs_partial"}}
 {{range .Jobs}}
 <tr>
-    <td><a href="/jobs/{{.ID}}">{{.ID}}</a></td>
-    <td>{{.Kind}}</td>
+    <td><a href="/hosts/{{.Host}}/jobs/{{.ID}}">{{.ID}}</a></td>
+    <td>{{if .Name}}{{.Name}} · {{end}}{{.Kind}}</td>
     <td>{{.Host}}</td>
     <td><span class="badge state-{{.State}}">{{.State}}</span></td>
     <td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>

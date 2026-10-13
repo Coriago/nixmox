@@ -40,6 +40,10 @@ type EmbeddedServer struct {
 // initialized standalone JetStream wedges the clustered RAFT meta group when
 // reused, and standalone state is disposable anyway.
 func NewOptions(serverName string, clientPort, clusterPort int, clusterHost, dataDir string, spec ClusterSpec) (server.Options, error) {
+	// NATS interprets zero as its fixed default; callers use zero for an ephemeral port.
+	if clientPort == 0 {
+		clientPort = -1
+	}
 	storeSub := "nats-standalone"
 	if spec.Name != "" {
 		storeSub = "nats-clustered"

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -10,6 +11,12 @@ import (
 var nodeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$`)
 
 func (c *Config) Validate() error {
+	if c.FlakeDirectory != "" {
+		clean := path.Clean(c.FlakeDirectory)
+		if path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || strings.ContainsAny(c.FlakeDirectory, "\\\x00") {
+			return fmt.Errorf("flake_directory must stay inside the Git repository")
+		}
+	}
 	if !nodeName.MatchString(c.Hostname) || strings.Contains(c.Hostname, "..") {
 		return fmt.Errorf("invalid hostname %q", c.Hostname)
 	}

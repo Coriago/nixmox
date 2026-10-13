@@ -24,7 +24,15 @@ in
     inherit package;
     advertiseAddr = ip;
     allowConfigWrite = true;
-    gitops.pollIntervalSeconds = 15;
+    enableCustomTasks = true;
+    autoApply = false;
+    gitops = {
+      repoUrl = "https://github.com/Coriago/nixmox.git";
+      branch = "main";
+      flakeDirectory = "e2e";
+      flakeAttribute = name;
+      pollIntervalSeconds = 0;
+    };
   };
 
   services.openssh = {
@@ -39,6 +47,10 @@ in
       { from = "host"; host.port = 2220 + index; guest.port = 22; }
     ];
     virtualisation.memorySize = 4096;
+    virtualisation.diskSize = 16384;
+    # Seed only the bootstrap closure, rather than exposing the host's entire
+    # Nix store to the guest's deployment build.
+    virtualisation.useNixStoreImage = true;
     virtualisation.cores = 2;
     virtualisation.graphics = false;
   };

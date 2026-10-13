@@ -19,6 +19,7 @@
       <button class="danger" hx-post="/api/v1/hosts/{{.NodeID}}/actions/leave" hx-vals='{"confirm":"{{.NodeID}}"}' hx-confirm="Remove this host from its cluster? It will return to setup." hx-swap="none">Leave cluster</button>
     </div>
     <div data-live="/partials/hosts/{{.NodeID}}/resources">{{template "resources" $}}</div>
+    <p><a href="/hosts/{{.NodeID}}/jobs">Tasks and command logs →</a></p>
     <h2>Apply history</h2>
     <table class="table">
         <thead>
@@ -61,7 +62,7 @@
     <td>{{shortsha .GitSHA}}</td>
     <td>{{.GenBefore}}</td>
     <td>{{.GenAfter}}</td>
-    <td><a href="/jobs/{{.JobID}}">{{.JobID}}</a></td>
+    <td><a href="/hosts/{{$.Detail.NodeID}}/jobs/{{.JobID}}">{{.JobID}}</a></td>
 </tr>
 {{end}}
 {{end}}
