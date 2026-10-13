@@ -14,7 +14,9 @@
   ];
 
   system.stateVersion = "24.11";
+  boot.loader.grub.enable = lib.mkForce true;
   virtualisation = {
+    useBootLoader = true;
     memorySize = 4096;
     diskSize = 16384;
     useNixStoreImage = true;

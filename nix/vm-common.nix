@@ -7,9 +7,20 @@ let
   ip = "192.168.42.${toString index}";
 in
 {
-  # These demo VMs boot the kernel supplied by QEMU. Their root disks have no
-  # BIOS boot partition, so switching must not try to install GRUB onto them.
+  # The base configuration is only used to construct the VM variant below.
   boot.loader.grub.enable = false;
+  boot.growPartition = true;
+
+  # qemu-vm overrides the root filesystem declaration. Grow ext4 explicitly
+  # after growpart, before builds can fill the small bootstrap image filesystem.
+  systemd.services.nixmox-vm-grow-root = {
+    wantedBy = [ "multi-user.target" ];
+    requires = [ "growpart.service" ];
+    after = [ "growpart.service" ];
+    before = [ "nixmox.service" ];
+    serviceConfig = { Type = "oneshot"; RemainAfterExit = true; };
+    script = "${pkgs.e2fsprogs}/bin/resize2fs /dev/disk/by-label/nixos";
+  };
 
   networking.hostName = name;
 
@@ -29,6 +40,7 @@ in
     advertiseAddr = ip;
     allowConfigWrite = true;
     enableCustomTasks = true;
+    discovery = true;
     autoApply = false;
     gitops = {
       repoUrl = "https://github.com/Coriago/nixmox.git";
@@ -46,6 +58,8 @@ in
   users.users.root.initialPassword = "nixos";
 
   virtualisation.vmVariant = {
+    boot.loader.grub.enable = lib.mkForce true;
+    virtualisation.useBootLoader = true;
     virtualisation.forwardPorts = [
       { from = "host"; host.port = 8080 + index; guest.port = 8080; }
       { from = "host"; host.port = 2220 + index; guest.port = 22; }

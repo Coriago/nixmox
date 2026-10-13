@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"sort"
 	"sync"
@@ -122,41 +123,39 @@ func (h *Heartbeater) Run(ctx context.Context) {
 }
 
 // WatchHosts feeds the View from KV watch events: puts upsert, deletes (TTL
-// expiry or removal) mark the host offline.
+// expiry or removal) mark the host offline. Blocks until cancellation or watch
+// failure; the runtime retries failures, including initial consumer creation.
 func WatchHosts(ctx context.Context, kv jetstream.KeyValue, view *View) error {
 	w, err := kv.Watch(ctx, "hosts.>")
 	if err != nil {
 		return err
 	}
-	go func() {
-		defer w.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case entry, ok := <-w.Updates():
-				if !ok {
-					return
-				}
-				if entry == nil {
-					continue
-				}
-				if entry.Operation() == jetstream.KeyValuePurge {
-					view.Remove(nodeIDFromKey(entry.Key()))
-					continue
-				}
-				if entry.Operation() == jetstream.KeyValueDelete {
-					view.MarkOffline(nodeIDFromKey(entry.Key()))
-					continue
-				}
-				var p HostPayload
-				if err := json.Unmarshal(entry.Value(), &p); err == nil && p.NodeID != "" {
-					view.Upsert(p)
-				}
+	defer w.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case entry, ok := <-w.Updates():
+			if !ok {
+				return fmt.Errorf("host watch closed")
+			}
+			if entry == nil {
+				continue
+			}
+			if entry.Operation() == jetstream.KeyValuePurge {
+				view.Remove(nodeIDFromKey(entry.Key()))
+				continue
+			}
+			if entry.Operation() == jetstream.KeyValueDelete {
+				view.MarkOffline(nodeIDFromKey(entry.Key()))
+				continue
+			}
+			var p HostPayload
+			if err := json.Unmarshal(entry.Value(), &p); err == nil && p.NodeID != "" {
+				view.Upsert(p)
 			}
 		}
-	}()
-	return nil
+	}
 }
 
 func nodeIDFromKey(key string) string {

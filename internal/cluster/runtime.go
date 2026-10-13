@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"nixmox/internal/natsx"
 )
 
@@ -51,16 +53,32 @@ func (rt *Runtime) Rearm(ctx context.Context, emb *natsx.EmbeddedServer) {
 	rtCtx, cancel := context.WithCancel(ctx)
 	rt.cancel = cancel
 
-	hostsKV, err := natsx.EnsureKV(ctx, emb.JS, "hosts", natsx.BucketConfig{TTL: hostsBucketTTL})
-	if err != nil {
-		log.Printf("cluster runtime: hosts bucket: %v", err)
+	go rt.arm(rtCtx, emb)
+}
+
+func (rt *Runtime) arm(rtCtx context.Context, emb *natsx.EmbeddedServer) {
+	var hostsKV, applylogKV jetstream.KeyValue
+	for {
+		var err error
+		hostsKV, err = natsx.EnsureKV(rtCtx, emb.JS, "hosts", natsx.BucketConfig{TTL: hostsBucketTTL})
+		if err == nil {
+			applylogKV, err = natsx.EnsureKV(rtCtx, emb.JS, "applylog", natsx.BucketConfig{})
+		}
+		if err == nil {
+			break
+		}
+		log.Printf("cluster runtime: waiting for buckets: %v", err)
+		if !retryRuntime(rtCtx) {
+			return
+		}
+	}
+	rt.mu.Lock()
+	if rt.stopped || rtCtx.Err() != nil {
+		rt.mu.Unlock()
 		return
 	}
-	applylogKV, err := natsx.EnsureKV(ctx, emb.JS, "applylog", natsx.BucketConfig{})
-	if err != nil {
-		log.Printf("cluster runtime: applylog bucket: %v", err)
-		return
-	}
+	rt.Switch.SetRemote(NewKVRecordStore(applylogKV))
+	rt.mu.Unlock()
 
 	hb := NewHeartbeater(hostsKV, rt.payloadFn().NodeID, heartbeatEvery, rt.payloadFn)
 	go hb.Run(rtCtx)
@@ -87,11 +105,26 @@ func (rt *Runtime) Rearm(ctx context.Context, emb *natsx.EmbeddedServer) {
 			}
 		}
 	}()
-	if err := WatchHosts(rtCtx, hostsKV, rt.View); err != nil {
-		log.Printf("cluster runtime: watch hosts: %v", err)
-	}
-	rt.Switch.SetRemote(NewKVRecordStore(applylogKV))
 	log.Printf("cluster runtime: armed (heartbeat every %s, ttl %s)", heartbeatEvery, hostsBucketTTL)
+	for rtCtx.Err() == nil {
+		// Account readiness can precede stream leader election. A failed initial
+		// watch or a closed watch must not leave a stale view forever.
+		if err := WatchHosts(rtCtx, hostsKV, rt.View); err != nil && rtCtx.Err() == nil {
+			log.Printf("cluster runtime: retrying host watch: %v", err)
+		}
+		if !retryRuntime(rtCtx) {
+			return
+		}
+	}
+}
+
+func retryRuntime(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(time.Second):
+		return true
+	}
 }
 
 func (rt *Runtime) Stop() {

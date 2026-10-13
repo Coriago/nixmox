@@ -52,6 +52,9 @@ func TestLeaveAndRejoin(t *testing.T) {
 		if err := natsx.WaitReady(seed.Embedded().JS, 15*time.Second); err != nil {
 			t.Fatal(err)
 		}
+		if info, err := seed.Diagnostics(); err != nil || info.Mode != "raft" || info.Meta == nil || info.Meta.Size != 2 {
+			t.Fatalf("joined diagnostics: %+v %v", info, err)
+		}
 		// Exercise removal of the metadata leader, not just a follower.
 		if seed.Embedded().Srv.JetStreamIsLeader() {
 			if _, err := seed.Embedded().Sys.Request("$JS.API.META.LEADER.STEPDOWN", nil, 5*time.Second); err != nil {
@@ -83,6 +86,9 @@ func TestLeaveAndRejoin(t *testing.T) {
 		}
 		if err := natsx.WaitReady(seed.Embedded().JS, 5*time.Second); err != nil {
 			t.Fatal(err)
+		}
+		if info, err := seed.Diagnostics(); err != nil || info.Mode != "standalone" || info.Meta != nil {
+			t.Fatalf("last survivor diagnostics: %+v %v", info, err)
 		}
 	}
 }

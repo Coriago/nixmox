@@ -19,6 +19,8 @@ type ClusterAPI interface {
 }
 
 func (s *Server) MountCluster(p *portal.Portal) {
+	s.Mux.Get("/api/v1/cluster/diagnostics", s.clusterDiagnostics)
+	s.Mux.Post("/api/v1/cluster/add", s.addDiscoveredNode)
 	s.Mux.Post("/api/v1/cluster/create", func(w http.ResponseWriter, r *http.Request) {
 		if s.Cluster == nil {
 			http.Error(w, "clustering unavailable", http.StatusServiceUnavailable)

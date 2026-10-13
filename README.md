@@ -124,9 +124,13 @@ Apply jobs pass `--impure` so Nix can read the local JSON. Pure/remote evaluatio
 The separate [`e2e/`](e2e/README.md) flake provides real VM deployment
 configurations with a marker, an extra package, and an activation service.
 After committing and pushing the fixture and accompanying changes to GitHub
-`main`, run `nix run .#github-e2e`. It boots a fresh demo VM, pulls this repository,
-builds `e2e#node1` inside the guest, runs `switch`, and verifies the active system
-and job history. The runner records the exact Git SHA and retains logs.
+`main`, run `nix run .#github-e2e`. It boots three fresh VMs, validates discovery
+and both join paths, applies the pulled configuration to one node, then rolls it
+out across the cluster. Part 2 tests quorum loss, recovery, graceful removal,
+Raft de-escalation, and creating fresh clusters after removal.
+Use `nix run .#github-e2e -- --part 1` to stop at a healthy, deployed cluster for
+interactive testing. Resume teardown with `--part 2 --work-dir <printed-directory>`.
+The [test flow](e2e/README.md) documents each assertion and the retained artifacts.
 
 Set `services.nixmox.gitops.flakeDirectory` for a flake in a repository
 subdirectory and `gitops.flakeAttribute` when the configuration attribute differs

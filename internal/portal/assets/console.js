@@ -162,14 +162,29 @@
     if (!list) return;
     list.replaceChildren();
     try {
-      const peers = await request("/api/v1/discovery");
+      const [peers, state] = await Promise.all([
+        request("/api/v1/discovery"), request("/api/v1/bootstrap"),
+      ]);
       if (!peers.length)
         list.textContent =
           "No advertisements. Enable discovery on both nodes and allow UDP 8099.";
       peers.forEach((peer) => {
         const row = document.createElement("p");
         row.textContent = `${peer.node_id} · ${peer.address} · ${peer.cluster || "unjoined"} `;
-        if (peer.cluster) {
+        if (!peer.cluster && state.status === "clustered") {
+          const add = document.createElement("button");
+          add.textContent = "Add to this cluster";
+          add.onclick = async () => {
+            if (!confirm(`Add ${peer.node_id} at ${peer.address} to this cluster? Verify this address first.`)) return;
+            try {
+              await request("/api/v1/cluster/add", "POST", {
+                node_id: peer.node_id, address: peer.address, confirm: peer.node_id,
+              });
+              location.href = "/";
+            } catch (e) { notice(e.message, true); }
+          };
+          row.append(add);
+        } else if (peer.cluster && state.status === "unclustered") {
           const join = document.createElement("button");
           join.textContent = "Join this cluster";
           join.onclick = async () => {

@@ -91,12 +91,16 @@ func (s *Supervisor) startLocked(spec natsx.ClusterSpec) error {
 	// Meta-leader election needs routes up on BOTH sides of a join, so it
 	// can't block the join handshake: wait async, then arm the runtime.
 	go func() {
-		if err := natsx.WaitReadyContext(genCtx, emb.JS, 90*time.Second); err != nil {
-			if genCtx.Err() == nil {
-				log.Printf("cluster: %v", err)
+		for {
+			if err := natsx.WaitReadyContext(genCtx, emb.JS, 90*time.Second); err == nil {
+				break
+			} else if genCtx.Err() != nil {
+				return
+			} else {
+				log.Printf("cluster: waiting for readiness: %v", err)
 			}
-			return
 		}
+
 		s.mu.RLock()
 		current := s.emb == emb && s.gen == gen
 		hook := s.OnReconfigure

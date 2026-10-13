@@ -35,9 +35,13 @@
         default = nixmox;
         github-e2e = pkgs.writeShellApplication {
           name = "nixmox-github-e2e";
-          runtimeInputs = [ pkgs.curl pkgs.jq pkgs.coreutils ];
-          runtimeEnv.NIXMOX_E2E_VM = self.nixosConfigurations.node1.config.system.build.vm;
-          text = builtins.readFile ./e2e/run.sh;
+          runtimeInputs = [ pkgs.python3 pkgs.openssh pkgs.sshpass ];
+          runtimeEnv = {
+            NIXMOX_E2E_VM1 = self.nixosConfigurations.node1.config.system.build.vm;
+            NIXMOX_E2E_VM2 = self.nixosConfigurations.node2.config.system.build.vm;
+            NIXMOX_E2E_VM3 = self.nixosConfigurations.node3.config.system.build.vm;
+          };
+          text = ''exec python3 ${./e2e/run.py} "$@"'';
         };
         demo = import ./nix/demo.nix { inherit pkgs self; };
         installer-iso = (self.lib.mkInstaller {
@@ -128,7 +132,7 @@
       apps.${system} = {
         github-e2e = {
           type = "app";
-          meta.description = "Boot a disposable VM and apply the e2e flake pulled from GitHub main";
+          meta.description = "Three-VM GitHub deployment, quorum recovery, and cluster teardown E2E";
           program = "${self.packages.${system}.github-e2e}/bin/nixmox-github-e2e";
         };
         demo = {
