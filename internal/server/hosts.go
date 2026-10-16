@@ -68,6 +68,17 @@ func (s *Server) clusterState() cluster.ClusterState {
 }
 
 func (s *Server) MountApply(p *portal.Portal) {
+	s.Mux.Get("/partials/hosts/{nodeID}/age", func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "nodeID")
+		if s.forward(w, r, id) {
+			return
+		}
+		if id != s.Config.Hostname {
+			http.NotFound(w, r)
+			return
+		}
+		p.AgeRecipient(w, hostinfo.Get(s.Config))
+	})
 	s.Mux.Get("/partials/hosts/{nodeID}/sync", func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "nodeID")
 		if s.forward(w, r, id) {
@@ -96,16 +107,18 @@ func (s *Server) MountApply(p *portal.Portal) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"hostname":      h.Hostname,
-			"resources":     h.Resources,
-			"kernel":        h.Kernel,
-			"nixos_version": h.NixOSVersion,
-			"agent_version": h.AgentVersion,
-			"uptime":        h.Uptime,
-			"status":        "online",
-			"auto_apply":    s.Config.AutoApply,
-			"apply_mode":    s.Config.ApplyMode,
-			"apply_record":  s.latestRecord(nodeID),
+			"hostname":            h.Hostname,
+			"age_recipient":       h.AgeRecipient,
+			"age_recipient_error": h.AgeRecipientError,
+			"resources":           h.Resources,
+			"kernel":              h.Kernel,
+			"nixos_version":       h.NixOSVersion,
+			"agent_version":       h.AgentVersion,
+			"uptime":              h.Uptime,
+			"status":              "online",
+			"auto_apply":          s.Config.AutoApply,
+			"apply_mode":          s.Config.ApplyMode,
+			"apply_record":        s.latestRecord(nodeID),
 		})
 	})
 

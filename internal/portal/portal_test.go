@@ -78,3 +78,28 @@ func TestPortal(t *testing.T) {
 		}
 	})
 }
+func TestAgeRecipientPages(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hostinfo.HostInfo{Hostname: "new-host", AgeRecipient: "age1testrecipient"}
+	for _, render := range []func(*httptest.ResponseRecorder){
+		func(w *httptest.ResponseRecorder) {
+			p.Index(w, []HostRow{{Host: h}}, cluster.ClusterState{Status: "unclustered"})
+		},
+		func(w *httptest.ResponseRecorder) { p.HostDetail(w, HostDetailView{NodeID: h.Hostname, Host: h}) },
+		func(w *httptest.ResponseRecorder) { p.AgeRecipient(w, h) },
+	} {
+		w := httptest.NewRecorder()
+		render(w)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `value="age1testrecipient"`) || !strings.Contains(w.Body.String(), "data-copy-age") {
+			t.Fatalf("recipient not rendered: %s", w.Body.String())
+		}
+	}
+	w := httptest.NewRecorder()
+	p.AgeRecipient(w, hostinfo.HostInfo{AgeRecipientError: "SSH host key is missing"})
+	if !strings.Contains(w.Body.String(), "SSH host key is missing") || strings.Contains(w.Body.String(), "data-copy-age") {
+		t.Fatalf("missing key rendered incorrectly: %s", w.Body.String())
+	}
+}

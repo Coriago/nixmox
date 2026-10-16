@@ -183,3 +183,11 @@ host links, two-second activity versus 30-second inventory, incremental remote
 log streaming with Unicode/HTML-safe output and reconnect catch-up, and mobile overflow. The Nix launcher
 supplies the browser and Python dependencies. Browser screenshots and timestamped
 uptime/telemetry observations are retained with the run artifacts.
+
+## SOPS recipient coverage
+
+Both-part acceptance now compares each standalone host's age recipient with
+`ssh-keygen -y | ssh-to-age`, checks distinct per-host identities, setup pages,
+remote NATS inventory/API, and SSE host-detail fragments. Browser coverage checks
+clipboard copying and the plain-HTTP selection fallback. These checks validate
+public identity presentation; they do not deploy or decrypt SOPS secrets.

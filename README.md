@@ -21,6 +21,16 @@ The flake module defaults to this Nixmox release's package for the host architec
 so enabling the service needs no package assignment or overlay. Set
 `services.nixmox.package` only to override it with a custom build.
 
+New hosts show a **SOPS age recipient** on the setup page and under host details.
+Copy it into the host's `.sops.yaml` rules, run `sops updatekeys` for its encrypted
+files, then commit and pull the changes before applying. With the sops-nix module
+imported, use `sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];`.
+Nixmox derives the public recipient from that existing private SSH key; it does
+not create keys or configure SOPS for you. Missing/unreadable keys show an explicit
+status and are checked again within 30 seconds. A live installer's SSH identity
+is temporary unless you preserve it during installation; check the installed
+host's recipient before encrypting its secrets.
+
 ```nix
 {
   imports = [ inputs.nixmox.nixosModules.default ];

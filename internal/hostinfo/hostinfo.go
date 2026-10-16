@@ -11,13 +11,15 @@ import (
 )
 
 type HostInfo struct {
-	Resources    Resources     `json:"resources"`
-	Hostname     string        `json:"hostname"`
-	NixOSVersion string        `json:"nixos_version"`
-	Kernel       string        `json:"kernel"`
-	Uptime       time.Duration `json:"uptime"`
-	AgentVersion string        `json:"agent_version"`
-	CurrentTime  time.Time     `json:"current_time"`
+	AgeRecipient      string        `json:"age_recipient,omitempty"`
+	AgeRecipientError string        `json:"age_recipient_error,omitempty"`
+	Resources         Resources     `json:"resources"`
+	Hostname          string        `json:"hostname"`
+	NixOSVersion      string        `json:"nixos_version"`
+	Kernel            string        `json:"kernel"`
+	Uptime            time.Duration `json:"uptime"`
+	AgentVersion      string        `json:"agent_version"`
+	CurrentTime       time.Time     `json:"current_time"`
 }
 
 var (
@@ -68,14 +70,17 @@ func Get(cfg *config.Config) HostInfo {
 		}
 	}
 
+	recipient, recipientError := hostAgeRecipient()
 	return HostInfo{
-		Resources:    resources(false),
-		Hostname:     hostname,
-		NixOSVersion: nixosVersion,
-		Kernel:       kernel,
-		Uptime:       uptime,
-		AgentVersion: config.Version,
-		CurrentTime:  time.Now(),
+		AgeRecipient:      recipient,
+		AgeRecipientError: recipientError,
+		Resources:         resources(false),
+		Hostname:          hostname,
+		NixOSVersion:      nixosVersion,
+		Kernel:            kernel,
+		Uptime:            uptime,
+		AgentVersion:      config.Version,
+		CurrentTime:       time.Now(),
 	}
 }
 

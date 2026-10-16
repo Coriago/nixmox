@@ -89,6 +89,16 @@ with sync_playwright() as p:
 
     # Real remote telemetry must arrive independently of the 10-second heartbeat.
     page.goto(url + '/hosts/node1')
+    recipient = page.locator('[data-age-recipient]')
+    assert recipient.input_value().startswith('age1')
+    page.evaluate("Object.defineProperty(navigator, 'clipboard', {value: undefined, configurable: true})")
+    page.locator('[data-copy-age]').click()
+    assert 'Selected' in page.locator('[data-copy-status]').inner_text()
+    assert recipient.evaluate('(el) => el.selectionEnd - el.selectionStart') == len(recipient.input_value())
+    page.evaluate("Object.defineProperty(navigator, 'clipboard', {value: {writeText: async text => {window.copiedRecipient = text}}, configurable: true})")
+    page.locator('[data-copy-age]').click()
+    page.wait_for_function("document.querySelector('[data-copy-status]').textContent.includes('Copied')")
+    assert page.evaluate('copiedRecipient') == recipient.input_value()
     page.locator('details > summary').click()
     page.wait_for_selector('[data-telemetry-at]')
     page.evaluate('''() => {

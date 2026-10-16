@@ -16,6 +16,8 @@ import (
 )
 
 type HostPayload struct {
+	AgeRecipient      string             `json:"age_recipient,omitempty"`
+	AgeRecipientError string             `json:"age_recipient_error,omitempty"`
 	ObservedAt        time.Time          `json:"-"`
 	ActiveDeployment  *jobs.Job          `json:"active_deployment,omitempty"`
 	StatusUnavailable bool               `json:"status_unavailable,omitempty"`
@@ -35,7 +37,7 @@ type HostPayload struct {
 }
 
 func (p HostPayload) Info() hostinfo.HostInfo {
-	return hostinfo.HostInfo{Hostname: p.Hostname, NixOSVersion: p.NixOSVersion, AgentVersion: p.AgentVersion, Uptime: p.Uptime, Resources: p.Resources, Kernel: p.Kernel}
+	return hostinfo.HostInfo{AgeRecipient: p.AgeRecipient, AgeRecipientError: p.AgeRecipientError, Hostname: p.Hostname, NixOSVersion: p.NixOSVersion, AgentVersion: p.AgentVersion, Uptime: p.Uptime, Resources: p.Resources, Kernel: p.Kernel}
 }
 
 // View is the in-memory, watcher-fed picture of the cluster's hosts. It is

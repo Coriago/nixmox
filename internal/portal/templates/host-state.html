@@ -15,3 +15,13 @@
 </a>
 {{else}}<span class="hint">Loading hosts…</span>{{end}}{{end}}
 {{define "host_uptime"}}<span class="uptime" data-uptime-host="{{.Host.Hostname}}" data-uptime="{{.UptimeSeconds}}" data-online="{{if .Online}}true{{else}}false{{end}}">{{.Host.Uptime}}</span>{{end}}
+{{define "age_recipient"}}
+<section class="age-recipient"><h2>SOPS age recipient</h2>
+{{if .AgeRecipient}}
+<label>Public recipient for {{.Hostname}}<input type="text" readonly data-age-recipient value="{{.AgeRecipient}}" spellcheck="false"></label>
+<button type="button" data-copy-age>Copy recipient</button><span role="status" data-copy-status></span>
+<p class="hint">Add this recipient to the host's rules in <code>.sops.yaml</code>, run <code>sops updatekeys</code> on the affected secret files, then commit and pull the update.</p>
+{{else}}<p role="status">Recipient unavailable. {{if .AgeRecipientError}}{{.AgeRecipientError}}{{else}}This host has not reported its recipient yet.{{end}}</p>{{end}}
+<p class="hint">Derived from <code>/etc/ssh/ssh_host_ed25519_key</code>. Configure sops-nix with <code>sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];</code>. Only the public recipient is shared. A live installer's key may change after installation; verify the installed host's recipient before encrypting secrets.</p>
+</section>
+{{end}}

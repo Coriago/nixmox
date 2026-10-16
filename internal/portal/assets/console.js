@@ -1,6 +1,21 @@
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-copy-age]");
+    if (!button) return;
+    const section = button.closest(".age-recipient");
+    const input = section.querySelector("[data-age-recipient]");
+    const status = section.querySelector("[data-copy-status]");
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(input.value);
+      status.textContent = " Copied";
+    } catch (_) {
+      input.focus(); input.select();
+      status.textContent = " Selected — press Ctrl+C or ⌘C to copy.";
+    }
+  });
   const uptimeClocks = new Map();
   let live = false;
   function uptimeLabel(value) {

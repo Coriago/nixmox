@@ -23,6 +23,8 @@ in
   };
 
   networking.hostName = name;
+  # Reference converter used by the end-to-end host identity checks.
+  environment.systemPackages = [ pkgs.ssh-to-age ];
 
   networking.useDHCP = true;
   systemd.network.links."10-cluster" = {

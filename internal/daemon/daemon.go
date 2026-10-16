@@ -87,8 +87,10 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	}()
 	runtime := cluster.NewRuntime(view, mirror, func() cluster.HostPayload {
 		h := hostinfo.Get(cfg)
+		// Public recipient travels with inventory through the existing NATS KV.
 		p := cluster.HostPayload{Kernel: h.Kernel, NodeID: cfg.Hostname, Hostname: h.Hostname, NixOSVersion: h.NixOSVersion, AgentVersion: h.AgentVersion, Uptime: h.Uptime, Resources: h.Resources, HTTPAddress: cfg.PeerAddress(), ClusterRoute: fmt.Sprintf("nats://%s:%d", clusterIP, cfg.ClusterPort), RemoteSHA: git.State().RemoteSHA, PulledSHA: git.State().LastPulledSHA}
 		active, err := jobs.ActiveDeployment(store)
+		p.AgeRecipient, p.AgeRecipientError = h.AgeRecipient, h.AgeRecipientError
 		p.ActiveDeployment, p.StatusUnavailable = active, err != nil
 		if latest, ok, err := records.Latest(cfg.Hostname); err == nil && ok {
 			p.ApplyRecord = &latest

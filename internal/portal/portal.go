@@ -153,6 +153,9 @@ func (p *Portal) JobLogPartial(w http.ResponseWriter, v JobDetailView) {
 func (p *Portal) Resources(w http.ResponseWriter, h hostinfo.HostInfo) {
 	p.render(w, "host-detail", "resources", PageData{Detail: &HostDetailView{Host: h}})
 }
+func (p *Portal) AgeRecipient(w http.ResponseWriter, h hostinfo.HostInfo) {
+	p.render(w, "host-detail", "age_partial", PageData{Detail: &HostDetailView{Host: h}})
+}
 func (p *Portal) Manage(w http.ResponseWriter) { p.render(w, "manage", "manage.html", PageData{}) }
 func (p *Portal) AssetsHandler() http.Handler {
 	assets, _ := fs.Sub(embeddedFS, "assets")

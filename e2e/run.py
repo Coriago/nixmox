@@ -428,6 +428,14 @@ class Suite:
             require(root_bytes >= 12 * 1024**3, 'boot partition did not grow to provide guest build space')
             require(self.api(node, '/api/v1/bootstrap')['status'] == 'unclustered', 'bootstrap is already joined')
             self.topology([node], 1, 1)
+        self.state['age_recipients'] = {}
+        for node in NODES:
+            expected = self.ssh(node, 'ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key | ssh-to-age')
+            require(expected.startswith('age1'), 'reference age conversion failed')
+            self.state['age_recipients'][str(node)] = expected
+            poll(f'node{node} public age recipient', lambda: self.api(node, '/api/v1/host').get('age_recipient') == expected)
+            require(expected in self.text(node, '/'), 'setup page omitted public recipient')
+        require(len(set(self.state['age_recipients'].values())) == 3, 'hosts share an age identity')
         poll('bidirectional LAN discovery', lambda: all(
             {p['node_id'] for p in self.api(i, '/api/v1/discovery')} == {f'node{j}' for j in NODES if j != i}
             for i in NODES))
@@ -448,6 +456,18 @@ class Suite:
         self.topology(NODES, 3, 3)
         for node in NODES:
             self.quorum_probe(node)
+        self.check_age_recipients()
+
+    def check_age_recipients(self):
+        for target in NODES:
+            expected = self.state['age_recipients'][str(target)]
+            observer = target % 3 + 1
+            poll(f'node{target} recipient in remote NATS inventory', lambda: self.hosts(observer)[f'node{target}'].get('age_recipient') == expected)
+            require(self.api(observer, f'/api/v1/hosts/node{target}')['age_recipient'] == expected, 'remote recipient mismatch')
+            require(expected in self.text(observer, f'/hosts/node{target}'), 'remote host page omitted recipient')
+            partial = f'/partials/hosts/node{target}/age'
+            require(expected in self.fragments(observer, [partial])[partial], 'recipient missing from SSE')
+        self.say('PASS: SSH-derived recipients match on setup, NATS inventory, remote API and live UI')
 
     def activated(self, node):
         self.command(node, node, 'Verify GitHub activation',
@@ -699,6 +719,7 @@ class Suite:
         self.topology(NODES, 3, 3)
         self.quorum_probe(1)
         self.snapshot('part1')
+        self.check_age_recipients()
         self.state['phase'] = 'part1-passed'
         self.save()
         self.say('PASS PART 1: three-node deployed cluster is ready for interactive use')

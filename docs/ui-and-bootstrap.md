@@ -132,3 +132,27 @@ and offers an immediate retry plus links to other previously online consoles.
 Advertised peer addresses may be LAN-only, so changing browser origins remains
 an explicit choice. A stream watchdog catches silent stalls as well as browser
 connection errors. The comprehensive browser checks exercise these behaviors.
+
+## SSH host identities for SOPS
+
+Setup and host details expose a copyable age recipient derived from the existing
+`/etc/ssh/ssh_host_ed25519_key`. This avoids introducing a second private identity
+to back up and provision. Conversion uses the maintained
+[ssh-to-age library](https://github.com/Mic92/ssh-to-age), matching
+[sops-nix SSH key import](https://github.com/Mic92/sops-nix#usage-example).
+The private key is parsed locally, only its public half is converted, and no age
+secret is generated, persisted, logged, or sent through NATS or HTTP. Reading the
+private key instead of its `.pub` companion avoids advertising a stale recipient.
+
+The public recipient and a sanitized availability message travel with NATS host
+inventory. A shared SSE fragment keeps setup and local/remote host pages current.
+Only public metadata is cached for 30 seconds, including failures, so key creation
+and rotation are detected without private-key parsing on every telemetry sample.
+Copy uses the clipboard API when available and selects the text for manual copying
+on plain HTTP. Missing, encrypted, unreadable and non-Ed25519 keys do not prevent
+the management service from starting.
+
+The UI explains `.sops.yaml`, `sops updatekeys`, and `sops.age.sshKeyPaths`. It does
+not claim to grant secret access or validate decryption. An installer identity
+is not automatically preserved into an installed host; the page explicitly calls
+out that boundary. Resetting `/var/lib/nixmox` leaves the SSH identity untouched.
