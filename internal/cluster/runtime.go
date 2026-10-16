@@ -8,6 +8,9 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"nixmox/internal/events"
+	"nixmox/internal/hostinfo"
+	"nixmox/internal/messaging"
 	"nixmox/internal/natsx"
 )
 
@@ -22,9 +25,12 @@ const (
 // cancel the old generation, ensure buckets on the new embedded server,
 // start fresh goroutines. Anything cluster-scoped lives behind this latch.
 type Runtime struct {
-	View      *View
-	Switch    *SwitchingRecordStore
-	payloadFn func() HostPayload
+	Changes          *events.Signal
+	Telemetry        func() hostinfo.HostInfo
+	TelemetryChanged func()
+	View             *View
+	Switch           *SwitchingRecordStore
+	payloadFn        func() HostPayload
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -57,6 +63,7 @@ func (rt *Runtime) Rearm(ctx context.Context, emb *natsx.EmbeddedServer) {
 }
 
 func (rt *Runtime) arm(rtCtx context.Context, emb *natsx.EmbeddedServer) {
+	go rt.runTelemetry(rtCtx, emb)
 	var hostsKV, applylogKV jetstream.KeyValue
 	for {
 		var err error
@@ -81,9 +88,10 @@ func (rt *Runtime) arm(rtCtx context.Context, emb *natsx.EmbeddedServer) {
 	rt.mu.Unlock()
 
 	hb := NewHeartbeater(hostsKV, rt.payloadFn().NodeID, heartbeatEvery, rt.payloadFn)
+	hb.Changes = rt.Changes
 	go hb.Run(rtCtx)
 	go func() {
-		scaler := ReplicaScaler{Buckets: []string{"hosts", "applylog"}, PeerCount: func() int {
+		scaler := ReplicaScaler{Buckets: []string{"KV_hosts", "KV_applylog", messaging.Stream}, PeerCount: func() int {
 			n := 0
 			for _, h := range rt.View.List() {
 				if h.Online {
@@ -92,7 +100,7 @@ func (rt *Runtime) arm(rtCtx context.Context, emb *natsx.EmbeddedServer) {
 			}
 			return n
 		}, Scale: func(ctx context.Context, bucket string, n int) error {
-			return natsx.ScaleReplicas(ctx, emb.JS, bucket, n)
+			return natsx.ScaleStream(ctx, emb.JS, bucket, n)
 		}}
 		tick := time.NewTicker(replicaScanEvery)
 		defer tick.Stop()

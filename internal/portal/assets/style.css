@@ -352,3 +352,113 @@ pre {
     display: block;
   }
 }
+
+/* Keep status, next action and supporting details readable at every width. */
+.phase {
+  display: block;
+  margin-top: 6px;
+  max-width: 36em;
+  overflow-wrap: anywhere;
+}
+.revision-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.revision-grid strong {
+  display: block;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.steps {
+  display: flex;
+  gap: 32px;
+  padding-left: 20px;
+  flex-wrap: wrap;
+}
+.steps li {
+  flex: 1;
+  min-width: 180px;
+  padding-right: 16px;
+}
+section,
+.container,
+.panels > * {
+  min-width: 0;
+}
+td {
+  overflow-wrap: anywhere;
+}
+td progress {
+  min-width: 100px;
+  height: 8px;
+  display: block;
+  margin-top: 8px;
+}
+details {
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+summary {
+  cursor: pointer;
+  color: #88c9ff;
+}
+#history-host {
+  max-width: 30rem;
+  margin-bottom: 16px;
+}
+#installer form {
+  max-width: 50rem;
+  margin-top: 16px;
+}
+#notice {
+  position: sticky;
+  top: 70px;
+  z-index: 4;
+}
+@media (max-width: 700px) {
+  .revision-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .container > table {
+    display: block;
+    overflow-x: auto;
+  }
+  .actions button {
+    flex: 1 1 140px;
+  }
+  h1 {
+    font-size: 22px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Deployment state is shared by the inventory, host page and live navigation. */
+.status-icon { display:inline-block; min-width:1em; margin-right:.4em; text-align:center; }
+.spinner { width:.85em; height:.85em; min-width:0; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:deployment-spin .85s linear infinite; }
+@keyframes deployment-spin { to { transform:rotate(360deg); } }
+.badge.deploying { color:#8ac6ff; background:#153650; }
+aside .host-nav-item { display:flex; flex-direction:column; gap:.3rem; margin:.25rem 0; padding:.7rem; border-left:3px solid currentColor; }
+.host-nav-name { display:flex; align-items:center; gap:.25rem; overflow-wrap:anywhere; }
+aside .host-nav-item small { font-size:.72rem; }
+aside .host-nav-item.online { color:#75d99a; }
+aside .host-nav-item.warn { color:#e7bb69; }
+aside .host-nav-item.failed { color:#ff8b8b; }
+aside .host-nav-item.offline { color:#a3aebc; }
+aside .host-nav-item.deploying { color:#8ac6ff; }
+.serving-node { border:1px solid currentColor; border-radius:4px; padding:.1rem .3rem; white-space:nowrap; margin-left:auto; }
+@media (prefers-reduced-motion:reduce) { .spinner { animation:none; border-style:dotted; } }
+aside { overflow-y:auto; }
+.badge, .uptime { white-space:nowrap; }
+.uptime { font-variant-numeric:tabular-nums; }
+
+.connection-warning { border: 1px solid var(--warning, #d99b35); background: #332b1b; padding: 16px; border-radius: 8px; margin-bottom: 20px; }
+.connection-warning[hidden] { display: none; }
+#alternate-hosts a { display: inline-block; margin: 8px 16px 0 0; }

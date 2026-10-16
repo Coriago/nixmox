@@ -20,6 +20,8 @@ type State struct {
 }
 
 type Manager struct {
+	// Set at composition time; callback must not block or read Manager state.
+	Changed   func()
 	dir       string
 	statePath string
 	client    Client
@@ -112,6 +114,7 @@ func (m *Manager) ensureLocked(ctx context.Context) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.state.LastPulledSHA = sha
+	m.state.RemoteSHA = sha
 	m.state.UpdateAvailable = false
 	return sha, m.persistLocked()
 }
@@ -147,5 +150,9 @@ func (m *Manager) CheckRemote(ctx context.Context) (bool, string, error) {
 }
 
 func (m *Manager) persistLocked() error {
-	return statefile.Write(m.statePath, m.state)
+	err := statefile.Write(m.statePath, m.state)
+	if err == nil && m.Changed != nil {
+		m.Changed()
+	}
+	return err
 }

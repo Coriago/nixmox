@@ -69,7 +69,7 @@ func Get(cfg *config.Config) HostInfo {
 	}
 
 	return HostInfo{
-		Resources:    resources(),
+		Resources:    resources(false),
 		Hostname:     hostname,
 		NixOSVersion: nixosVersion,
 		Kernel:       kernel,
@@ -77,4 +77,12 @@ func Get(cfg *config.Config) HostInfo {
 		AgentVersion: config.Version,
 		CurrentTime:  time.Now(),
 	}
+}
+
+// Sample refreshes telemetry on its own cadence rather than on task events.
+func Sample(cfg *config.Config) HostInfo {
+	r := resources(true)
+	h := Get(cfg)
+	h.Resources = r
+	return h
 }

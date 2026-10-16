@@ -16,8 +16,18 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := ""
-	if latest := s.latestRecord(s.Config.Hostname); latest != nil {
-		base = latest.GitSHA
+	if s.Records != nil {
+		history, err := s.Records.History(s.Config.Hostname)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		for _, record := range history {
+			if record.Status == "success" && record.Kind != "rollback" && record.Mode != "dry-activate" {
+				base = record.GitSHA
+				break
+			}
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()

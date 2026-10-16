@@ -6,7 +6,6 @@ pkgs.testers.runNixOSTest {
   nodes.machine = { config, pkgs, ... }: {
     imports = [ self.nixosModules.default ];
     services.nixmox.enable = true;
-    services.nixmox.package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
   };
 
   testScript = ''

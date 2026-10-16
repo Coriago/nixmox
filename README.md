@@ -17,12 +17,15 @@ Or `nix build` and `./result/bin/nixmox serve`. `nixmox status` queries the loca
 
 ### NixOS module
 
+The flake module defaults to this Nixmox release's package for the host architecture,
+so enabling the service needs no package assignment or overlay. Set
+`services.nixmox.package` only to override it with a custom build.
+
 ```nix
 {
   imports = [ inputs.nixmox.nixosModules.default ];
   services.nixmox = {
     enable = true;
-    package = inputs.nixmox.packages.x86_64-linux.default;
     advertiseAddr = "192.168.10.20"; # use an explicit address on multihomed hosts
     discovery = true;
     enablePower = true;
@@ -41,9 +44,9 @@ Configuration precedence: defaults → YAML (`--config` / `NIXMOX_CONFIG`) → e
 ## Console workflows
 
 - **Hosts:** online/offline inventory, apply/rollback, Wake-on-LAN start, shutdown. Host actions target the selected node, not the portal's local node.
-- **Host detail:** CPU utilization/model/cores, memory, load, interfaces/status/IPs/traffic, block devices/partitions/sizes/mounts, apply history and local job logs.
-- **Live updates:** one reconnecting SSE connection per page sends only changed HTML fragments. Local telemetry is sampled at most once every two seconds; remote telemetry follows the ten-second heartbeat. No frontend build toolchain is required.
-- **GitOps:** update availability and an on-demand preview of commits, changed files and diff statistics, comparing the last recorded applied revision to the available revision. This is a Git diff, **not** a NixOS service/package activation plan. Pull the revision you intend to apply; builds are pinned to the pulled commit, not a mutable checkout.
+- **Host detail:** revision sync and candidate preview, live host tasks and remote logs, apply history, and collapsible hardware/telemetry. Global Tasks aggregates reachable hosts and supports a live host filter.
+- **Live updates:** one reconnecting SSE connection per page carries changed HTML fragments and incremental log chunks. CPU/memory/I/O/bandwidth update every two seconds; inventory and local capacity refresh every 30 seconds. Uptime ticks once per second. Connection loss is visible, with automatic reconnect and links to other hosts. No frontend build toolchain is required.
+- **GitOps:** host inventory distinguishes repository updates, unapplied revisions, failures and boot staging. Pull, then queue a **Preview packages & configuration** on the host: it builds the pinned candidate without activation and compares packages and generated configuration against the running system. Source-level Git preview remains available. Preview cannot predict all activation-script effects; repeat it after changes to the revision or local inputs.
 - **Operations:** LAN discovery, install/wipe, serial/canary/batched rollouts, host inputs, and a bounded daemon-log tail. Full durable daemon logs remain in `journalctl -u nixmox`.
 
 ### Power
@@ -81,7 +84,9 @@ nix build .#installer-iso                          # x86_64 USB/DVD hybrid ISO
 nix build .#packages.aarch64-linux.installer-sd    # generic aarch64 SD image
 ```
 
-Write the resulting image to your chosen removable medium using your usual imaging tool. **Double-check the destination device.** The aarch64 image requires an aarch64 builder (or configured emulation) and a compatible board/bootloader; it is not a universal image for every SBC.
+Enable `services.nixmox.enableMedia = true` and open **Operations → Add a host · USB installer** to prepare and write the x86_64 ISO from the UI. Optionally include an SSH public key, select the attached drive, type its exact path, and follow write/readback verification progress. `services.nixmox.installerFlake` selects a trusted source/output (default `github:Coriago/nixmox#installer-iso`; pin a revision for reproducibility). The drive must be attached to the node serving the portal. Mounted/active disks and stale drive identities are rejected. The UI writes the whole image; it does not require pre-formatting.
+
+See [design decisions and the complete bootstrap workflow](docs/ui-and-bootstrap.md) for configuration, validation, preview limits, and reasoning. You can still write CLI-built images using another imaging tool. **Double-check the destination device.** The aarch64 image requires an aarch64 builder (or configured emulation) and a compatible board/bootloader; it is not a universal image for every SBC.
 
 The live image boots with a unique hostname, DHCP, discovery, and the portal enabled. SSH password authentication is disabled. Build an image containing your SSH public key for unattended remote installation:
 
@@ -123,8 +128,10 @@ Apply jobs pass `--impure` so Nix can read the local JSON. Pure/remote evaluatio
 
 The separate [`e2e/`](e2e/README.md) flake provides real VM deployment
 configurations with a marker, an extra package, and an activation service.
-After committing and pushing the fixture and accompanying changes to GitHub
-`main`, run `nix run .#github-e2e`. It boots three fresh VMs, validates discovery
+Run both parts as the **main final acceptance test**. For unpublished changes,
+run `nix run path:.#github-e2e -- --source-tree "$PWD"` to test an explicit Git
+snapshot of the working tree. After an authorized publication to GitHub `main`,
+`nix run .#github-e2e` tests that published revision. It boots three fresh VMs, validates discovery
 and both join paths, applies the pulled configuration to one node, then rolls it
 out across the cluster. Part 2 tests quorum loss, recovery, graceful removal,
 Raft de-escalation, and creating fresh clusters after removal.
@@ -144,6 +151,7 @@ nix develop --command go test -race ./...
 nix develop --command go vet ./...
 nix build .#checks.x86_64-linux.single-node-portal
 nix build .#checks.x86_64-linux.jobs-runner
+nix build .#checks.x86_64-linux.usb-installer
 nix build .#checks.x86_64-linux.gitops-pull
 nix build .#checks.x86_64-linux.gitops-apply
 nix build .#checks.x86_64-linux.cluster-lifecycle

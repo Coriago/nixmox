@@ -40,10 +40,13 @@ func EnsureKV(ctx context.Context, js jetstream.JetStream, name string, cfg Buck
 // never be 2: with 2 copies, quorum is 2 — losing either peer makes the bucket
 // read-only, strictly worse than R=1.
 func ScaleReplicas(ctx context.Context, js jetstream.JetStream, name string, replicas int) error {
+	return ScaleStream(ctx,js,"KV_"+name,replicas)
+}
+
+func ScaleStream(ctx context.Context, js jetstream.JetStream, streamName string, replicas int) error {
 	if replicas == 2 {
 		return fmt.Errorf("replicas=2 is forbidden (worse than R=1, no fault tolerance)")
 	}
-	streamName := "KV_" + name
 	s, err := js.Stream(ctx, streamName)
 	if err != nil {
 		return fmt.Errorf("lookup stream %s: %w", streamName, err)

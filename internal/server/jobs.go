@@ -3,7 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -23,10 +26,13 @@ func (s *Server) mountJobs(p *portal.Portal) {
 			if s.jobTarget(w, r) {
 				return
 			}
-			list, err := s.Store.List()
+			list, warnings, err := s.taskList(r, chi.URLParam(r, "nodeID") == "")
 			if err != nil {
 				http.Error(w, err.Error(), 500)
 				return
+			}
+			for _, warning := range warnings {
+				w.Header().Add("X-Nixmox-Task-Warning", warning)
 			}
 			if list == nil {
 				list = []jobs.Job{}
@@ -47,21 +53,84 @@ func (s *Server) mountJobs(p *portal.Portal) {
 				Log []string `json:"log"`
 			}{j, readLogTail(j, 500)})
 		})
+		s.Mux.Get(prefix+"/{id}/log/chunk", s.logChunk)
+		s.Mux.Get(prefix+"/{id}/log", func(w http.ResponseWriter, r *http.Request) {
+			if s.jobTarget(w, r) {
+				return
+			}
+			j, err := s.Store.Get(chi.URLParam(r, "id"))
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			f, err := os.Open(j.LogPath)
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			defer f.Close()
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Disposition", `attachment; filename="`+j.ID+`.log"`)
+			io.Copy(w, f)
+		})
 		s.Mux.Post(prefix, s.submitJob)
 	}
 	for _, path := range []string{"/jobs", "/hosts/{nodeID}/jobs"} {
 		s.Mux.Get(path, func(w http.ResponseWriter, r *http.Request) {
+			var list []jobs.Job
+			var warnings []string
+			var err error
+			target := chi.URLParam(r, "nodeID")
+			if target != "" && target != s.Config.Hostname {
+				peer, ok := s.peer(target)
+				if !ok {
+					http.NotFound(w, r)
+					return
+				}
+				err = s.requestPeer(r.Context(), peer, "GET", "/api/v1/hosts/"+url.PathEscape(target)+"/jobs", nil, &list)
+			} else {
+				list, warnings, err = s.taskList(r, target == "")
+			}
+			if err != nil {
+				http.Error(w, err.Error(), 503)
+				return
+			}
+			p.Jobs(w, list, warnings...)
+		})
+		s.Mux.Get(path+"/{id}", func(w http.ResponseWriter, r *http.Request) {
+			var j jobs.Job
+			var err error
+			target := chi.URLParam(r, "nodeID")
+			if target != "" && target != s.Config.Hostname {
+				peer, ok := s.peer(target)
+				if !ok {
+					http.NotFound(w, r)
+					return
+				}
+				err = s.requestPeer(r.Context(), peer, "GET", "/api/v1/hosts/"+url.PathEscape(target)+"/jobs/"+url.PathEscape(chi.URLParam(r, "id")), nil, &j)
+			} else {
+				j, err = s.Store.Get(chi.URLParam(r, "id"))
+			}
+			if err != nil {
+				http.Error(w, err.Error(), 503)
+				return
+			}
+			p.JobDetail(w, portal.JobDetailView{Job: j, Stream: true})
+		})
+	}
+	for _, path := range []string{"/partials/jobs", "/partials/hosts/{nodeID}/jobs"} {
+		s.Mux.Get(path, func(w http.ResponseWriter, r *http.Request) {
 			if s.jobTarget(w, r) {
 				return
 			}
-			list, err := s.Store.List()
+			list, warnings, err := s.taskList(r, chi.URLParam(r, "nodeID") == "")
 			if err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
-			p.Jobs(w, list)
+			p.JobsPartial(w, list, warnings...)
 		})
-		s.Mux.Get(path+"/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.Mux.Get(path+"/{id}/status", func(w http.ResponseWriter, r *http.Request) {
 			if s.jobTarget(w, r) {
 				return
 			}
@@ -70,20 +139,7 @@ func (s *Server) mountJobs(p *portal.Portal) {
 				http.Error(w, "unknown job", 404)
 				return
 			}
-			p.JobDetail(w, portal.JobDetailView{Job: j, Log: readLogTail(j, 500)})
-		})
-	}
-	for _, path := range []string{"/partials/jobs", "/partials/hosts/{nodeID}/jobs"} {
-		s.Mux.Get(path, func(w http.ResponseWriter, r *http.Request) {
-			if s.jobTarget(w, r) {
-				return
-			}
-			list, err := s.Store.List()
-			if err != nil {
-				http.Error(w, err.Error(), 500)
-				return
-			}
-			p.JobsPartial(w, list)
+			p.JobLogPartial(w, portal.JobDetailView{Job: j, Stream: true})
 		})
 		s.Mux.Get(path+"/{id}/log", func(w http.ResponseWriter, r *http.Request) {
 			if s.jobTarget(w, r) {
@@ -139,6 +195,15 @@ func (s *Server) submitJob(w http.ResponseWriter, r *http.Request) {
 		j, err = s.Runner.Submit(jobs.Job{Kind: req.Kind, Host: s.Config.Hostname, Name: req.Name, Command: req.Command, Args: req.Args, Directory: req.Directory})
 	case "echo":
 		j, err = s.Runner.Submit(jobs.Job{Kind: req.Kind, Host: s.Config.Hostname, Args: req.Args})
+	case "preview":
+		builder, ok := s.Apply.(interface {
+			Preview(context.Context) (jobs.Job, error)
+		})
+		if !ok {
+			http.Error(w, "system preview unavailable", 503)
+			return
+		}
+		j, err = builder.Preview(r.Context())
 	case "dry-build":
 		builder, ok := s.Apply.(interface {
 			DryBuild(context.Context) (jobs.Job, error)

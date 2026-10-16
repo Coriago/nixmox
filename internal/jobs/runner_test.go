@@ -105,3 +105,37 @@ func TestRunner(t *testing.T) {
 		}
 	})
 }
+
+func TestRecoverNeverReplaysUSBWrite(t *testing.T) {
+	store, _ := NewFileStore(t.TempDir())
+	if err := store.Create(Job{ID: "usb", Kind: "installer-write", Host: "local", State: "pending"}); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewRunner(store)
+	if err := runner.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	runner.Stop()
+	j, _ := store.Get("usb")
+	if j.State != "failed" || !strings.Contains(j.Error, "fresh confirmation") {
+		t.Fatalf("%+v", j)
+	}
+}
+
+func TestLogAppendOffsetsDescribePersistedBytes(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	appender := store.(interface {
+		AppendLogChunk(string, string) (LogChunk, error)
+	})
+	first, err := appender.AppendLogChunk("job-log", "café\n")
+	if err != nil || first.Offset != 0 || first.Next != int64(len("café\n")) {
+		t.Fatal(first, err)
+	}
+	next, err := appender.AppendLogChunk("job-log", "next\n")
+	if err != nil || next.Offset != first.Next || next.Next != first.Next+5 {
+		t.Fatal(next, err)
+	}
+}

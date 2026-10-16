@@ -9,12 +9,12 @@
             <th>NixOS Version</th>
             <th>Uptime</th>
             <th>Agent Version</th>
-            <th>Applied</th>
+            <th>Revision sync</th>
             <th>Status</th>
             <th>Actions</th>
         </tr>
     </thead>
-    <tbody hx-get="/partials/hosts" hx-trigger="every 5s">
+    <tbody data-live="/partials/hosts">
         {{template "hosts_partial" .}}
     </tbody>
 </table></div>
@@ -22,20 +22,19 @@
 
 {{define "hosts_partial"}}
 {{range .Hosts}}
-<tr>
+<tr data-node="{{.Host.Hostname}}">
     <td><a href="/hosts/{{.Host.Hostname}}">{{.Host.Hostname}}</a></td>
     <td>{{.Host.NixOSVersion}}</td>
-    <td>{{.Host.Uptime}}</td>
+    <td>{{template "host_uptime" .}}</td>
     <td>{{.Host.AgentVersion}}</td>
     <td>
-        {{if .Latest}}
-            <span title="gen {{.Latest.GenBefore}} → {{.Latest.GenAfter}} @ {{.Latest.Timestamp.Format "2006-01-02 15:04:05"}}">{{shortsha .Latest.GitSHA}}</span>
-            {{if eq .Latest.Status "failed"}}<span class="badge failed">failed</span>{{end}}
-        {{else}}—{{end}}
+        {{template "sync_badge" .}}{{template "deployment_progress" .}}
+        <small class="phase">Pulled {{if .PulledSHA}}{{shortsha .PulledSHA}}{{else}}—{{end}} · Available {{if .RemoteSHA}}{{shortsha .RemoteSHA}}{{else}}unknown{{end}}</small>
+        {{if .Latest}}<small class="phase">Last attempt {{shortsha .Latest.GitSHA}} · {{.Latest.Status}}</small>{{end}}<a href="/hosts/{{.Host.Hostname}}">Review changes →</a>
     </td>
     <td><span class="badge {{if .Online}}online{{else}}offline{{end}}">{{if .Online}}online{{else}}offline{{end}}</span></td>
     <td>
-        <button hx-post="/api/v1/hosts/{{.Host.Hostname}}/actions/apply" hx-swap="none" {{if not .Online}}disabled{{end}}>Apply</button>
+        {{template "apply_action" .}}
         <button hx-post="/api/v1/hosts/{{.Host.Hostname}}/actions/rollback" hx-swap="none"
             {{if not .Online}}disabled{{end}} hx-confirm="Roll back this host?" {{if .Latest}}title="roll back toward generation {{.Latest.GenBefore}}"{{end}}>Rollback</button>
  <button hx-post="/api/v1/hosts/{{.Host.Hostname}}/actions/start" hx-swap="none">Start (WoL)</button>

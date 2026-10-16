@@ -23,6 +23,8 @@ var (
 
 // Config holds all nixmox runtime settings.
 type Config struct {
+	EnableMedia     bool   `yaml:"enable_media"`
+	InstallerFlake  string `yaml:"installer_flake"`
 	InputsFile      string `yaml:"inputs_file"`
 	JoinSeed        string `yaml:"join_seed"`
 	EnablePower     bool   `yaml:"enable_power"`
@@ -74,6 +76,7 @@ func DefaultConfig() Config {
 	return Config{
 		DataDir:         defaultDataDir(),
 		HTTPAddr:        "127.0.0.1:8080",
+		InstallerFlake:  "github:Coriago/nixmox#installer-iso",
 		NATSPort:        4222,
 		ClusterPort:     6222,
 		LogLevel:        "info",
@@ -125,6 +128,9 @@ func loadFile(path string, cfg *Config) error {
 const envPrefix = "NIXMOX_"
 
 func loadEnv(cfg *Config) {
+	if v := os.Getenv(envPrefix + "INSTALLER_FLAKE"); v != "" {
+		cfg.InstallerFlake = v
+	}
 	if v := os.Getenv(envPrefix + "FLAKE_DIRECTORY"); v != "" {
 		cfg.FlakeDirectory = v
 	}
@@ -137,7 +143,7 @@ func loadEnv(cfg *Config) {
 	if v := os.Getenv(envPrefix + "JOIN_SEED"); v != "" {
 		cfg.JoinSeed = v
 	}
-	for key, dst := range map[string]*bool{"ENABLE_CUSTOM_TASKS": &cfg.EnableCustomTasks, "ENABLE_POWER": &cfg.EnablePower, "ENABLE_PROVISION": &cfg.EnableProvision, "DISCOVERY": &cfg.Discovery} {
+	for key, dst := range map[string]*bool{"ENABLE_MEDIA": &cfg.EnableMedia, "ENABLE_CUSTOM_TASKS": &cfg.EnableCustomTasks, "ENABLE_POWER": &cfg.EnablePower, "ENABLE_PROVISION": &cfg.EnableProvision, "DISCOVERY": &cfg.Discovery} {
 		if v := os.Getenv(envPrefix + key); v != "" {
 			*dst = v == "true" || v == "1" || v == "yes"
 		}

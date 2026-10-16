@@ -42,7 +42,7 @@ func TestPortal(t *testing.T) {
 		p.Index(rr, rows, cluster.ClusterState{Status: "clustered", ClusterName: "homelab", MemberCount: 1})
 
 		body := rr.Body.String()
-		for _, want := range []string{"test-host", "23.11", "online", "01234567", "Apply", "Rollback"} {
+		for _, want := range []string{"test-host", "23.11", "online", "01234567", "Pull revision first", "Rollback", "This UI", "data-live=\"/partials/sidebar\"", `data-online="true"`} {
 			if !strings.Contains(body, want) {
 				t.Errorf("index missing %q", want)
 			}

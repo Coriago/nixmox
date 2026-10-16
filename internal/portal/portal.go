@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"time"
 
 	"nixmox/internal/cluster"
 	"nixmox/internal/gitops"
@@ -23,18 +24,26 @@ type Portal struct {
 	Hostname string
 }
 type PageData struct {
-	Hostname string
-	Cluster  cluster.ClusterState
-	Hosts    []HostRow
-	Jobs     []jobs.Job
-	GitOps   *GitOpsView
-	Detail   *HostDetailView
-	Job      *JobDetailView
+	Hostname     string
+	Cluster      cluster.ClusterState
+	Hosts        []HostRow
+	Rollout      *RolloutView
+	TaskWarnings []string
+	Jobs         []jobs.Job
+	GitOps       *GitOpsView
+	Detail       *HostDetailView
+	Job          *JobDetailView
 }
 type HostRow struct {
-	Host   hostinfo.HostInfo
-	Latest *cluster.Record
-	Online bool
+	ConsoleAddress string
+	SampledAt      time.Time
+	Active         *jobs.Job
+	Unavailable    bool
+	PulledSHA      string
+	RemoteSHA      string
+	Host           hostinfo.HostInfo
+	Latest         *cluster.Record
+	Online         bool
 }
 type HostDetailView struct {
 	NodeID      string
@@ -46,8 +55,9 @@ type HostDetailView struct {
 	LocalLogs   bool
 }
 type JobDetailView struct {
-	Job jobs.Job
-	Log []string
+	Stream bool
+	Job    jobs.Job
+	Log    []string
 }
 type GitOpsView struct {
 	State            gitops.State
@@ -74,10 +84,10 @@ func bytesLabel(n uint64) string {
 	return fmt.Sprintf("%.1f %s", v, units[i])
 }
 
-var tmplFuncs = template.FuncMap{"shortsha": shortSHA, "bytes": bytesLabel}
+var tmplFuncs = template.FuncMap{"shortsha": shortSHA, "bytes": bytesLabel, "jobstate": jobState, "rate": func(n float64) string { return bytesLabel(uint64(n)) + "/s" }}
 
 func parsePage(pages ...string) (*template.Template, error) {
-	return template.New("").Funcs(tmplFuncs).ParseFS(embeddedFS, append([]string{"templates/base.html", "templates/resources.html"}, pages...)...)
+	return template.New("").Funcs(tmplFuncs).ParseFS(embeddedFS, append([]string{"templates/base.html", "templates/resources.html", "templates/task-rows.html", "templates/host-state.html"}, pages...)...)
 }
 func New() (*Portal, error) {
 	p := &Portal{pages: map[string]*template.Template{}}
@@ -110,11 +120,14 @@ func (p *Portal) Index(w http.ResponseWriter, rows []HostRow, state cluster.Clus
 func (p *Portal) HostsPartial(w http.ResponseWriter, rows []HostRow) {
 	p.render(w, "portal", "hosts_partial", PageData{Hosts: rows})
 }
-func (p *Portal) Jobs(w http.ResponseWriter, list []jobs.Job) {
-	p.render(w, "jobs", "jobs.html", PageData{Jobs: list})
+func (p *Portal) SidebarPartial(w http.ResponseWriter, rows []HostRow) {
+	p.render(w, "portal", "sidebar_hosts", PageData{Hosts: rows})
 }
-func (p *Portal) JobsPartial(w http.ResponseWriter, list []jobs.Job) {
-	p.render(w, "jobs", "jobs_partial", PageData{Jobs: list})
+func (p *Portal) Jobs(w http.ResponseWriter, list []jobs.Job, warnings ...string) {
+	p.render(w, "jobs", "jobs.html", PageData{Jobs: list, TaskWarnings: warnings})
+}
+func (p *Portal) JobsPartial(w http.ResponseWriter, list []jobs.Job, warnings ...string) {
+	p.render(w, "jobs", "jobs_partial", PageData{Jobs: list, TaskWarnings: warnings})
 }
 func (p *Portal) GitOps(w http.ResponseWriter, v GitOpsView) {
 	p.render(w, "gitops", "gitops.html", PageData{GitOps: &v})
@@ -144,4 +157,24 @@ func (p *Portal) Manage(w http.ResponseWriter) { p.render(w, "manage", "manage.h
 func (p *Portal) AssetsHandler() http.Handler {
 	assets, _ := fs.Sub(embeddedFS, "assets")
 	return http.StripPrefix("/assets/", http.FileServer(http.FS(assets)))
+}
+
+func (p *Portal) SyncPartial(w http.ResponseWriter, row HostRow) {
+	p.render(w, "host-detail", "sync_partial", PageData{Hosts: []HostRow{row}})
+}
+
+func jobState(j jobs.Job) string {
+	if j.State == "applied" && j.Kind != "apply" && j.Kind != "rollback" {
+		return "completed"
+	}
+	return j.State
+}
+
+type RolloutView struct {
+	State, Strategy, Error string
+	Hosts, Completed       []string
+}
+
+func (p *Portal) RolloutPartial(w http.ResponseWriter, v RolloutView) {
+	p.render(w, "manage", "rollout_partial", PageData{Rollout: &v})
 }

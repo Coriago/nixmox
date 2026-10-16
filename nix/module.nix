@@ -13,6 +13,12 @@ in
   };
 
   options.services.nixmox = {
+    enableMedia = mkEnableOption "destructive local USB installer writing";
+    installerFlake = mkOption {
+      type = types.str;
+      default = "github:Coriago/nixmox#installer-iso";
+      description = "Trusted x86_64 nixmox hybrid ISO flake output. Pin a revision for reproducible media; custom images may include SSH public keys.";
+    };
     enableCustomTasks = mkEnableOption "custom command tasks on the trusted management network";
     enablePower = mkEnableOption "host power controls (trusted management network only)";
     enableProvision = mkEnableOption "destructive nixos-anywhere provisioning";
@@ -131,10 +137,13 @@ in
       restartIfChanged = false;
       unitConfig.X-StopOnRemoval = false;
 
-      path = [ pkgs.git pkgs.nixos-rebuild pkgs.systemd pkgs.openssh ]
+      path = [ pkgs.git pkgs.nixos-rebuild pkgs.systemd pkgs.openssh pkgs.nix pkgs.diffutils ]
+        ++ optional cfg.enableMedia pkgs.util-linux
         ++ optional cfg.enableProvision pkgs.nixos-anywhere;
 
       environment = {
+        NIXMOX_ENABLE_MEDIA = boolToString cfg.enableMedia;
+        NIXMOX_INSTALLER_FLAKE = cfg.installerFlake;
         NIXMOX_DATA_DIR = cfg.dataDir;
         NIXMOX_INPUTS_FILE = cfg.inputsFile;
         NIXMOX_ENABLE_CUSTOM_TASKS = boolToString cfg.enableCustomTasks;

@@ -2,24 +2,28 @@
 {{with .Detail}}
 <div class="container">
     <h1>{{.NodeID}}</h1>
+<section><h2>Configuration sync</h2><div data-live="/partials/hosts/{{.NodeID}}/sync">Loading revision status…</div>
+<div class="actions"><button data-host-action="pull" data-node="{{.NodeID}}">Pull latest revision</button><button data-host-action="preview" data-node="{{.NodeID}}">Preview packages & configuration</button></div><p class="hint">Preview builds the pulled revision without activating it. Review the package closure and configuration diff in its task log, then apply.</p></section>
+    <h2>Host tasks</h2><p><a href="/hosts/{{.NodeID}}/jobs">All tasks and command logs →</a></p><div class="table-scroll"><table><thead><tr><th>Task</th><th>Kind</th><th>Host</th><th>Progress</th><th>Created</th></tr></thead><tbody data-live="/partials/hosts/{{.NodeID}}/jobs"><tr><td colspan="5">Loading tasks…</td></tr></tbody></table></div>
+<details><summary>Hardware, live telemetry & host controls</summary>
     <table class="table">
         <tr><th>NixOS Version</th><td>{{.Host.NixOSVersion}}</td></tr>
         <tr><th>Kernel</th><td>{{.Host.Kernel}}</td></tr>
         <tr><th>Agent Version</th><td>{{.Host.AgentVersion}}</td></tr>
-        <tr><th>Uptime</th><td>{{.Host.Uptime}}</td></tr>
         {{if .Latest}}
         <tr><th>Last apply</th><td>{{.Latest.Status}} — {{shortsha .Latest.GitSHA}} (gen {{.Latest.GenBefore}} → {{.Latest.GenAfter}})</td></tr>
         {{end}}
     </table>
 
     <div class="actions">
-      <button hx-post="/api/v1/hosts/{{.NodeID}}/actions/apply" hx-swap="none">Apply</button>
+
       <button hx-post="/api/v1/hosts/{{.NodeID}}/actions/reboot" hx-vals='{"confirm":"{{.NodeID}}"}' hx-confirm="Reboot this host in one minute?" hx-swap="none">Reboot</button>
       <button class="danger" hx-post="/api/v1/hosts/{{.NodeID}}/actions/shutdown" hx-vals='{"confirm":"{{.NodeID}}"}' hx-confirm="Shut down this host in one minute?" hx-swap="none">Shutdown</button>
       <button class="danger" hx-post="/api/v1/hosts/{{.NodeID}}/actions/leave" hx-vals='{"confirm":"{{.NodeID}}"}' hx-confirm="Remove this host from its cluster? It will return to setup." hx-swap="none">Leave cluster</button>
     </div>
     <div data-live="/partials/hosts/{{.NodeID}}/resources">{{template "resources" $}}</div>
-    <p><a href="/hosts/{{.NodeID}}/jobs">Tasks and command logs →</a></p>
+
+</details>
     <h2>Apply history</h2>
     <table class="table">
         <thead>
@@ -32,18 +36,11 @@
                 <th>Job</th>
             </tr>
         </thead>
-        <tbody hx-get="/partials/hosts/{{.NodeID}}/applylog" hx-trigger="every 5s">
+        <tbody data-live="/partials/hosts/{{.NodeID}}/applylog">
             {{template "applylog_partial" $}}
         </tbody>
     </table>
 
-    <h2>Latest job log</h2>
-    {{if .LocalLogs}}
-        {{if .RecentJobID}}<p>Job <a href="/jobs/{{.RecentJobID}}">{{.RecentJobID}}</a></p>{{end}}
-        <pre class="log" hx-get="/partials/hosts/{{.NodeID}}/joblog" hx-trigger="every 2s">{{template "hostjoblog_partial" $}}</pre>
-    {{else}}
-        <p class="hint">Job logs live on the host's own disk — open this host's portal to view them.</p>
-    {{end}}
 </div>
 {{end}}
 {{end}}
@@ -71,3 +68,11 @@
 {{define "host-detail.html"}}
 {{template "base.html" .}}
 {{end}}
+
+{{define "sync_partial"}}{{range .Hosts}}
+<p>{{template "sync_badge" .}}</p>{{template "deployment_progress" .}}
+<p>Uptime: {{template "host_uptime" .}}</p>
+<div class="revision-grid"><div>Last attempt<strong>{{if .Latest}}{{shortsha .Latest.GitSHA}} · {{.Latest.Status}}{{else}}Never{{end}}</strong></div><div>Pulled candidate<strong>{{if .PulledSHA}}{{shortsha .PulledSHA}}{{else}}Not pulled{{end}}</strong></div><div>Available in repository<strong>{{if .RemoteSHA}}{{shortsha .RemoteSHA}}{{else}}Not checked{{end}}</strong></div></div>
+<p class="hint">Revision status is not a runtime health check. Boot mode requires a reboot; local inputs can change independently of Git.</p>
+{{template "apply_action" .}}
+{{end}}{{end}}

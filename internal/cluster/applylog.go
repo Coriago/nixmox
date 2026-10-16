@@ -13,6 +13,8 @@ import (
 const applyLogKeep = 50
 
 type Record struct {
+	Kind      string    `json:"kind,omitempty"`
+	Mode      string    `json:"mode,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	Status    string    `json:"status"`
 	GitSHA    string    `json:"git_sha"`

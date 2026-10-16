@@ -5,24 +5,26 @@
     <table class="table">
         <tr><th>Kind</th><td>{{.Job.Kind}}</td></tr>
         <tr><th>Host</th><td>{{.Job.Host}}</td></tr>
-        <tr><th>State</th><td><span class="badge state-{{.Job.State}}">{{.Job.State}}</span></td></tr>
         <tr><th>Command</th><td><code>{{.Job.Command}}</code></td></tr>
         <tr><th>Args</th><td><code>{{range .Job.Args}}{{.}} {{end}}</code></td></tr>
         {{if .Job.GitSHA}}<tr><th>Git SHA</th><td>{{.Job.GitSHA}}</td></tr>{{end}}
-        {{if .Job.GenBefore}}<tr><th>Generations</th><td>{{.Job.GenBefore}} → {{.Job.GenAfter}}</td></tr>{{end}}
         <tr><th>Created</th><td>{{.Job.CreatedAt.Format "2006-01-02 15:04:05"}}</td></tr>
-        <tr><th>Updated</th><td>{{.Job.UpdatedAt.Format "2006-01-02 15:04:05"}}</td></tr>
     </table>
 
     <h2>Log</h2>
-    <div hx-get="/partials/hosts/{{.Job.Host}}/jobs/{{.Job.ID}}/log" hx-trigger="every 2s">{{template "joblog_partial" $}}</div>
+    <div data-live="/partials/hosts/{{.Job.Host}}/jobs/{{.Job.ID}}/status">{{template "joblog_partial" $}}</div>
+    <p class="hint">Live tail; download the complete log for all output.</p>
+    <p id="log-status" role="status"></p>
+    <pre class="log" data-log="/api/v1/hosts/{{.Job.Host}}/jobs/{{.Job.ID}}/log">Connecting to log stream…</pre>
 </div>
 {{end}}
 {{end}}
 
 {{define "joblog_partial"}}
-{{with .Job}}<p>State: <strong>{{.Job.State}}</strong>{{if .Job.ExitCode}} · Exit code: {{.Job.ExitCode}}{{end}}</p><pre class="log">{{range .Log}}{{.}}
-{{else}}(no log output yet){{end}}</pre>{{end}}
+{{with .Job}}{{if or (eq .Job.State "building") (eq .Job.State "applying")}}<progress aria-label="Task progress" {{if .Job.Total}}max="{{.Job.Total}}" value="{{.Job.Progress}}"{{end}}></progress>{{end}}<p>{{.Job.Phase}}</p><small>Updated {{.Job.UpdatedAt.Format "2006-01-02 15:04:05"}}{{if .Job.GenAfter}} · Generation {{.Job.GenBefore}} → {{.Job.GenAfter}}{{end}}</small>
+{{with .Job.Preview}}<section><h2>System preview</h2><p class="hint">Running {{.Running}}<br>Candidate {{.Candidate}}</p>{{if .Truncated}}<p class="error">Preview truncated. Download the complete task log to review all changes.</p>{{end}}<h3>Packages added, removed or changed</h3><pre>{{.Packages}}</pre><h3>Configuration and service unit diff</h3><pre>{{.Configuration}}</pre><p class="hint">No activation was performed. Runtime effects of activation scripts are not fully predictable. Re-run after pulling another revision or changing local inputs.</p></section>{{end}}
+<a href="/api/v1/hosts/{{.Job.Host}}/jobs/{{.Job.ID}}/log">Download complete log</a>{{if .Job.Error}}<p class="error">{{.Job.Error}}</p>{{end}}<p>State: <strong>{{jobstate .Job}}</strong>{{if .Job.ExitCode}} · Exit code: {{.Job.ExitCode}}{{end}}</p>{{if not .Stream}}<pre class="log">{{range .Log}}{{.}}
+{{else}}(no log output yet){{end}}</pre>{{end}}{{end}}
 {{end}}
 
 {{define "job-detail.html"}}

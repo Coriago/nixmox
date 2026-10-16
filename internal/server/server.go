@@ -12,14 +12,19 @@ import (
 	"github.com/go-chi/chi/v5"
 	"nixmox/internal/cluster"
 	"nixmox/internal/config"
+	"nixmox/internal/events"
 	"nixmox/internal/gitops"
 	"nixmox/internal/jobs"
+	"nixmox/internal/messaging"
 )
 
 type Server struct {
+	Bus         *messaging.Bus
+	Updates     *events.Signal
 	lifetime    context.Context
 	cancel      context.CancelFunc
 	workers     sync.WaitGroup
+	mediaMu     sync.Mutex
 	operationMu sync.Mutex
 	rolloutMu   sync.Mutex
 	rollout     Rollout
@@ -37,6 +42,8 @@ type Server struct {
 	Cluster     ClusterAPI
 	View        *cluster.View
 }
+
+func (s *Server) SetBus(bus *messaging.Bus) { s.Bus = bus; bus.Handle = s.handleMessage }
 
 // GitOpsManager is the server's seam to the gitops layer (real Manager in
 // production, fakes in tests).

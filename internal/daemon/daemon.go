@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -15,10 +16,13 @@ import (
 	"nixmox/internal/cluster"
 	"nixmox/internal/config"
 	"nixmox/internal/discovery"
+	"nixmox/internal/events"
 	"nixmox/internal/gitops"
 	"nixmox/internal/hostinfo"
 	"nixmox/internal/jobs"
 	"nixmox/internal/logbuf"
+	"nixmox/internal/messaging"
+	"nixmox/internal/natsx"
 	"nixmox/internal/portal"
 	"nixmox/internal/server"
 )
@@ -39,23 +43,32 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	if err := cfg.EnsureDataDir(); err != nil {
 		return err
 	}
-	store, err := jobs.NewFileStore(cfg.DataDir)
+	files, err := jobs.NewFileStore(cfg.DataDir)
 	if err != nil {
 		return err
 	}
+	updates, publications := &events.Signal{}, &events.Signal{}
+	changed := func() { updates.Notify(); publications.Notify() }
+	var bus *messaging.Bus
+	store := jobs.ObservableStore{Store: files, Changed: changed, LogAppended: func(id string, chunk jobs.LogChunk) {
+		if bus != nil {
+			bus.PublishLog(id, chunk)
+		}
+	}}
 	runner := jobs.NewRunner(store)
 	defer runner.Shutdown()
 	git, err := GitOps(cfg)
 	if err != nil {
 		return err
 	}
+	git.Changed = changed
 	records, err := cluster.NewLocalRecordStore(cfg.DataDir)
 	if err != nil {
 		return err
 	}
 	mirror := cluster.NewSwitchingRecordStore(records)
 	manager := apply.NewManager(cfg, git, mirror, runner, store, cfg.Hostname)
-	runner.OnTerminal = manager.HandleTerminal
+	runner.OnTerminal = func(j jobs.Job) { manager.HandleTerminal(j); changed() }
 
 	clusterIP := cfg.AdvertiseAddr
 	if clusterIP == "" {
@@ -63,6 +76,7 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	}
 	supervisor := cluster.NewSupervisor(cfg, cfg.DataDir, clusterIP)
 	view := cluster.NewView()
+	view.Changed = updates.Notify
 	if err := view.Load(cfg.DataDirPath("hosts.json")); err != nil {
 		log.Printf("inventory: %v", err)
 	}
@@ -73,29 +87,24 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	}()
 	runtime := cluster.NewRuntime(view, mirror, func() cluster.HostPayload {
 		h := hostinfo.Get(cfg)
-		p := cluster.HostPayload{Kernel: h.Kernel, NodeID: cfg.Hostname, Hostname: h.Hostname, NixOSVersion: h.NixOSVersion, AgentVersion: h.AgentVersion, Uptime: h.Uptime, Resources: h.Resources, HTTPAddress: cfg.PeerAddress(), ClusterRoute: fmt.Sprintf("nats://%s:%d", clusterIP, cfg.ClusterPort), PulledSHA: git.State().LastPulledSHA}
+		p := cluster.HostPayload{Kernel: h.Kernel, NodeID: cfg.Hostname, Hostname: h.Hostname, NixOSVersion: h.NixOSVersion, AgentVersion: h.AgentVersion, Uptime: h.Uptime, Resources: h.Resources, HTTPAddress: cfg.PeerAddress(), ClusterRoute: fmt.Sprintf("nats://%s:%d", clusterIP, cfg.ClusterPort), RemoteSHA: git.State().RemoteSHA, PulledSHA: git.State().LastPulledSHA}
+		active, err := jobs.ActiveDeployment(store)
+		p.ActiveDeployment, p.StatusUnavailable = active, err != nil
 		if latest, ok, err := records.Latest(cfg.Hostname); err == nil && ok {
 			p.ApplyRecord = &latest
 		}
 		return p
 	})
-	supervisor.OnReconfigure = runtime.Rearm
-	if err := supervisor.Start(ctx); err != nil {
-		return err
-	}
-	defer supervisor.Stop()
-	defer runtime.Stop()
-	if cfg.JoinSeed != "" && supervisor.AutoJoinAllowed() {
-		if err := supervisor.JoinCluster(ctx, cfg.JoinSeed); err != nil {
-			log.Printf("configured join: %v (retry via portal)", err)
-		}
-	}
+	runtime.Telemetry = func() hostinfo.HostInfo { return hostinfo.Sample(cfg) }
+	runtime.TelemetryChanged = updates.Notify
+	runtime.Changes = publications
 	p, err := portal.New()
 	if err != nil {
 		return err
 	}
 	p.Hostname = cfg.Hostname
 	srv := server.New(cfg, store, runner)
+	srv.Updates = updates
 	srv.Logs = logs
 	srv.SetGitOps(git)
 	srv.SetApply(manager, mirror)
@@ -115,11 +124,64 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	srv.MountGitOps(p)
 	srv.MountApply(p)
 	srv.MountCluster(p)
+	bus, err = messaging.New(ctx, cfg.Hostname, cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	bus.Changed = changed
+	srv.SetBus(bus)
+	supervisor.OnReconfigure = func(c context.Context, emb *natsx.EmbeddedServer) { runtime.Rearm(c, emb); bus.Rearm(c, emb) }
 	if err := runner.Recover(); err != nil {
 		return err
 	}
+	if err := supervisor.Start(ctx); err != nil {
+		return err
+	}
+	defer supervisor.Stop()
+	defer runtime.Stop()
+	defer bus.Stop()
+	if cfg.JoinSeed != "" && supervisor.AutoJoinAllowed() {
+		if err := supervisor.JoinCluster(ctx, cfg.JoinSeed); err != nil {
+			log.Printf("configured join: %v (retry via portal)", err)
+		}
+	}
 	if cfg.GitPollInterval > 0 {
-		poller := gitops.NewPoller(git, func(sha string) { manager.OnNewSHAContext(ctx, sha) })
+		poller := gitops.NewPoller(git, func(sha string) {
+			if !cfg.AutoApply {
+				return
+			}
+			for _, path := range []string{"/api/v1/gitops/pull", "/api/v1/apply"} {
+				call, cancel := context.WithTimeout(ctx, time.Minute)
+				res, err := bus.Command(call, messaging.Request{Target: cfg.Hostname, Method: "POST", Path: path})
+				cancel()
+				if err != nil || res.Status >= 300 {
+					log.Printf("auto-apply command: %v %s", err, res.Body)
+					return
+				}
+				// Pull must finish before apply pins a revision.
+				if path == "/api/v1/gitops/pull" {
+					var j jobs.Job
+					if json.Unmarshal(res.Body, &j) != nil {
+						return
+					}
+					for {
+						notification := updates.Watch()
+						current, err := store.Get(j.ID)
+						if err != nil || current.State == "failed" {
+							return
+						}
+						if current.State == "applied" {
+							break
+						}
+						select {
+						case <-ctx.Done():
+							return
+						case <-notification:
+						}
+					}
+				}
+			}
+		})
 		spawn(func() {
 			t := time.NewTicker(time.Duration(cfg.GitPollInterval) * time.Second)
 			defer t.Stop()

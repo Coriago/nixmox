@@ -11,7 +11,7 @@
 
       mkPackage = target: nixpkgs.legacyPackages.${target}.callPackage ./nix/package.nix {
         ldflags = [
-          "-X nixmox/internal/config.Version=0.0.1"
+          "-X nixmox/internal/config.Version=0.2.0"
           "-X nixmox/internal/config.Commit=${self.rev or self.dirtyRev or "unknown"}"
         ];
       };
@@ -35,8 +35,10 @@
         default = nixmox;
         github-e2e = pkgs.writeShellApplication {
           name = "nixmox-github-e2e";
-          runtimeInputs = [ pkgs.python3 pkgs.openssh pkgs.sshpass ];
+          runtimeInputs = [ (pkgs.python3.withPackages (p: [ p.playwright ])) pkgs.openssh pkgs.sshpass pkgs.git ];
           runtimeEnv = {
+            NIXMOX_E2E_CHROMIUM = "${pkgs.chromium}/bin/chromium";
+            NIXMOX_E2E_BROWSER = ./e2e/browser.py;
             NIXMOX_E2E_VM1 = self.nixosConfigurations.node1.config.system.build.vm;
             NIXMOX_E2E_VM2 = self.nixosConfigurations.node2.config.system.build.vm;
             NIXMOX_E2E_VM3 = self.nixosConfigurations.node3.config.system.build.vm;
@@ -82,9 +84,16 @@
         ];
       };
 
-      nixosModules.default = import ./nix/module.nix;
+      nixosModules.default = { pkgs, ... }: {
+        imports = [ ./nix/module.nix ];
+        options.services.nixmox.package = lib.mkOption {
+          default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          defaultText = lib.literalExpression "inputs.nixmox.packages.\${pkgs.stdenv.hostPlatform.system}.default";
+        };
+      };
 
       checks.${system} = {
+        usb-installer = import ./nix/checks/usb-installer.nix { inherit self pkgs; };
         cluster-lifecycle = import ./nix/checks/cluster-lifecycle.nix {
           inherit self pkgs;
         };

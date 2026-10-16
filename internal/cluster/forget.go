@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/nats-io/nats.go/jetstream"
+	"nixmox/internal/messaging"
 	"nixmox/internal/natsx"
 )
 
@@ -45,6 +46,11 @@ func (s *Supervisor) PrepareLeave(ctx context.Context, remaining int) error {
 		if err := natsx.ScaleReplicas(ctx, emb.JS, bucket, 1); err != nil {
 			return err
 		}
+	}
+	if _, err := emb.JS.Stream(ctx, messaging.Stream); err == nil {
+		return natsx.ScaleStream(ctx, emb.JS, messaging.Stream, 1)
+	} else if !errors.Is(err, jetstream.ErrStreamNotFound) {
+		return err
 	}
 	return nil
 }

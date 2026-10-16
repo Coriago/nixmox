@@ -6,12 +6,14 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -87,13 +89,93 @@ class Suite:
     def artifact(self, name, data):
         (self.work / name).write_text(json.dumps(data, indent=2) + '\n')
 
-    def api(self, node, path, body=None, method=None, timeout=35):
+    def api(self, node, path, body=None, method=None, timeout=75, headers=None):
         request = urllib.request.Request(f'http://127.0.0.1:{8080+node}{path}',
             data=None if body is None else json.dumps(body).encode(),
             method=method or ('GET' if body is None else 'POST'),
-            headers={'Content-Type': 'application/json'})
+            headers={'Content-Type': 'application/json', **(headers or {})})
         with HTTP.open(request, timeout=timeout) as response:
             return json.load(response)
+
+    def text(self, node, path):
+        with HTTP.open(f'http://127.0.0.1:{8080+node}{path}', timeout=15) as response:
+            return response.read().decode()
+
+    def fragments(self, node, paths):
+        query = urllib.parse.urlencode([('partial', path) for path in paths])
+        with HTTP.open(f'http://127.0.0.1:{8080+node}/api/v1/events?{query}', timeout=15) as response:
+            event = ''
+            for raw in response:
+                line = raw.decode().strip()
+                if line.startswith('event: '):
+                    event = line[7:]
+                elif line.startswith('data: '):
+                    require(event != 'fragment-errors', line)
+                    if event == 'fragments':
+                        return json.loads(line[6:])
+        raise AssertionError('SSE closed without a fragment event')
+
+    def expect_status(self, node, path, status, body=None):
+        try:
+            self.api(node, path, body)
+        except urllib.error.HTTPError as error:
+            require(error.code == status, f'{path}: expected {status}, got {error.code}')
+            return
+        raise AssertionError(f'{path}: expected HTTP {status}')
+
+    def prepare_source(self, source):
+        """Serve an explicitly requested immutable working-tree snapshot to guests."""
+        source = source.resolve()
+        port = free_port()
+        repo_url = f'git://10.0.2.2:{port}/source'
+        destination = self.work / 'source'
+        destination.mkdir()
+        names = subprocess.check_output(['git', '-C', str(source), 'ls-files', '-z',
+                                         '--cached', '--others', '--exclude-standard']).split(b'\0')
+        for raw in set(names):
+            if not raw:
+                continue
+            name = os.fsdecode(raw)
+            src, dst = source / name, destination / name
+            if not src.exists() and not src.is_symlink():
+                continue
+            require(not Path(name).is_absolute() and '..' not in Path(name).parts, name)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_symlink():
+                dst.symlink_to(os.readlink(src))
+            else:
+                shutil.copy2(src, dst)
+        require(not (destination / 'e2e/source.json').exists(), 'source.json is reserved for snapshot runs')
+        (destination / 'e2e/source.json').write_text(json.dumps({'repo_url': repo_url}) + '\n')
+        def git(*args):
+            return subprocess.check_output(['git', '-C', str(destination), *args], text=True).strip()
+        git('init', '-q', '--initial-branch=main')
+        git('add', '.')
+        git('-c', 'user.name=nixmox E2E', '-c', 'user.email=e2e@localhost',
+            'commit', '-q', '-m', 'Explicit working-tree E2E snapshot')
+        revision = git('rev-parse', 'HEAD')
+        self.state.update(source_mode='working-tree-snapshot', repo_url=repo_url,
+                          expected_revision=revision, source_path=str(source), source_port=port)
+        self.state['source_base'] = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+        self.state['source_status'] = subprocess.check_output(['git', '-C', str(source), 'status', '--short'], text=True)
+        (self.work / 'working-tree.patch').write_bytes(subprocess.check_output(['git', '-C', str(source), 'diff', '--binary', 'HEAD']))
+        with (self.work / 'source-server.log').open('ab') as log:
+            process = subprocess.Popen(['git', 'daemon', '--reuseaddr', '--export-all', '--listen=127.0.0.1',
+                f'--port={port}', f'--base-path={self.work}', str(destination)],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        self.state['source_pid'] = process.pid
+        self.save()
+        poll('snapshot Git server', lambda: subprocess.check_output(
+            ['git', 'ls-remote', f'git://127.0.0.1:{port}/source', 'HEAD'], text=True).startswith(revision), 30)
+        self.say(f'Explicit snapshot source: {repo_url} @ {revision}; no publication to GitHub')
+
+    def stop_source(self):
+        pid = self.state.get('source_pid')
+        if pid:
+            with contextlib.suppress(OSError):
+                command = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+                if os.fsencode(str(self.work / 'source')) in command and b'daemon' in command:
+                    os.kill(pid, 15)
 
     def ssh_args(self, node):
         return ['sshpass', '-e', 'ssh', '-p', str(2220+node),
@@ -223,9 +305,9 @@ class Suite:
                             synced.add(stream['name'])
                     seen.add(stream['name'])
                 if replicas == 3:
-                    require(len(data['streams']) == 2, data)
+                    require(len(data['streams']) == 3, data)
             require(len(leaders) <= 1, leaders)
-            return (meta_current and seen == {'KV_hosts', 'KV_applylog'} and
+            return (meta_current and seen == {'KV_hosts', 'KV_applylog', 'nixmox_commands'} and
                     (replicas != 3 or synced == seen))
         poll(f'Raft size={size}, stream replicas={replicas}', check, 240)
         for node in nodes:
@@ -301,7 +383,7 @@ class Suite:
             nonlocal previous
             result = self.api(observer, path)
             self.artifact(f'node{target}-{identity}.json', result)
-            lines = result.get('log', [])
+            lines = result.get('log') or []
             if lines != previous:
                 # Print new output while retaining the complete response on disk.
                 for output in log_delta(previous, lines):
@@ -376,14 +458,18 @@ class Suite:
             'test "$(readlink -f /run/current-system)" != "$(cat /var/lib/nixmox/e2e-before)"')
 
     def deploy(self):
-        self.stage('1.3 Pull the same real GitHub main revision on all nodes')
+        self.command_delivery()
+        self.stage('1.3 Pull the same declared source revision on all nodes')
         revisions = set()
         for node in NODES:
             self.command(node, node, 'Verify original generation',
                 'test ! -e /etc/nixmox-e2e-generation; test ! -e /run/current-system/sw/bin/hello; '
                 'readlink -f /run/current-system > /var/lib/nixmox/e2e-before')
+            source = self.state.get('repo_url', 'https://github.com/Coriago/nixmox.git')
+            if self.state.get('source_mode') == 'working-tree-snapshot':
+                self.api(node, '/api/v1/gitops', {'repo_url': source, 'branch': 'main'}, method='PUT')
             config = self.api(node, '/api/v1/gitops')
-            require(config['repo_url'] == 'https://github.com/Coriago/nixmox.git' and config['branch'] == 'main', config)
+            require(config['repo_url'] == source and config['branch'] == 'main', config)
             pull = self.api(node, '/api/v1/gitops/pull', {})
             self.wait_job(node, node, pull)
             sha = self.api(node, '/api/v1/gitops')['last_pulled_sha']
@@ -392,17 +478,34 @@ class Suite:
         require(len(revisions) == 1, f'main moved during pull; rerun with a stable revision: {revisions}')
         self.state['revision'] = revisions.pop()
         self.save()
-        self.say(f'GitHub main revision: {self.state["revision"]}')
+        self.state.setdefault('source_mode', 'github-main')
+        if self.state.get('expected_revision'):
+            require(self.state['revision'] == self.state['expected_revision'], 'guests did not pull the snapshot')
+        self.save()
+        self.say(f'{self.state["source_mode"]} revision: {self.state["revision"]}')
+        self.system_preview()
         self.stage('1.4 Single-node apply through another node')
-        job = self.api(2, '/api/v1/hosts/node1/actions/apply', {})
+        job = self.live_deployment()
         result = self.wait_job(2, 1, job)
         require(result['git_sha'] == self.state['revision'] and result['mode'] == 'switch', result)
         require(any('dir=e2e' in arg and '#node1' in arg for arg in result['args']), result)
         self.activated(1)
+        require('Revision applied' in self.text(2, '/partials/hosts/node1/sync'), 'host sync did not update')
+        settled = self.fragments(2, ['/partials/hosts', '/partials/sidebar'])
+        require('Reapply' in settled['/partials/hosts'] and 'Apply update' in settled['/partials/hosts'],
+                'hosts did not distinguish deployed and unapplied revisions')
+        require('Revision applied' in settled['/partials/sidebar'] and 'data-job=' not in settled['/partials/sidebar'],
+                'sidebar did not settle after activation')
         for node in (2, 3):
             self.command(node, node, 'Verify single apply isolation', 'test ! -e /etc/nixmox-e2e-generation; test ! -e /run/current-system/sw/bin/hello')
+        self.stage('1.4b Browser: live sidebar and steady uptime during bursty events')
+        chatter = self.command(2, 1, 'Browser event burst',
+            'for i in {1..40}; do echo "browser event $i"; sleep 0.1; done', wait=False)
+        subprocess.run([sys.executable, os.environ['NIXMOX_E2E_BROWSER'],
+                        'http://127.0.0.1:8082', str(self.work)], check=True, timeout=180)
+        self.wait_job(2, 1, chatter)
         self.stage('1.5 Serial rollout; verify each node selected its own configuration')
-        baseline = {node: {j['id'] for j in self.api(node, '/api/v1/jobs')} for node in NODES}
+        baseline = {node: {j['id'] for j in self.api(node, f'/api/v1/hosts/node{node}/jobs')} for node in NODES}
         rollout_logs = {}
         last_status = None
         self.api(1, '/api/v1/rollout', {'strategy': 'serial'})
@@ -414,11 +517,11 @@ class Suite:
                 self.say(f'Rollout: {status}')
                 last_status = status
             for node in NODES:
-                for job in self.api(node, '/api/v1/jobs'):
+                for job in self.api(node, f'/api/v1/hosts/node{node}/jobs'):
                     if job['id'] in baseline[node] or job['kind'] != 'apply':
                         continue
                     value = self.api(node, f'/api/v1/jobs/{job["id"]}')
-                    lines = value.get('log', [])
+                    lines = value.get('log') or []
                     previous = rollout_logs.get(job['id'], [])
                     if lines != previous:
                         self.artifact(f'node{node}-{job["id"]}.json', value)
@@ -442,7 +545,7 @@ class Suite:
             full_log = self.ssh(node, f'cat -- {shlex.quote(applied["log_path"])}', quiet=True)
             (self.work / f'node{node}-{applied["id"]}.log').write_text(full_log + '\n')
             self.artifact(f'node{node}-deployment-records.json', records)
-            history = self.api(node, '/api/v1/jobs')
+            history = self.api(node, f'/api/v1/hosts/node{node}/jobs')
             self.ssh(node, 'systemctl restart nixmox')
             self.ready(node)
             self.ssh(node, 'actual=$(readlink -f /proc/$(systemctl show -p MainPID --value nixmox)/exe); '
@@ -453,6 +556,98 @@ class Suite:
                 require(current['state'] == old['state'] and current.get('log'), 'job history lost on restart')
         self.topology(NODES, 3, 3)
 
+    def command_delivery(self):
+        self.stage('1.2d Durable local/remote NATS commands, duplicate protection, no peer HTTP dependency')
+        for observer, target in ((1, 1), (2, 3)):
+            identity = 'e2e-' + uuid.uuid4().hex
+            marker = '/tmp/' + identity
+            path = f'/api/v1/hosts/node{target}/jobs'
+            body = {'kind': 'command', 'command': '/run/current-system/sw/bin/bash',
+                    'args': ['-euc', f'echo once >> {marker}']}
+            blocked = observer != target
+            if blocked:
+                self.ssh(target, f'iptables -I INPUT -s 192.168.42.{observer} -p tcp --dport 8080 -j REJECT')
+            try:
+                first = self.api(observer, path, body, headers={'Idempotency-Key': identity})
+                second = self.api(observer, path, body, headers={'Idempotency-Key': identity})
+                require(first['id'] == second['id'], 'same command created duplicate jobs')
+                self.wait_job(observer, target, first)
+                require(self.ssh(target, f'wc -l < {marker}') == '1', 'command executed more than once')
+                receipt = self.api(observer, f'/api/v1/hosts/node{target}/commands/{identity}')
+                require(receipt['state'] == 'completed' and receipt['target'] == f'node{target}', receipt)
+                self.artifact(f'node{target}-command-receipt.json', receipt)
+                self.ssh(target, 'systemctl restart nixmox')
+                self.ready(target)
+                third = self.api(observer, path, body, headers={'Idempotency-Key': identity})
+                require(third['id'] == first['id'], 'receipt lost across daemon restart')
+                require(self.ssh(target, f'wc -l < {marker}') == '1', 'restart replayed the command')
+            finally:
+                if blocked:
+                    self.ssh(target, f'iptables -D INPUT -s 192.168.42.{observer} -p tcp --dport 8080 -j REJECT')
+        self.say('PASS: local and remote commands have durable receipts; retries/restarts do not duplicate execution; peer HTTP blocked')
+
+    def live_deployment(self):
+        paths = ['/partials/hosts', '/partials/sidebar']
+        query = urllib.parse.urlencode([('partial', path) for path in paths])
+        # Open before submitting: require a subsequent event on the same connection.
+        with HTTP.open(f'http://127.0.0.1:8082/api/v1/events?{query}', timeout=30) as response:
+            job = self.api(2, '/api/v1/hosts/node1/actions/apply', {})
+            observed = {}
+            deadline = time.monotonic() + 30
+            for raw in response:
+                require(time.monotonic() < deadline, 'deployment state never arrived on live stream')
+                line = raw.decode().strip()
+                if not line.startswith('data: '):
+                    continue
+                changes = json.loads(line[6:])
+                for path in paths:
+                    html = changes.get(path, '')
+                    if job['id'] in html and 'spinner' in html:
+                        observed[path] = html
+                if len(observed) == len(paths):
+                    require('<progress' in observed[paths[0]], 'hosts deployment progress missing')
+                    sidebar = observed[paths[1]]
+                    require(all(f'data-node="node{node}"' in sidebar for node in NODES), 'sidebar omitted a host')
+                    require(sidebar.count('This UI') == 1 and 'node2<small class="serving-node"' in sidebar,
+                            'sidebar misidentified the serving node')
+                    self.artifact('live-deployment-fragments.json', observed)
+                    self.say('PASS: open SSE connection updated hosts and sidebar during remote deployment')
+                    return job
+        raise AssertionError('deployment stream ended before progress appeared')
+
+    def system_preview(self):
+        self.stage('1.3a Remote system preview: packages, configuration, no activation')
+        before = self.ssh(1, 'readlink -f /run/current-system')
+        records = self.api(1, '/api/v1/hosts/node1/applylog')
+        require('Never applied' in self.text(2, '/partials/hosts/node1/sync'), 'missing unapplied revision status')
+        job = self.api(2, '/api/v1/hosts/node1/jobs', {'kind': 'preview'})
+        preview = self.wait_job(2, 1, job)
+        require(preview['git_sha'] == self.state['revision'], preview)
+        plan = preview['preview']
+        require(plan['running'] == before and plan['candidate'] != before, plan)
+        require('hello' in plan['packages'], 'preview omitted the added package')
+        require('nixmox-e2e-generation' in plan['configuration'] and 'nixmox-e2e-proof' in plan['configuration'],
+                'preview omitted configuration/service changes')
+        require(self.ssh(1, 'readlink -f /run/current-system') == before, 'preview activated the candidate')
+        require(self.api(1, '/api/v1/hosts/node1/applylog') == records, 'preview wrote an apply record')
+        self.artifact('system-preview.json', preview)
+        self.task_scope(2, 1, job['id'])
+        require('System preview' in self.text(2, f'/hosts/node1/jobs/{job["id"]}'), 'remote preview page missing')
+        for node in NODES:
+            self.expect_status(node, '/api/v1/media', 403)
+            self.expect_status(node, '/api/v1/media/write', 403, {})
+        self.say('PASS: evaluated preview shows package/configuration changes without applying; media writes disabled by default')
+
+    def task_scope(self, observer, target, identity):
+        target_jobs = self.api(observer, f'/api/v1/hosts/node{target}/jobs')
+        local_jobs = self.api(observer, f'/api/v1/hosts/node{observer}/jobs')
+        require(any(j['id'] == identity for j in target_jobs), 'target filter omitted its task')
+        require(all(j['host'] == f'node{target}' for j in target_jobs), 'host filter includes another host')
+        require(not any(j['id'] == identity for j in local_jobs), 'target task appeared in observer history')
+        require(any(j['id'] == identity for j in self.api(observer, '/api/v1/jobs')), 'global history omitted remote task')
+        require(f'data-live="/partials/hosts/node{target}/jobs"' in self.text(observer, f'/hosts/node{target}'),
+                'host view does not subscribe to its tasks')
+
     def remote_tasks(self, observer=2, target=3):
         nonce = uuid.uuid4().hex
         before = self.hosts(observer)[f'node{target}']['uptime']
@@ -461,12 +656,21 @@ class Suite:
         path = f'/api/v1/hosts/node{target}/jobs/{job["id"]}'
         def live():
             value = self.api(observer, path)
-            return value['state'] == 'building' and nonce in value.get('log', [])
+            return value['state'] == 'building' and nonce in (value.get('log') or [])
         poll('remote output visible before completion', live, 12)
+        self.task_scope(observer, target, job['id'])
+        task_path = f'/partials/hosts/node{target}/jobs'
+        log_path = f'{task_path}/{job["id"]}/log'
+        fragments = self.fragments(observer, [task_path, log_path])
+        require(job['id'] in fragments[task_path] and '<progress' in fragments[task_path], 'live task progress missing')
+        require(nonce in fragments[log_path], 'SSE omitted running remote output')
+        self.artifact(f'node{target}-{job["id"]}-live-fragments.json', fragments)
         queued = self.command(observer, target, 'Cross-node FIFO probe', 'uname -n', wait=False)
         require(self.api(observer, f'/api/v1/hosts/node{target}/jobs/{queued["id"]}')['state'] == 'pending', 'task did not queue')
         self.wait_job(observer, target, job)
         self.wait_job(observer, target, queued)
+        log = self.text(observer, f'/api/v1/hosts/node{target}/jobs/{job["id"]}/log')
+        require(nonce in log and 'finished' in log, 'remote complete-log download missing output')
         poll('fresh remote heartbeat, not a cached view', lambda: self.hosts(observer)[f'node{target}']['uptime'] > before)
         self.command(observer, target, 'Check job destination', f'test "$(uname -n)" = node{target}')
         failed = self.command(observer, target, 'Expected command failure', "printf 'expected stderr\\n' >&2; exit 7", wait=False)
@@ -482,6 +686,7 @@ class Suite:
         self.membership([2, 3], NODES, offline=[1])
         for node in (2, 3):
             self.quorum_probe(node)
+        require('node1: offline' in self.text(2, '/partials/jobs'), 'global tasks hid an offline host')
         self.remote_tasks()
         self.stage('1.7 Restart the same disk, reconnect, preserve deployment and history')
         self.start(1)
@@ -517,7 +722,7 @@ class Suite:
         while time.monotonic() < deadline:
             data = self.diagnostics(1)
             require(data['mode'] == 'raft' and data['meta']['cluster_size'] == 3, data)
-            require(len(data['streams']) == 2 and all(s['config']['num_replicas'] == 3 for s in data['streams']), data)
+            require(len(data['streams']) == 3 and all(s['config']['num_replicas'] == 3 for s in data['streams']), data)
             self.quorum_probe(1, writable=False)
             time.sleep(3)
         self.artifact('lost-quorum.json', self.diagnostics(1))
@@ -588,6 +793,7 @@ class Suite:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source-tree', type=Path, help='explicit unpublished working-tree snapshot; full lifecycle, no GitHub publication')
     parser.add_argument('--part', choices=['all','1','2'], default='all')
     parser.add_argument('--work-dir', type=Path)
     parser.add_argument('--keep-alive', action='store_true', default=os.getenv('NIXMOX_E2E_KEEP_ALIVE') == '1')
@@ -596,6 +802,8 @@ def main():
     resume = args.part == '2' or args.stop
     if resume and args.work_dir is None:
         parser.error('--part 2 and --stop require --work-dir')
+    if resume and args.source_tree:
+        parser.error('--source-tree is only valid for a new run')
     work = args.work_dir or Path(tempfile.mkdtemp(prefix='nixmox-cluster-e2e.'))
     suite = Suite(work, resume)
     passed = False
@@ -603,6 +811,8 @@ def main():
         if args.stop:
             return
         if args.part != '2':
+            if args.source_tree:
+                suite.prepare_source(args.source_tree)
             suite.form_cluster()
             suite.deploy()
             suite.availability()
@@ -624,6 +834,7 @@ def main():
             for node in NODES:
                 with contextlib.suppress(Exception):
                     suite.stop(node, hard=True)
+            suite.stop_source()
         suite.say(f'Artifacts retained: {suite.work}')
 
 

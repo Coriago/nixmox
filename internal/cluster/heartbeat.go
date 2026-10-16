@@ -10,22 +10,28 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"nixmox/internal/events"
 	"nixmox/internal/hostinfo"
+	"nixmox/internal/jobs"
 )
 
 type HostPayload struct {
-	Kernel       string             `json:"kernel"`
-	Resources    hostinfo.Resources `json:"resources"`
-	HTTPAddress  string             `json:"http_address"`
-	ClusterRoute string             `json:"cluster_route"`
-	NodeID       string             `json:"node_id"`
-	Hostname     string             `json:"hostname"`
-	NixOSVersion string             `json:"nixos_version"`
-	AgentVersion string             `json:"agent_version"`
-	Uptime       time.Duration      `json:"uptime"`
-	PulledSHA    string             `json:"pulled_sha"`
-	ApplyRecord  *Record            `json:"apply_record,omitempty"`
-	Online       bool               `json:"online"`
+	ObservedAt        time.Time          `json:"-"`
+	ActiveDeployment  *jobs.Job          `json:"active_deployment,omitempty"`
+	StatusUnavailable bool               `json:"status_unavailable,omitempty"`
+	Kernel            string             `json:"kernel"`
+	Resources         hostinfo.Resources `json:"resources"`
+	HTTPAddress       string             `json:"http_address"`
+	ClusterRoute      string             `json:"cluster_route"`
+	NodeID            string             `json:"node_id"`
+	Hostname          string             `json:"hostname"`
+	NixOSVersion      string             `json:"nixos_version"`
+	AgentVersion      string             `json:"agent_version"`
+	Uptime            time.Duration      `json:"uptime"`
+	RemoteSHA         string             `json:"remote_sha"`
+	PulledSHA         string             `json:"pulled_sha"`
+	ApplyRecord       *Record            `json:"apply_record,omitempty"`
+	Online            bool               `json:"online"`
 }
 
 func (p HostPayload) Info() hostinfo.HostInfo {
@@ -35,9 +41,11 @@ func (p HostPayload) Info() hostinfo.HostInfo {
 // View is the in-memory, watcher-fed picture of the cluster's hosts. It is
 // never authoritative — the `hosts` KV bucket is.
 type View struct {
-	mu    sync.RWMutex
-	hosts map[string]HostPayload
-	seen  map[string]time.Time
+	Changed   func()
+	mu        sync.RWMutex
+	hosts     map[string]HostPayload
+	telemetry map[string]telemetrySample
+	seen      map[string]time.Time
 }
 
 func NewView() *View {
@@ -50,6 +58,9 @@ func (v *View) Upsert(p HostPayload) {
 	p.Online = true
 	v.hosts[p.NodeID] = p
 	v.seen[p.NodeID] = time.Now()
+	if v.Changed != nil {
+		v.Changed()
+	}
 }
 
 func (v *View) MarkOffline(nodeID string) {
@@ -58,6 +69,9 @@ func (v *View) MarkOffline(nodeID string) {
 	if p, ok := v.hosts[nodeID]; ok {
 		p.Online = false
 		v.hosts[nodeID] = p
+		if v.Changed != nil {
+			v.Changed()
+		}
 	}
 }
 
@@ -66,6 +80,10 @@ func (v *View) List() []HostPayload {
 	defer v.mu.RUnlock()
 	out := make([]HostPayload, 0, len(v.hosts))
 	for id, p := range v.hosts {
+		p.ObservedAt = v.seen[id]
+		if sample, ok := v.telemetry[id]; ok && sample.observed.After(p.ObservedAt) {
+			p.Resources, p.Uptime, p.ObservedAt = sample.info.Resources, sample.info.Uptime, sample.observed
+		}
 		// MaxAge expiry need not emit a KV deletion. Liveness also expires locally.
 		if p.Online && time.Since(v.seen[id]) > hostsBucketTTL {
 			p.Online = false
@@ -87,6 +105,7 @@ func (v *View) Count() int {
 // mark it offline. Put failures never crash the daemon — standalone liveness
 // outranks cluster visibility.
 type Heartbeater struct {
+	Changes  *events.Signal
 	kv       jetstream.KeyValue
 	nodeID   string
 	interval time.Duration
@@ -98,6 +117,8 @@ func NewHeartbeater(kv jetstream.KeyValue, nodeID string, interval time.Duration
 }
 
 func (h *Heartbeater) Beat(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	p := h.build()
 	data, err := json.Marshal(p)
 	if err != nil {
@@ -109,15 +130,25 @@ func (h *Heartbeater) Beat(ctx context.Context) {
 }
 
 func (h *Heartbeater) Run(ctx context.Context) {
-	h.Beat(ctx)
 	t := time.NewTicker(h.interval)
 	defer t.Stop()
 	for {
+		var changed <-chan struct{}
+		if h.Changes != nil {
+			changed = h.Changes.Watch()
+		}
+		h.Beat(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			h.Beat(ctx)
+		case <-changed:
+			// Coalesce chatty build logs while preserving the latest snapshot.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
 		}
 	}
 }

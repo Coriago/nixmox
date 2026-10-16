@@ -1,0 +1,17 @@
+{{define "sync_badge"}}
+<span class="badge {{.SyncClass}}"><span class="status-icon {{if .Active}}spinner{{end}}" aria-hidden="true">{{.SyncIcon}}</span>{{.SyncLabel}}</span>
+{{end}}
+{{define "deployment_progress"}}{{if .Active}}
+<a class="phase" href="/hosts/{{.Host.Hostname}}/jobs/{{.Active.ID}}">{{if .Active.Phase}}{{.Active.Phase}}{{else}}{{.SyncLabel}}{{end}} →</a>
+<progress aria-label="Deployment progress" {{if .Active.Total}}max="{{.Active.Total}}" value="{{.Active.Progress}}"{{end}}></progress>
+{{end}}{{end}}
+{{define "apply_action"}}
+<button hx-post="/api/v1/hosts/{{.Host.Hostname}}/actions/apply" hx-swap="none" {{if .ApplyDisabled}}disabled{{end}}><span aria-hidden="true">{{if eq .ApplyLabel "Reapply"}}↻{{else}}↑{{end}}</span> {{.ApplyLabel}}</button>
+{{end}}
+{{define "sidebar_hosts"}}{{range .Hosts}}
+<a class="host-nav-item {{.SyncClass}}" href="/hosts/{{.Host.Hostname}}" data-node="{{.Host.Hostname}}" data-console-address="{{.ConsoleAddress}}" data-online="{{if .Online}}true{{else}}false{{end}}" {{if .Active}}data-job="{{.Active.ID}}"{{end}}>
+ <span class="host-nav-name"><span class="status-icon {{if .Active}}spinner{{end}}" aria-hidden="true">{{.SyncIcon}}</span>{{.Host.Hostname}}{{if eq .Host.Hostname $.Hostname}}<small class="serving-node" title="This node is serving your console">This UI</small>{{end}}</span>
+ <small>{{.SyncLabel}}</small>{{if .Active}}<small>{{.Active.Phase}}</small>{{end}}
+</a>
+{{else}}<span class="hint">Loading hosts…</span>{{end}}{{end}}
+{{define "host_uptime"}}<span class="uptime" data-uptime-host="{{.Host.Hostname}}" data-uptime="{{.UptimeSeconds}}" data-online="{{if .Online}}true{{else}}false{{end}}">{{.Host.Uptime}}</span>{{end}}

@@ -17,6 +17,7 @@ import (
 	"nixmox/internal/cluster"
 	"nixmox/internal/hostinfo"
 	"nixmox/internal/jobs"
+	"nixmox/internal/messaging"
 	"nixmox/internal/portal"
 	"nixmox/internal/power"
 )
@@ -75,12 +76,25 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, id string) bool
 		return false
 	}
 	p, ok := s.peer(id)
-	if !ok || !p.Online || p.HTTPAddress == "" {
+	if !ok || !p.Online || (s.Bus == nil && p.HTTPAddress == "") {
 		http.Error(w, "host unavailable", 503)
 		return true
 	}
 	if r.Header.Get("X-Nixmox-Forwarded") != "" {
 		http.Error(w, "peer identity mismatch", 409)
+		return true
+	}
+	if s.Bus != nil {
+		if r.Method != "GET" {
+			http.Error(w, "command destination mismatch", 409)
+			return true
+		}
+		res, err := s.Bus.Query(r.Context(), messaging.Request{Target: id, Method: "GET", Path: r.URL.RequestURI()})
+		if err != nil {
+			http.Error(w, err.Error(), 503)
+		} else {
+			writeTransportResponse(w, res)
+		}
 		return true
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, "http://"+p.HTTPAddress+r.URL.RequestURI(), r.Body)
@@ -97,11 +111,17 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, id string) bool
 	}
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	w.Header().Set("Content-Disposition", resp.Header.Get("Content-Disposition"))
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, io.LimitReader(resp.Body, 4<<20))
+	if strings.HasSuffix(r.URL.Path, "/log") && strings.HasPrefix(r.URL.Path, "/api/v1/hosts/") {
+		io.Copy(w, resp.Body)
+	} else {
+		io.Copy(w, io.LimitReader(resp.Body, 4<<20))
+	}
 	return true
 }
 func (s *Server) mountOperations(p *portal.Portal) {
+	s.mountMedia()
 	s.Mux.Get("/api/v1/events", s.events)
 	s.Mux.Get("/partials/logs", func(w http.ResponseWriter, r *http.Request) {
 		if s.Logs != nil {
@@ -111,8 +131,7 @@ func (s *Server) mountOperations(p *portal.Portal) {
 	s.Mux.Get("/partials/rollout", func(w http.ResponseWriter, r *http.Request) {
 		s.rolloutMu.Lock()
 		defer s.rolloutMu.Unlock()
-		b, _ := json.MarshalIndent(s.rollout, "", "  ")
-		io.WriteString(w, html.EscapeString(string(b)))
+		p.RolloutPartial(w, portal.RolloutView{State: s.rollout.State, Strategy: s.rollout.Strategy, Error: s.rollout.Error, Hosts: s.rollout.Hosts, Completed: s.rollout.Completed})
 	})
 	s.Mux.Get("/api/v1/discovery", func(w http.ResponseWriter, r *http.Request) {
 		if s.Discoveries == nil {
@@ -157,7 +176,7 @@ func (s *Server) mountOperations(p *portal.Portal) {
 func (s *Server) hostAction(w http.ResponseWriter, r *http.Request) {
 	id, action := chi.URLParam(r, "nodeID"), chi.URLParam(r, "action")
 	switch action {
-	case "apply", "rollback", "shutdown", "reboot", "start", "leave":
+	case "pull", "apply", "rollback", "shutdown", "reboot", "start", "leave":
 	default:
 		http.Error(w, "unknown action", 400)
 		return
@@ -187,6 +206,19 @@ func (s *Server) hostAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.forward(w, r, id) {
+		return
+	}
+	if action == "pull" {
+		if s.Git == nil {
+			http.Error(w, "GitOps unavailable", 503)
+			return
+		}
+		j, err := s.Runner.Submit(jobs.Job{Kind: "git-pull", Host: id})
+		if err != nil {
+			http.Error(w, err.Error(), 409)
+			return
+		}
+		respond(w, 202, j)
 		return
 	}
 	if action == "apply" || action == "rollback" {
@@ -286,6 +318,28 @@ func (s *Server) requestPeer(ctx context.Context, p cluster.HostPayload, method,
 		if err := json.NewEncoder(&b).Encode(body); err != nil {
 			return err
 		}
+	}
+	// Enrollment and route removal bridge disconnected NATS topologies. Their
+	// destination API still submits to its own durable NATS command consumer.
+	if s.Bus != nil && p.NodeID != "" && path != "/api/v1/cluster/forget" && path != "/api/v1/cluster/join/initiate" {
+		req := messaging.Request{Target: p.NodeID, Method: method, Path: path, ContentType: "application/json", Body: b.Bytes()}
+		var res messaging.Response
+		var err error
+		if method == "GET" {
+			res, err = s.Bus.Query(ctx, req)
+		} else {
+			res, err = s.Bus.Command(ctx, req)
+		}
+		if err != nil {
+			return err
+		}
+		if res.Status >= 300 {
+			return fmt.Errorf("%d: %s", res.Status, res.Body)
+		}
+		if out != nil {
+			return json.Unmarshal(res.Body, out)
+		}
+		return nil
 	}
 	if _, _, err := net.SplitHostPort(p.HTTPAddress); err != nil {
 		return fmt.Errorf("host %s has no reachable HTTP address", p.NodeID)

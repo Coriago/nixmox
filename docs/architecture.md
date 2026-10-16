@@ -5,18 +5,19 @@
 - `cmd/nixmox`: CLI/config resolution and signal handling, no subsystem construction.
 - `daemon`: composition root; pairs startup with cleanup on success and error.
 - `config`: typed runtime settings, address resolution and validation.
-- `hostinfo`: read-only Linux inventory. Shared two-second telemetry sampling reads procfs/sysfs without spawning subprocesses.
+- `hostinfo`: read-only Linux inventory. Shared two-second activity sampling and 30-second inventory/capacity collection read procfs/sysfs without spawning subprocesses.
 - `jobs`: persisted tasks, per-host execution exclusion, command/log handling. `Runner.Submit` centralizes IDs, timestamps and rejected-task terminalization. Command kinds are allowlisted; commands receive argument vectors, not interpolated shells.
 - `apply` / `gitops`: Git synchronization, previews, revision-pinned builds and apply records. Local host inputs are intentionally impure.
 - `cluster` / `natsx`: serialized membership transitions, generation-scoped heartbeats/watchers, local-first record mirroring and the embedded server. Removing a node archives old cluster data rather than reusing its Raft identity.
 - `discovery`: bounded, expiring multicast hints; never admission or authorization.
 - `server`: transport, request validation, peer routing and rollout coordination. Forwarded operations resolve only registered hosts and have a one-hop loop guard.
 - `portal`: one renderer and shared page data. Full pages and SSE fragments use the same templates. Static assets cannot expose template source.
+- `media`: trusted installer arguments, USB disk eligibility, identity revalidation, exclusive writes and verified readback.
 - `statefile`, `logbuf`, `power`: small reusable primitives for atomic private state, bounded log tails and WoL packets.
 
 ## State
 
-Existing `node.json`, `git/state.json`, `jobs/` and local `applylog/` formats remain readable. New JSON fields are additive. Old nodes without advertised HTTP addresses cannot receive remote operations: upgrade them first.
+Existing `node.json`, `git/state.json`, `jobs/` and local `applylog/` formats remain readable. New JSON fields are additive. Remote operations require the NATS command/query protocol on both nodes: upgrade the cluster together. Advertised HTTP addresses are used at enrollment/removal boundaries and for alternative-console links.
 
 Additional state:
 
@@ -29,7 +30,7 @@ Do not reuse a hostname for two machines. The seed rejects a join with its own h
 
 ## Operational limitations
 
-Authentication/TLS, partition-safe forced eviction, distributed rollout locks, durable rollout resumption, application health gates and an evaluated NixOS activation diff are not implemented. Do not infer these guarantees from a successful HTTP response. Rollout coordination and daemon-log tails are in-memory.
+Authentication/TLS, partition-safe forced eviction, distributed rollout locks, durable rollout resumption, application health gates and complete simulation of NixOS activation effects are not implemented. Candidate package/configuration previews are available; see [UI and bootstrap decisions](ui-and-bootstrap.md). Do not infer these guarantees from a successful HTTP response. Rollout coordination and daemon-log tails are in-memory.
 
 System command success means the command finished successfully. A scheduled shutdown is not observed power-off, and sending WoL is not observed power-on. Provisioning assumes preconfigured SSH access and a reviewed target flake; it does not infer or validate which physical disk disko should erase.
 
@@ -44,3 +45,13 @@ The former two-node test incorrectly required the seed to be elected leader: the
 A three-node NixOS VM check verifies remote input writes, cluster removal without warnings, persistence across restart, and rejoining. Removing routes uses live NATS reloads rather than restarting surviving Raft members.
 
 Physical Wake-on-LAN, destructive installation, and board-specific image booting must be validated on disposable hardware. Image evaluation is not a boot test.
+
+## Durable command and live-event transport
+
+See [communications.md](communications.md) for the current transport contract:
+HTTP/SSE is the browser gateway; local and remote mutations both enter JetStream;
+peer reads use NATS request/reply; persisted receipts protect against duplicate
+execution; watched snapshots drive live UI updates. Independent Core NATS feeds carry fast telemetry and offset-based log chunks. The command stream follows
+metadata replication and graceful removal rules. Enrollment/removal retain an
+HTTP bridge between disconnected broker topologies, with durable NATS dispatch
+at the receiving API.

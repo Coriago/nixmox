@@ -137,7 +137,7 @@ func (s *Server) applyAndWait(ctx context.Context, h cluster.HostPayload) error 
 		return err
 	}
 	var id string
-	if h.NodeID == s.Config.Hostname {
+	if s.Bus == nil && h.NodeID == s.Config.Hostname {
 		j, err := s.Apply.Apply(ctx)
 		if err != nil {
 			return err
@@ -155,12 +155,16 @@ func (s *Server) applyAndWait(ctx context.Context, h cluster.HostPayload) error 
 	if id == "" {
 		return fmt.Errorf("empty job ID")
 	}
-	tick := time.NewTicker(time.Second)
+	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 	for {
+		var changed <-chan struct{}
+		if s.Updates != nil {
+			changed = s.Updates.Watch()
+		}
 		var j jobs.Job
 		var err error
-		if h.NodeID == s.Config.Hostname {
+		if s.Bus == nil && h.NodeID == s.Config.Hostname {
 			j, err = s.Store.Get(id)
 		} else {
 			err = s.requestPeer(ctx, h, "GET", "/api/v1/jobs/"+id, nil, &j)
@@ -178,6 +182,7 @@ func (s *Server) applyAndWait(ctx context.Context, h cluster.HostPayload) error 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-tick.C:
+		case <-changed:
 		}
 	}
 }

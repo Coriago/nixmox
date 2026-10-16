@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/go-chi/chi/v5"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 func (s *Server) MountHandlers(p *portal.Portal, auth Middleware) {
 	s.Mux.Use(auth.Wrap)
 	s.Mux.Use(sameOrigin)
+	s.Mux.Use(s.transport)
 	s.mountOperations(p)
 
 	s.Mux.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +58,21 @@ func (s *Server) MountHandlers(p *portal.Portal, auth Middleware) {
 	})
 
 	s.mountJobs(p)
+	s.Mux.Get("/api/v1/hosts/{nodeID}/commands/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if s.forward(w, r, chi.URLParam(r, "nodeID")) {
+			return
+		}
+		if s.Bus == nil {
+			http.Error(w, "command transport unavailable", 503)
+			return
+		}
+		receipt, err := s.Bus.Receipt(chi.URLParam(r, "id"))
+		if err != nil {
+			http.Error(w, "command receipt not found", 404)
+			return
+		}
+		respond(w, 200, receipt)
+	})
 
 	s.Mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		p.Index(w, s.hostRows(), s.clusterState())
@@ -63,6 +80,9 @@ func (s *Server) MountHandlers(p *portal.Portal, auth Middleware) {
 
 	s.Mux.Get("/partials/hosts", func(w http.ResponseWriter, r *http.Request) {
 		p.HostsPartial(w, s.hostRows())
+	})
+	s.Mux.Get("/partials/sidebar", func(w http.ResponseWriter, r *http.Request) {
+		p.SidebarPartial(w, s.hostRows())
 	})
 
 	s.Mux.Handle("/assets/*", p.AssetsHandler())

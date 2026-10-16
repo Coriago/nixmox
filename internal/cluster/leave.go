@@ -89,11 +89,19 @@ func (v *View) Remove(id string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	delete(v.hosts, id)
+	delete(v.telemetry, id)
 	delete(v.seen, id)
+	if v.Changed != nil {
+		v.Changed()
+	}
 }
 func (v *View) Clear() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.hosts = map[string]HostPayload{}
+	v.telemetry = nil
 	v.seen = map[string]time.Time{}
+	if v.Changed != nil {
+		v.Changed()
+	}
 }

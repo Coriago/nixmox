@@ -31,7 +31,7 @@ func (s *Supervisor) Diagnostics() (Diagnostics, error) {
 	out.Meta = info.Meta
 	for _, account := range info.AccountDetails {
 		for _, stream := range account.Streams {
-			if stream.Name == "KV_hosts" || stream.Name == "KV_applylog" {
+			if stream.Name == "KV_hosts" || stream.Name == "KV_applylog" || stream.Name == "nixmox_commands" {
 				out.Streams = append(out.Streams, stream)
 			}
 		}

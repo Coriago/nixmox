@@ -8,23 +8,41 @@ import (
 	"nixmox/internal/hostinfo"
 	"nixmox/internal/jobs"
 	"nixmox/internal/portal"
+	"time"
 )
 
 func (s *Server) hostRows() []portal.HostRow {
 	if s.Cluster != nil && s.View != nil && s.Cluster.State(0).Status == "clustered" {
-		payloads := s.View.List()
-		rows := make([]portal.HostRow, 0, len(payloads))
-		for _, p := range payloads {
-			rows = append(rows, portal.HostRow{
-				Host:   p.Info(),
-				Latest: p.ApplyRecord,
-				Online: p.Online,
-			})
+		var rows []portal.HostRow
+		for _, p := range s.View.List() {
+			row := portal.HostRow{ConsoleAddress: p.HTTPAddress, Host: p.Info(), Latest: p.ApplyRecord, Online: p.Online, PulledSHA: p.PulledSHA, RemoteSHA: p.RemoteSHA, Active: p.ActiveDeployment, Unavailable: p.StatusUnavailable, SampledAt: p.ObservedAt}
+			if !p.Online {
+				row.Active = nil
+			}
+			if p.NodeID == s.Config.Hostname {
+				row = s.localHostRow()
+			}
+			rows = append(rows, row)
 		}
 		return rows
 	}
+	return []portal.HostRow{s.localHostRow()}
+}
+
+func (s *Server) localHostRow() portal.HostRow {
 	h := hostinfo.Get(s.Config)
-	return []portal.HostRow{{Host: h, Latest: s.latestRecord(h.Hostname), Online: true}}
+	row := portal.HostRow{Host: h, Latest: s.latestRecord(h.Hostname), Online: true, SampledAt: time.Now()}
+	if s.Git != nil {
+		state := s.Git.State()
+		row.PulledSHA, row.RemoteSHA = state.LastPulledSHA, state.RemoteSHA
+	}
+	if s.Store != nil {
+		var err error
+		row.Active, err = jobs.ActiveDeployment(s.Store)
+		row.Unavailable = err != nil
+	}
+
+	return row
 }
 
 func (s *Server) latestRecord(nodeID string) *cluster.Record {
@@ -50,6 +68,14 @@ func (s *Server) clusterState() cluster.ClusterState {
 }
 
 func (s *Server) MountApply(p *portal.Portal) {
+	s.Mux.Get("/partials/hosts/{nodeID}/sync", func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "nodeID")
+		if s.forward(w, r, id) {
+			return
+		}
+		p.SyncPartial(w, s.localHostRow())
+	})
+
 	s.Mux.Post("/api/v1/apply", func(w http.ResponseWriter, r *http.Request) {
 		s.runApplyKind(w, r, false)
 	})
@@ -128,7 +154,6 @@ func (s *Server) MountApply(p *portal.Portal) {
 		if s.Records != nil {
 			view.History, _ = s.Records.History(nodeID)
 		}
-		s.fillRecentJobLog(&view, nodeID == h.Hostname)
 		p.HostDetail(w, view)
 	})
 

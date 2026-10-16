@@ -1,11 +1,11 @@
 {{define "content"}}
 <div class="container">
-    <h1>Jobs</h1>
+    <h1>Tasks</h1><label>Filter by host<select id="history-host"><option value="">All reachable hosts</option></select></label>
     <p>Tasks run sequentially on the selected host and remain in its history.</p>
     <label>Host <select id="task-host"></select></label>
     <button id="task-history">View host history</button>
     <button id="dry-build">Queue GitOps dry-build</button>
-    <form id="custom-task">
+    <details><summary>Run a custom task</summary><form id="custom-task">
       <h2>Custom task</h2>
       <p>Requires custom tasks enabled on the target host. Commands run with that agent's permissions.</p>
       <label>Name <input name="name" placeholder="Check storage"></label>
@@ -13,7 +13,7 @@
       <label>Arguments (JSON array) <textarea name="args" required>["-h"]</textarea></label>
       <label>Working directory (optional, absolute) <input name="directory" placeholder="/tmp"></label>
       <button type="submit">Queue task</button>
-    </form>
+    </form></details>
     <table class="table">
         <thead>
             <tr>
@@ -24,23 +24,11 @@
                 <th>Created At</th>
             </tr>
         </thead>
-        <tbody id="jobs-table" hx-get="/partials/hosts/{{.Hostname}}/jobs" hx-trigger="every 2s">
+        <tbody id="jobs-table" data-live="/partials/jobs">
             {{template "jobs_partial" .}}
         </tbody>
     </table>
 </div>
-{{end}}
-
-{{define "jobs_partial"}}
-{{range .Jobs}}
-<tr>
-    <td><a href="/hosts/{{.Host}}/jobs/{{.ID}}">{{.ID}}</a></td>
-    <td>{{if .Name}}{{.Name}} · {{end}}{{.Kind}}</td>
-    <td>{{.Host}}</td>
-    <td><span class="badge state-{{.State}}">{{.State}}</span></td>
-    <td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
-</tr>
-{{end}}
 {{end}}
 
 {{define "jobs.html"}}

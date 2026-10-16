@@ -44,28 +44,30 @@ func LatestGeneration(profilesDir string) int {
 }
 
 type Manager struct {
-	cfg         *config.Config
-	git         *gitops.Manager
-	records     cluster.RecordStore
-	runner      *jobs.Runner
-	store       jobs.Store
-	nodeID      string
-	repoDir     string
-	profilesDir string
+	cfg           *config.Config
+	git           *gitops.Manager
+	records       cluster.RecordStore
+	runner        *jobs.Runner
+	store         jobs.Store
+	nodeID        string
+	repoDir       string
+	currentSystem string
+	profilesDir   string
 }
 
 func NewManager(cfg *config.Config, git *gitops.Manager, records cluster.RecordStore, runner *jobs.Runner, store jobs.Store, nodeID string) *Manager {
 	m := &Manager{
-		cfg:         cfg,
-		git:         git,
-		records:     records,
-		runner:      runner,
-		store:       store,
-		nodeID:      nodeID,
-		repoDir:     cfg.DataDirPath("git", "repo"),
-		profilesDir: "/nix/var/nix/profiles",
+		cfg:           cfg,
+		git:           git,
+		records:       records,
+		runner:        runner,
+		store:         store,
+		nodeID:        nodeID,
+		repoDir:       cfg.DataDirPath("git", "repo"),
+		profilesDir:   "/nix/var/nix/profiles",
+		currentSystem: "/run/current-system",
 	}
-	for _, kind := range []string{"apply", "rollback", "dry-build"} {
+	for _, kind := range []string{"apply", "rollback", "dry-build", "preview"} {
 		runner.Register(kind, m.execute)
 	}
 	return m
@@ -74,6 +76,21 @@ func NewManager(cfg *config.Config, git *gitops.Manager, records cluster.RecordS
 func (m *Manager) execute(ctx context.Context, j *jobs.Job, out io.Writer) error {
 	if j.Kind != "rollback" && j.GitSHA == "" {
 		return fmt.Errorf("nothing pulled yet — pull the gitops repo first")
+	}
+	if j.Kind == "preview" {
+		return m.preview(ctx, j, out)
+	}
+	switch {
+	case j.Kind == "dry-build":
+		j.Phase = "Evaluating build requirements (no activation)"
+	case j.Kind == "rollback":
+		j.Phase = "Rolling back (" + j.Mode + ")"
+	case j.Mode == "boot":
+		j.Phase = "Building and staging for next boot"
+	case j.Mode == "dry-activate":
+		j.Phase = "Building and checking activation (no switch)"
+	default:
+		j.Phase = "Building and activating (" + j.Mode + ")"
 	}
 	j.GenBefore = LatestGeneration(m.profilesDir)
 	if err := m.store.Update(*j); err != nil {
@@ -85,12 +102,17 @@ func (m *Manager) execute(ctx context.Context, j *jobs.Job, out io.Writer) error
 	}
 	err := jobs.RunCommand(ctx, j, out, "nixos-rebuild", append([]string{mode}, j.Args...)...)
 	j.GenAfter = LatestGeneration(m.profilesDir)
+	if err == nil {
+		j.Phase = "Completed (" + mode + ")"
+	}
 	return err
 }
 
 func (m *Manager) Apply(ctx context.Context) (jobs.Job, error) {
 	return m.build(ctx, "apply")
 }
+
+func (m *Manager) Preview(ctx context.Context) (jobs.Job, error) { return m.build(ctx, "preview") }
 
 func (m *Manager) DryBuild(ctx context.Context) (jobs.Job, error) {
 	return m.build(ctx, "dry-build")
@@ -153,6 +175,7 @@ func (m *Manager) HandleTerminal(j jobs.Job) {
 		status = "failed"
 	}
 	r := cluster.Record{
+		Kind: j.Kind, Mode: j.Mode,
 		Timestamp: time.Now(),
 		Status:    status,
 		GitSHA:    j.GitSHA,

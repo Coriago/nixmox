@@ -90,6 +90,17 @@ pkgs.testers.runNixOSTest {
     )
     machine.succeed("curl -sf localhost:8080/api/v1/gitops/preview | jq -e '.files | contains(\"flake.nix\")'")
     run_job("gitops/pull")
+    running_before = machine.succeed("readlink -f /run/current-system").strip()
+    preview_id = json.loads(machine.succeed("curl -sf -XPOST -H 'Content-Type: application/json' -d '{\"kind\":\"preview\"}' localhost:8080/api/v1/hosts/machine/jobs"))["id"]
+    preview_url = f"http://localhost:8080/api/v1/jobs/{preview_id}"
+    machine.wait_until_succeeds(f"curl -sf {preview_url} | jq -e '.state == \"applied\" or .state == \"failed\"'", timeout=120)
+    preview = json.loads(machine.succeed(f"curl -sf {preview_url}"))
+    assert preview["state"] == "applied", preview
+    assert preview["preview"]["candidate"] == "${v2}", preview
+    assert "apply-marker" in preview["preview"]["configuration"], preview
+    assert machine.succeed("readlink -f /run/current-system").strip() == running_before
+    machine.succeed("curl -sf localhost:8080/partials/hosts/machine/sync | grep 'Needs apply'")
+    machine.succeed("curl -sf localhost:8080/partials/hosts/machine/jobs | grep preview")
     run_job("apply")
     machine.succeed("test $(readlink -f /nix/var/nix/profiles/system) = ${v2}")
     run_job("rollback")

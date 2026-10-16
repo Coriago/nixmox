@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="container">
     <h1>GitOps</h1>
-    <div id="gitops-status" hx-get="/partials/gitops" hx-trigger="every 5s">
+    <div id="gitops-status" data-live="/partials/gitops">
         {{template "gitops_partial" .}}
     </div>
     {{if .GitOps.AllowConfigWrite}}
@@ -11,7 +11,7 @@
         <button type="submit">Save</button>
     </form>
     {{end}}
-    <h2>Change preview</h2><p class="hint">Git commits and file changes from the last applied revision to the available revision. This is not an evaluated NixOS activation plan.</p><button id="preview-button">Preview changes</button><pre id="preview">Choose Preview changes after a pull or update check.</pre>
+    <p><a href="/hosts/{{.Hostname}}">Review this host’s package and configuration changes →</a></p><h2>Source changes</h2><p class="hint">Git commits and file changes from the last applied revision to the available revision. This is not an evaluated NixOS activation plan.</p><button id="preview-button">Preview changes</button><pre id="preview">Choose Preview changes after a pull or update check.</pre>
     <button hx-post="/api/v1/gitops/pull" hx-swap="none">Pull now</button>
 </div>
 {{end}}

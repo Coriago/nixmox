@@ -31,7 +31,10 @@
     applyMode = "switch";
     enableCustomTasks = true;
     gitops = {
-      repoUrl = "https://github.com/Coriago/nixmox.git";
+      # Only explicit snapshot runs generate this file, inside their isolated Git repo.
+      repoUrl = lib.mkForce (if builtins.pathExists ./source.json
+        then (builtins.fromJSON (builtins.readFile ./source.json)).repo_url
+        else "https://github.com/Coriago/nixmox.git");
       branch = "main";
       flakeDirectory = "e2e";
       flakeAttribute = "node${toString index}";
