@@ -1,10 +1,11 @@
 # Shared live-media profile. Add SSH public keys when building your own image.
 { package, sshKeys ? [] }:
 { lib, pkgs, ... }: {
-  imports = [ ./module.nix ];
+  imports = [ ./module.nix ./installer-wifi.nix ];
   networking.hostName = lib.mkForce "nixmox-live";
   services.nixmox = {
     enable = true;
+    installerMode = true;
     inherit package;
     discovery = true;
     allowConfigWrite = true;

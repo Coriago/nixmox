@@ -16,10 +16,11 @@ import (
 const Port = 8099
 
 type Peer struct {
-	NodeID  string    `json:"node_id"`
-	Address string    `json:"address"`
-	Cluster string    `json:"cluster"`
-	Seen    time.Time `json:"seen"`
+	Installer bool      `json:"installer"`
+	NodeID    string    `json:"node_id"`
+	Address   string    `json:"address"`
+	Cluster   string    `json:"cluster"`
+	Seen      time.Time `json:"seen"`
 }
 type Registry struct {
 	mu    sync.Mutex

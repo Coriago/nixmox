@@ -206,8 +206,8 @@ func (r *Runner) Recover() error {
 		case "building", "applying":
 			r.failJob(j, fmt.Errorf("daemon interrupted this job; inspect effects before retrying"))
 		case "pending":
-			if j.Kind == "installer-write" {
-				r.failJob(j, fmt.Errorf("USB write requires fresh confirmation after restart"))
+			if j.Kind == "installer-write" || j.Kind == "host-install" || j.Kind == "host-onboard" {
+				r.failJob(j, fmt.Errorf("destructive task requires fresh confirmation after restart"))
 				continue
 			}
 			if err := r.Start(context.Background(), j); err != nil {

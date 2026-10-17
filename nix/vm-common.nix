@@ -7,6 +7,9 @@ let
   ip = "192.168.42.${toString index}";
 in
 {
+  # Exercise the installer's wired boot path in the full cluster lifecycle.
+  imports = [ ./installer-wifi.nix ];
+
   # The base configuration is only used to construct the VM variant below.
   boot.loader.grub.enable = false;
   boot.growPartition = true;
@@ -26,7 +29,12 @@ in
   # Reference converter used by the end-to-end host identity checks.
   environment.systemPackages = [ pkgs.ssh-to-age ];
 
-  networking.useDHCP = true;
+  # NetworkManager supplies DHCP on the external interface; cluster0 stays static.
+  networking.useDHCP = false;
+  networking.networkmanager.unmanaged = [ "interface-name:cluster0" ];
+  # qemu-vm normally disables wireless; the installer module needs NM's
+  # D-Bus-controlled supplicant even in the test fixture.
+  networking.wireless.enable = lib.mkOverride 0 true;
   systemd.network.links."10-cluster" = {
     matchConfig.MACAddress = mac;
     linkConfig.Name = "cluster0";

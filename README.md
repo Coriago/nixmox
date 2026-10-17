@@ -96,6 +96,14 @@ nix build .#packages.aarch64-linux.installer-sd    # generic aarch64 SD image
 
 Enable `services.nixmox.enableMedia = true` and open **Operations → Add a host · USB installer** to prepare and write the x86_64 ISO from the UI. Optionally include an SSH public key, select the attached drive, type its exact path, and follow write/readback verification progress. `services.nixmox.installerFlake` selects a trusted source/output (default `github:Coriago/nixmox#installer-iso`; pin a revision for reproducibility). The drive must be attached to the node serving the portal. Mounted/active disks and stale drive identities are rejected. The UI writes the whole image; it does not require pre-formatting.
 
+On boot, the installer opens a network selector on the first local console when
+no wired interface has a usable address and a Wi-Fi adapter is available. Select
+the network, enter its password, and quit the selector when connected. Wired
+boots skip the selector; nixmox and LAN discovery start independently. Network
+setup can be reopened with `nixmox-wifi`. Connections are saved by NetworkManager
+in the live environment; transferring them to an installed host will be part of
+the host-install workflow.
+
 See [design decisions and the complete bootstrap workflow](docs/ui-and-bootstrap.md) for configuration, validation, preview limits, and reasoning. You can still write CLI-built images using another imaging tool. **Double-check the destination device.** The aarch64 image requires an aarch64 builder (or configured emulation) and a compatible board/bootloader; it is not a universal image for every SBC.
 
 The live image boots with a unique hostname, DHCP, discovery, and the portal enabled. SSH password authentication is disabled. Build an image containing your SSH public key for unattended remote installation:
@@ -168,3 +176,110 @@ nix build .#checks.x86_64-linux.cluster-lifecycle
 ```
 
 Use `path:.#...` instead of `.#...` when testing newly added, untracked files (Git flakes omit them). See [architecture](docs/architecture.md) for component boundaries and state compatibility.
+
+### Browser host onboarding
+
+Open **Set up host** in the sidebar, or choose **Set up host** next to a discovered
+live installer. The browser selects a configured repository writer, collects the
+installer's hardware, public age recipient and whole-drive inventory, and renders
+the repository owner's form. Review the generated file and type the exact drive
+path before starting. The selected drive's model, capacity and serial are shown;
+mounted disks, partitions and installer media are excluded.
+
+Configure at least one installed cluster node as the repository writer:
+
+```nix
+services.nixmox = {
+  gitops = {
+    repoUrl = "git@github.com:owner/nix-config.git";
+    branch = "main";
+    sshKeyPath = "/run/keys/git-writer";
+  };
+  addHost = {
+    form = {
+      Name = { type = "hostname"; default = "newhost"; };
+      Username = { type = "username"; default = "helios"; };
+      StateVersion = { type = "text"; default = "26.05"; };
+      Modules = {
+        type = "multiselect";
+        values = [ "workstation" "development" ];
+        default = [ "workstation" ];
+      };
+      Drive = { type = "disk"; required = true; };
+    };
+    path = "modules/hosts/{{ .Name }}/configuration.nix";
+    template = ./config.gotmpl;
+    ageKeyFile = "/run/keys/sops-age";
+    sops = {
+      rulesFile = ".sops.yaml";
+      files = [ "secrets/secrets.yaml" ];
+      rulePathRegex = "secrets/secrets.yaml";
+    };
+  };
+};
+```
+
+Git uses the writer's existing GitOps SSH or HTTPS credentials. `ageKeyFile` is a
+runtime identity already authorized to decrypt the selected SOPS files; it must
+not be a Nix store path. The installer receives neither credential. It needs its
+own repository read access (or a publicly readable repository). With no SOPS
+files, omit `sops` and `ageKeyFile`. Branch protection must permit the configured
+writer to push; the workflow never force-pushes or bypasses protection.
+
+The writer clones an isolated checkout, creates one configuration without
+replacing an existing file, updates the selected SOPS rule and runs
+`sops updatekeys --yes`, then commits and pushes the configuration and encrypted
+files together. An earlier matching SOPS rule, ambiguous rule, unsupported
+threshold/key-group rule, failed key update or failed push stops the workflow.
+Only public recipients and encrypted secrets enter Git. Git/SOPS errors omit
+command output that could disclose credentials.
+
+The temporary installer's own GitOps task pulls and pins the published commit.
+It verifies that the evaluated configuration enables nixmox, has the assigned
+hostname and cluster seed, and that disko targets only the confirmed drive. Its
+nixmox runs nixos-anywhere against itself using an ephemeral SSH daemon listening
+only on loopback. No cluster SSH key is embedded in the image. The host SSH key
+is copied locally into the installed system. NetworkManager Wi-Fi profiles are
+copied locally with restricted permissions when compatible; otherwise installation
+requires an explicitly confirmed alternative connection plan.
+
+The UI shows task phases and logs through reboot and installed-host reachability.
+Temporary installer sessions never join voting Raft. After the installed hostname
+joins with the preserved public identity, setup is marked complete. Failures
+retain logs and the published revision; retries require a fresh drive confirmation
+and reuse the recorded revision. A completed installation is checked for join or
+reboot without repeating disk erasure. Busy or changed disks stop a retry.
+
+`services.nixmox.installerMode` enables destructive local onboarding endpoints and
+is enabled by the live installer profile, not on normal installed hosts. Management
+APIs use the existing trusted-management-network model; discovery is an untrusted
+hint, so verify the selected node's address and drive before confirming.
+
+The template contract remains in `onboarding-improvements.md`: strings are quoted
+and escaped Nix literals, including interpolation; `.Hardware` is the complete
+unmodified output of `nixos-generate-config --show-hardware-config --no-filesystems`.
+Destination templates use validated plain values. The selected modules must supply
+disko and nixmox. Browser onboarding requires `Name` (hostname) and `Drive` (disk)
+fields; other fields are repository-defined.
+
+A standalone preview/write CLI is also available with `add_host` YAML settings:
+
+```sh
+nixmox --config generator.yaml add-host --input observations.json
+nixmox --config generator.yaml add-host --input observations.json --repo ./checkout --write
+```
+
+Input is JSON with `values`, `hardware`, `cluster_address`, and `disks`. The CLI
+only generates a file; the browser workflow performs collection and orchestration.
+
+Focused validation (no VMs):
+
+```sh
+nix develop --command go test ./internal/addhost ./internal/server ./internal/gitops ./internal/jobs
+nix develop --command env NIXMOX_BROWSER_TEST=1 go test ./internal/server -run TestOnboardingBrowser
+```
+
+The browser test simulates installer API responses. Git/SOPS integration tests use
+real encryption and disposable local repositories. Neither proves disk installation,
+Wi-Fi reconnection, or reboot/join on actual hardware; the full VM acceptance remains
+required before treating the destructive workflow as acceptance-tested.

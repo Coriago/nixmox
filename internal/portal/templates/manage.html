@@ -1,6 +1,7 @@
 {{template "base.html" .}}
 {{define "content"}}
 <h1>Operations</h1><p class="hint">Actions run on the selected node. Installation erases disks described by the target flake's disko configuration. Power and installation controls must be enabled by the administrator.</p>
+<section><h2>Set up a host</h2><p>Boot a live installer, then configure and install it through the cluster.</p><a href="/add-host">Set up host →</a></section>
 <section id="installer"><h2>Add a host · USB installer</h2>
 <ol class="steps"><li>Prepare the nixmox x86_64 BIOS/UEFI installer.</li><li>Write it to a USB drive attached to <strong>{{.Hostname}}</strong>.</li><li>Boot, install to its internal disk, then join the installed host using discovery.</li></ol>
 <p class="hint">This writes a bootable live environment, not a permanent installation. For installation to internal disks, use Install / wipe with a disko flake and an image containing your SSH public key.</p>

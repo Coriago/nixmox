@@ -10,6 +10,12 @@ default, or an immutable working-tree snapshot when requested. No prebuilt targe
 mock rebuild, seeded membership, or direct edits to cluster state are used.
 The harness uses SSH and QEMU QMP for observation and VM power control only.
 
+The bootstrap and deployed VMs include the installer Wi-Fi setup module. Step 1.1
+checks that wired networking skips the console selector and that discovery still
+works. The complementary `checks.x86_64-linux.installer-wifi` test uses simulated
+radios to exercise the console selector and password entry. These checks do not
+cover physical Wi-Fi hardware or transferring credentials to an installed host.
+
 ## Run and interact
 
 For GitHub mode, publish the accompanying application, VM configuration, and
@@ -191,3 +197,19 @@ Both-part acceptance now compares each standalone host's age recipient with
 remote NATS inventory/API, and SSE host-detail fragments. Browser coverage checks
 clipboard copying and the plain-HTTP selection fallback. These checks validate
 public identity presentation; they do not deploy or decrypt SOPS secrets.
+
+## Add-host onboarding coverage
+
+Step 1.1a exercises the generator CLI on changed-source nodes, parses the generated
+Nix, refuses overwrites, and checks browser onboarding routes/coordinator discovery.
+The browser stage also runs `onboarding_browser.py`: configured defaults, module
+selection, drive details, preview invalidation, exact disk confirmation, retained
+failure output, revision-preserving retry, and the installed-host completion link.
+Those browser lifecycle responses are simulated and do not erase a disk.
+
+Focused tests in `internal/addhost` use real local Git repositories, real SOPS and
+age keys to check atomic publication, new-recipient decryption, unauthorized-key
+failure and rejected pushes. Server tests exercise the orchestration order through
+simulated installer pull, install, reboot, and join. Destructive local installation,
+actual reboot/join, and Wi-Fi reconnection still require VM or hardware acceptance;
+these focused tests do not establish those results.

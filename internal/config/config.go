@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"nixmox/internal/addhost"
 )
 
 // Version constants are injected at build time via ldflags.
@@ -23,18 +24,20 @@ var (
 
 // Config holds all nixmox runtime settings.
 type Config struct {
-	EnableMedia     bool   `yaml:"enable_media"`
-	InstallerFlake  string `yaml:"installer_flake"`
-	InputsFile      string `yaml:"inputs_file"`
-	JoinSeed        string `yaml:"join_seed"`
-	EnablePower     bool   `yaml:"enable_power"`
-	EnableProvision bool   `yaml:"enable_provision"`
-	Discovery       bool   `yaml:"discovery"`
-	DataDir         string `yaml:"data_dir"`
-	HTTPAddr        string `yaml:"http_addr"`
-	NATSPort        int    `yaml:"nats_port"`
-	ClusterPort     int    `yaml:"cluster_port"`
-	LogLevel        string `yaml:"log_level"`
+	InstallerMode   bool            `yaml:"installer_mode"`
+	AddHost         *addhost.Config `yaml:"add_host"`
+	EnableMedia     bool            `yaml:"enable_media"`
+	InstallerFlake  string          `yaml:"installer_flake"`
+	InputsFile      string          `yaml:"inputs_file"`
+	JoinSeed        string          `yaml:"join_seed"`
+	EnablePower     bool            `yaml:"enable_power"`
+	EnableProvision bool            `yaml:"enable_provision"`
+	Discovery       bool            `yaml:"discovery"`
+	DataDir         string          `yaml:"data_dir"`
+	HTTPAddr        string          `yaml:"http_addr"`
+	NATSPort        int             `yaml:"nats_port"`
+	ClusterPort     int             `yaml:"cluster_port"`
+	LogLevel        string          `yaml:"log_level"`
 
 	GitRepoURL      string `yaml:"git_repo_url"`
 	GitBranch       string `yaml:"git_branch"`
@@ -99,6 +102,16 @@ func Load(configFile string) (*Config, error) {
 	}
 
 	loadEnv(&cfg)
+	if file := os.Getenv("NIXMOX_ADD_HOST_CONFIG"); file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return nil, err
+		}
+		cfg.AddHost = new(addhost.Config)
+		if err := yaml.Unmarshal(data, cfg.AddHost); err != nil {
+			return nil, err
+		}
+	}
 
 	if cfg.Hostname == "" {
 		if h, err := os.Hostname(); err == nil {
@@ -128,6 +141,9 @@ func loadFile(path string, cfg *Config) error {
 const envPrefix = "NIXMOX_"
 
 func loadEnv(cfg *Config) {
+	if v := os.Getenv(envPrefix + "INSTALLER_MODE"); v != "" {
+		cfg.InstallerMode = v == "true" || v == "1"
+	}
 	if v := os.Getenv(envPrefix + "INSTALLER_FLAKE"); v != "" {
 		cfg.InstallerFlake = v
 	}

@@ -11,7 +11,7 @@
 
       mkPackage = target: nixpkgs.legacyPackages.${target}.callPackage ./nix/package.nix {
         ldflags = [
-          "-X nixmox/internal/config.Version=0.3.0"
+          "-X nixmox/internal/config.Version=0.4.0"
           "-X nixmox/internal/config.Commit=${self.rev or self.dirtyRev or "unknown"}"
         ];
       };
@@ -39,6 +39,7 @@
           runtimeEnv = {
             NIXMOX_E2E_CHROMIUM = "${pkgs.chromium}/bin/chromium";
             NIXMOX_E2E_BROWSER = ./e2e/browser.py;
+            NIXMOX_E2E_ONBOARDING_BROWSER = ./e2e/onboarding_browser.py;
             NIXMOX_E2E_VM1 = self.nixosConfigurations.node1.config.system.build.vm;
             NIXMOX_E2E_VM2 = self.nixosConfigurations.node2.config.system.build.vm;
             NIXMOX_E2E_VM3 = self.nixosConfigurations.node3.config.system.build.vm;
@@ -81,6 +82,11 @@
           gopls
           golangci-lint
           just
+          git
+          sops
+          age
+          (python3.withPackages (p: [ p.playwright ]))
+          chromium
         ];
       };
 
@@ -93,6 +99,7 @@
       };
 
       checks.${system} = {
+        installer-wifi = import ./nix/checks/installer-wifi.nix { inherit self pkgs; };
         usb-installer = import ./nix/checks/usb-installer.nix { inherit self pkgs; };
         cluster-lifecycle = import ./nix/checks/cluster-lifecycle.nix {
           inherit self pkgs;

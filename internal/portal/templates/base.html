@@ -8,7 +8,7 @@
 </head>
 <body data-host="{{.Hostname}}">
  <header><a class="brand" href="/">nix<span>mox</span></a><span class="subtitle">Infrastructure console</span><span id="connection" class="badge">Connecting…</span><div class="host-info">{{.Hostname}}</div></header>
- <aside><div class="nav-label">DATACENTER</div><nav aria-label="Main navigation"><a href="/">▦ &nbsp; Hosts & cluster</a><a href="/gitops">⇄ &nbsp; GitOps</a><a href="/jobs">≡ &nbsp; Tasks</a><a href="/manage">⚙ &nbsp; Operations</a></nav><div class="nav-label">CLUSTER HOSTS</div><nav aria-label="Cluster hosts" data-live="/partials/sidebar">{{template "sidebar_hosts" .}}</nav><p class="hint">Declarative systems.<br>One place to operate.</p></aside>
+ <aside><div class="nav-label">DATACENTER</div><nav aria-label="Main navigation"><a href="/">▦ &nbsp; Hosts & cluster</a><a href="/gitops">⇄ &nbsp; GitOps</a><a href="/jobs">≡ &nbsp; Tasks</a><a href="/add-host">＋ &nbsp; Set up host</a><a href="/manage">⚙ &nbsp; Operations</a></nav><div class="nav-label">CLUSTER HOSTS</div><nav aria-label="Cluster hosts" data-live="/partials/sidebar">{{template "sidebar_hosts" .}}</nav><p class="hint">Declarative systems.<br>One place to operate.</p></aside>
  <main><div id="connection-warning" class="connection-warning" role="status" aria-live="polite" hidden><strong id="connection-message"></strong><p>Displayed data may be stale. Reconnecting automatically.</p><button id="reconnect" type="button">Reconnect now</button><div id="alternate-hosts"></div></div><div id="notice" role="status" aria-live="polite"></div>{{block "content" .}}{{end}}</main>
 </body>
 </html>

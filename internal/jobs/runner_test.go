@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,5 +138,32 @@ func TestLogAppendOffsetsDescribePersistedBytes(t *testing.T) {
 	next, err := appender.AppendLogChunk("job-log", "next\n")
 	if err != nil || next.Offset != first.Next || next.Next != first.Next+5 {
 		t.Fatal(next, err)
+	}
+}
+
+func TestRecoverRequiresNewConfirmationForOnboarding(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := NewRunner(store)
+	for _, kind := range []string{"host-onboard", "host-install"} {
+		if err := store.Create(Job{ID: kind, Kind: kind, Host: "installer", State: "pending"}); err != nil {
+			t.Fatal(err)
+		}
+		runner.Register(kind, func(context.Context, *Job, io.Writer) error {
+			t.Error("resumed destructive task without confirmation")
+			return nil
+		})
+	}
+	if err := runner.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	runner.Stop()
+	for _, kind := range []string{"host-onboard", "host-install"} {
+		j, err := store.Get(kind)
+		if err != nil || j.State != "failed" {
+			t.Fatal(j, err)
+		}
 	}
 }

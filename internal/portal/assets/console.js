@@ -364,10 +364,11 @@
         request("/api/v1/bootstrap"),
       ]);
       const signature = JSON.stringify([
-        peers.map(({ node_id, address, cluster }) => ({
+        peers.map(({ node_id, address, cluster, installer }) => ({
           node_id,
           address,
           cluster,
+          installer,
         })),
         state.status,
       ]);
@@ -380,7 +381,12 @@
       peers.forEach((peer) => {
         const row = document.createElement("p");
         row.textContent = `${peer.node_id} · ${peer.address} · ${peer.cluster || "unjoined"} `;
-        if (!peer.cluster && state.status === "clustered") {
+        if (!peer.cluster && peer.installer) {
+          const setup = document.createElement("a");
+          setup.textContent = "Set up host";
+          setup.href = "/add-host?" + new URLSearchParams({node: peer.node_id, address: peer.address});
+          row.append(setup);
+        } else if (!peer.cluster && state.status === "clustered") {
           const add = document.createElement("button");
           add.textContent = "Add to this cluster";
           add.onclick = async () => {
@@ -423,7 +429,7 @@
           };
           row.append(join);
         }
-        if (!peer.cluster && $("#provision")) {
+        if (!peer.cluster && !peer.installer && $("#provision")) {
           const install = document.createElement("button");
           install.textContent = "Prepare installation";
           install.onclick = () => {

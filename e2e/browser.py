@@ -160,4 +160,9 @@ with sync_playwright() as p:
     page.screenshot(path=str(artifacts / 'browser-mobile.png'), full_page=True)
     assert not errors, errors
     print('PASS: browser sidebar, serving-node identity, SSE, steady 1 Hz uptime under burst updates, offline/reboot clocks, disconnect/reconnect, split telemetry, incremental log streaming/recovery, mobile layout')
+    import runpy
+    onboarding = runpy.run_path(os.environ.get('NIXMOX_E2E_ONBOARDING_BROWSER',
+                                               str(Path(__file__).with_name('onboarding_browser.py'))))
+    onboarding['check_onboarding'](page, url, artifacts)
+    assert not errors, errors
     browser.close()

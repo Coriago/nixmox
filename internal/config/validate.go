@@ -11,6 +11,11 @@ import (
 var nodeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$`)
 
 func (c *Config) Validate() error {
+	if c.AddHost != nil {
+		if err := c.AddHost.Validate(); err != nil {
+			return err
+		}
+	}
 	if c.FlakeDirectory != "" {
 		clean := path.Clean(c.FlakeDirectory)
 		if path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || strings.ContainsAny(c.FlakeDirectory, "\\\x00") {

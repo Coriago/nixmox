@@ -420,6 +420,36 @@ class Suite:
             except Exception as error:
                 self.say(f'Journal snapshot: {error}')
 
+    def check_add_host_generator(self):
+        self.stage('1.1a Host configuration generator')
+        base = '/tmp/nixmox-add-host-e2e-' + uuid.uuid4().hex
+        template = '{ imports = [ ({{ .Hardware }}) ]; networking.hostName = {{ .Name }}; services.nixmox.joinSeed = {{ .ClusterAddress }}; }'
+        config = {'add_host': {'form': {'Name': {'type': 'hostname', 'default': 'generated-host'}},
+                              'path': 'hosts/{{ .Name }}/configuration.nix', 'template': base + '/host.gotmpl'}}
+        observations = {'values': {}, 'hardware': '{ ... }: {}', 'cluster_address': '192.168.42.1:8080'}
+        self.ssh(1, 'mkdir -p ' + shlex.quote(base + '/repo'))
+        for name, content in [('config.json', json.dumps(config)), ('host.gotmpl', template),
+                              ('input.json', json.dumps(observations))]:
+            self.ssh(1, 'printf %s ' + shlex.quote(content) + ' > ' + shlex.quote(base + '/' + name))
+        command = ('env -u NIXMOX_ADD_HOST_CONFIG nixmox --config ' + shlex.quote(base + '/config.json') +
+                   ' add-host --input ' + shlex.quote(base + '/input.json'))
+        preview = json.loads(self.ssh(1, command))
+        require(preview['path'] == 'hosts/generated-host/configuration.nix', preview)
+        require('"generated-host"' in preview['content'] and '({ ... }: {})' in preview['content'], preview)
+        write = command + ' --write --repo ' + shlex.quote(base + '/repo')
+        self.ssh(1, write)
+        self.ssh(1, 'nix-instantiate --parse ' + shlex.quote(base + '/repo/' + preview['path']))
+        self.ssh(1, 'if ' + write + '; then exit 1; fi')
+        self.artifact('add-host-generator.json', preview)
+        for node in NODES:
+            page = self.text(node, '/add-host')
+            require('onboarding-form' in page and 'onboarding-start' in page,
+                    'browser onboarding form or confirmation missing')
+            capabilities = self.api(node, '/api/v1/onboarding/coordinators')
+            require(any(c['node_id'] == f'node{node}' for c in capabilities),
+                    'onboarding omitted the serving coordinator')
+        self.artifact('onboarding-ui-routes.json', {'nodes': list(NODES), 'status': 'reachable'})
+
     def form_cluster(self):
         self.stage('1.1 Fresh standalone VMs and discovery')
         for node in NODES:
@@ -428,6 +458,11 @@ class Suite:
             require(root_bytes >= 12 * 1024**3, 'boot partition did not grow to provide guest build space')
             require(self.api(node, '/api/v1/bootstrap')['status'] == 'unclustered', 'bootstrap is already joined')
             self.topology([node], 1, 1)
+            poll(f'node{node} installer network setup finished', lambda: self.ssh(node,
+                'systemctl show nixmox-wifi -p ActiveState --value', quiet=True) == 'active')
+            require('Wired connection ready' in self.ssh(node, 'nixmox-wifi --auto'),
+                    'wired installer boot would prompt for Wi-Fi')
+        self.check_add_host_generator()
         self.state['age_recipients'] = {}
         for node in NODES:
             expected = self.ssh(node, 'ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key | ssh-to-age')

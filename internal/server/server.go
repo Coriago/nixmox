@@ -19,28 +19,29 @@ import (
 )
 
 type Server struct {
-	Bus         *messaging.Bus
-	Updates     *events.Signal
-	lifetime    context.Context
-	cancel      context.CancelFunc
-	workers     sync.WaitGroup
-	mediaMu     sync.Mutex
-	operationMu sync.Mutex
-	rolloutMu   sync.Mutex
-	rollout     Rollout
-	Logs        *logbuf.Buffer
-	Discoveries *discovery.Registry
-	Client      *http.Client
-	Mux         *chi.Mux
-	srv         *http.Server
-	Config      *config.Config
-	Store       jobs.Store
-	Runner      *jobs.Runner
-	Git         GitOpsManager
-	Apply       ApplyManager
-	Records     cluster.RecordStore
-	Cluster     ClusterAPI
-	View        *cluster.View
+	Bus          *messaging.Bus
+	Updates      *events.Signal
+	lifetime     context.Context
+	cancel       context.CancelFunc
+	workers      sync.WaitGroup
+	mediaMu      sync.Mutex
+	onboardingMu sync.Mutex
+	operationMu  sync.Mutex
+	rolloutMu    sync.Mutex
+	rollout      Rollout
+	Logs         *logbuf.Buffer
+	Discoveries  *discovery.Registry
+	Client       *http.Client
+	Mux          *chi.Mux
+	srv          *http.Server
+	Config       *config.Config
+	Store        jobs.Store
+	Runner       *jobs.Runner
+	Git          GitOpsManager
+	Apply        ApplyManager
+	Records      cluster.RecordStore
+	Cluster      ClusterAPI
+	View         *cluster.View
 }
 
 func (s *Server) SetBus(bus *messaging.Bus) { s.Bus = bus; bus.Handle = s.handleMessage }

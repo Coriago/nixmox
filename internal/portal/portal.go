@@ -91,7 +91,7 @@ func parsePage(pages ...string) (*template.Template, error) {
 }
 func New() (*Portal, error) {
 	p := &Portal{pages: map[string]*template.Template{}}
-	for _, name := range []string{"portal", "jobs", "gitops", "host-detail", "job-detail", "setup", "manage"} {
+	for _, name := range []string{"portal", "jobs", "gitops", "host-detail", "job-detail", "setup", "manage", "add-host"} {
 		t, err := parsePage("templates/" + name + ".html")
 		if err != nil {
 			return nil, err
@@ -156,7 +156,8 @@ func (p *Portal) Resources(w http.ResponseWriter, h hostinfo.HostInfo) {
 func (p *Portal) AgeRecipient(w http.ResponseWriter, h hostinfo.HostInfo) {
 	p.render(w, "host-detail", "age_partial", PageData{Detail: &HostDetailView{Host: h}})
 }
-func (p *Portal) Manage(w http.ResponseWriter) { p.render(w, "manage", "manage.html", PageData{}) }
+func (p *Portal) Manage(w http.ResponseWriter)  { p.render(w, "manage", "manage.html", PageData{}) }
+func (p *Portal) AddHost(w http.ResponseWriter) { p.render(w, "add-host", "add-host.html", PageData{}) }
 func (p *Portal) AssetsHandler() http.Handler {
 	assets, _ := fs.Sub(embeddedFS, "assets")
 	return http.StripPrefix("/assets/", http.FileServer(http.FS(assets)))

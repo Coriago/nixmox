@@ -121,6 +121,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, id string) bool
 	return true
 }
 func (s *Server) mountOperations(p *portal.Portal) {
+	s.mountOnboarding(p)
 	s.mountMedia()
 	s.Mux.Get("/api/v1/events", s.events)
 	s.Mux.Get("/partials/logs", func(w http.ResponseWriter, r *http.Request) {

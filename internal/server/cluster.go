@@ -22,6 +22,10 @@ func (s *Server) MountCluster(p *portal.Portal) {
 	s.Mux.Get("/api/v1/cluster/diagnostics", s.clusterDiagnostics)
 	s.Mux.Post("/api/v1/cluster/add", s.addDiscoveredNode)
 	s.Mux.Post("/api/v1/cluster/create", func(w http.ResponseWriter, r *http.Request) {
+		if s.Config.InstallerMode {
+			http.Error(w, "temporary installers cannot vote; use Set up host", 403)
+			return
+		}
 		if s.Cluster == nil {
 			http.Error(w, "clustering unavailable", http.StatusServiceUnavailable)
 			return
@@ -45,6 +49,10 @@ func (s *Server) MountCluster(p *portal.Portal) {
 	// Peer-side join: other nodes call this during their join. The portal's
 	// own "Join" button uses /join/initiate below — never this one directly.
 	s.Mux.Post("/api/v1/cluster/join", func(w http.ResponseWriter, r *http.Request) {
+		if s.Config.InstallerMode {
+			http.Error(w, "temporary installers cannot vote", 403)
+			return
+		}
 		if s.Cluster == nil {
 			http.Error(w, "clustering unavailable", http.StatusServiceUnavailable)
 			return
@@ -68,6 +76,10 @@ func (s *Server) MountCluster(p *portal.Portal) {
 	})
 
 	s.Mux.Post("/api/v1/cluster/join/initiate", func(w http.ResponseWriter, r *http.Request) {
+		if s.Config.InstallerMode {
+			http.Error(w, "temporary installers cannot vote; use Set up host", 403)
+			return
+		}
 		if s.Cluster == nil {
 			http.Error(w, "clustering unavailable", http.StatusServiceUnavailable)
 			return

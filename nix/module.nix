@@ -13,6 +13,38 @@ in
   };
 
   options.services.nixmox = {
+    installerMode = mkEnableOption "temporary non-voting installer onboarding and destructive local installation";
+    addHost = mkOption {
+      default = null;
+      description = "Repository-owned form and template for browser host onboarding, Git publication and optional SOPS recipient updates.";
+      type = types.nullOr (types.submodule {
+        options = {
+          form = mkOption {
+            type = types.attrsOf (types.submodule {
+              options = {
+                type = mkOption { type = types.enum [ "hostname" "username" "text" "multiselect" "disk" ]; };
+                default = mkOption { type = types.nullOr (types.either types.str (types.listOf types.str)); default = null; };
+                values = mkOption { type = types.listOf types.str; default = []; };
+                required = mkOption { type = types.bool; default = false; };
+              };
+            });
+          };
+          path = mkOption { type = types.str; description = "Destination Go template relative to the repository."; };
+          template = mkOption { type = types.path; description = "Go template containing the complete host configuration."; };
+          ageKeyFile = mkOption { type = types.str; default = ""; description = "Runtime age identity file authorized to update SOPS files. Never use a Nix store path for private keys."; };
+          sops = mkOption {
+            default = null;
+            type = types.nullOr (types.submodule {
+              options = {
+                rulesFile = mkOption { type = types.str; default = ".sops.yaml"; };
+                files = mkOption { type = types.listOf types.str; };
+                rulePathRegex = mkOption { type = types.str; };
+              };
+            });
+          };
+        };
+      });
+    };
     enableMedia = mkEnableOption "destructive local USB installer writing";
     installerFlake = mkOption {
       type = types.str;
@@ -138,10 +170,13 @@ in
       unitConfig.X-StopOnRemoval = false;
 
       path = [ pkgs.git pkgs.nixos-rebuild pkgs.systemd pkgs.openssh pkgs.nix pkgs.diffutils ]
+        ++ optionals (cfg.addHost != null) [ pkgs.sops ]
+        ++ optionals cfg.installerMode [ pkgs.util-linux pkgs.nixos-install-tools pkgs.nixos-anywhere pkgs.networkmanager ]
         ++ optional cfg.enableMedia pkgs.util-linux
         ++ optional cfg.enableProvision pkgs.nixos-anywhere;
 
       environment = {
+        NIXMOX_INSTALLER_MODE = boolToString cfg.installerMode;
         NIXMOX_ENABLE_MEDIA = boolToString cfg.enableMedia;
         NIXMOX_INSTALLER_FLAKE = cfg.installerFlake;
         NIXMOX_DATA_DIR = cfg.dataDir;
@@ -159,6 +194,12 @@ in
         NIXMOX_ALLOW_CONFIG_WRITE = boolToString cfg.allowConfigWrite;
         NIXMOX_AUTO_APPLY = boolToString cfg.autoApply;
         NIXMOX_APPLY_MODE = cfg.applyMode;
+      } // optionalAttrs (cfg.addHost != null) {
+        NIXMOX_ADD_HOST_CONFIG = toString (pkgs.writeText "nixmox-add-host.json" (builtins.toJSON (cfg.addHost // {
+          # Interpolation copies a path template to the store and retains its
+          # dependency in the service closure; a raw JSON path is not portable.
+          template = "${cfg.addHost.template}";
+        })));
       } // optionalAttrs (cfg.gitops.repoUrl != "") {
         NIXMOX_GIT_REPO_URL = cfg.gitops.repoUrl;
       } // optionalAttrs (cfg.gitops.sshKeyPath != "") {

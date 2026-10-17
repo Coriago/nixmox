@@ -116,7 +116,7 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	if cfg.Discovery {
 		spawn(func() {
 			if err := registry.Run(ctx, func() discovery.Peer {
-				return discovery.Peer{NodeID: cfg.Hostname, Address: cfg.PeerAddress(), Cluster: supervisor.State(0).ClusterName}
+				return discovery.Peer{NodeID: cfg.Hostname, Address: cfg.PeerAddress(), Cluster: supervisor.State(0).ClusterName, Installer: cfg.InstallerMode}
 			}); err != nil {
 				log.Printf("discovery: %v", err)
 			}
@@ -142,7 +142,7 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	defer supervisor.Stop()
 	defer runtime.Stop()
 	defer bus.Stop()
-	if cfg.JoinSeed != "" && supervisor.AutoJoinAllowed() {
+	if cfg.JoinSeed != "" && !cfg.InstallerMode && supervisor.AutoJoinAllowed() {
 		if err := supervisor.JoinCluster(ctx, cfg.JoinSeed); err != nil {
 			log.Printf("configured join: %v (retry via portal)", err)
 		}

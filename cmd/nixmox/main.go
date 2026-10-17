@@ -102,7 +102,7 @@ var versionCmd = &cobra.Command{Use: "version", Short: "Print version informatio
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "config file path (default: /etc/nixmox/config.yaml or $NIXMOX_CONFIG)")
-	rootCmd.AddCommand(serveCmd, joinCmd, statusCmd, versionCmd)
+	rootCmd.AddCommand(serveCmd, joinCmd, statusCmd, versionCmd, newAddHostCommand())
 }
 func main() {
 	if err := rootCmd.Execute(); err != nil {
