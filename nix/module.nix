@@ -20,6 +20,17 @@ in
       type = types.nullOr (types.submodule {
         options = {
           form = mkOption {
+            default = {
+              Name = { type = "hostname"; default = "newhost"; };
+              Username = { type = "username"; default = "helios"; };
+              StateVersion = { type = "text"; default = "26.05"; };
+              Modules = {
+                type = "multiselect";
+                values = [ "workstation" "development" "nvidia" "gaming" ];
+                default = [ "workstation" "development" ];
+              };
+              Drive = { type = "disk"; required = true; };
+            };
             type = types.attrsOf (types.submodule {
               options = {
                 type = mkOption { type = types.enum [ "hostname" "username" "text" "multiselect" "disk" ]; };
@@ -29,8 +40,37 @@ in
               };
             });
           };
-          path = mkOption { type = types.str; description = "Destination Go template relative to the repository."; };
-          template = mkOption { type = types.path; description = "Go template containing the complete host configuration."; };
+          path = mkOption {
+            type = types.str;
+            default = "modules/hosts/{{ .Name }}/configuration.nix";
+            description = "Destination Go template relative to the repository.";
+          };
+          template = mkOption {
+            type = types.path;
+            default = pkgs.writeText "nixmox-host.gotmpl" ''
+              { config, ... }: {
+                meta.hosts.{{ .Name }} = {
+                  username = {{ .Username }};
+                  stateVersion = {{ .StateVersion }};
+                };
+
+                configurations.nixos.{{ .Name }} = {
+                  imports = [
+                    config.flake.modules.nixos.base
+                    config.flake.modules.nixos.boot
+                    config.flake.modules.nixos.diskLayout
+              {{- range .Modules }}
+                    config.flake.modules.nixos.{{ . }}
+              {{- end }}
+                    ({{ .Hardware }})
+                  ];
+                  diskLayout.device = {{ .Drive }};
+                  services.nixmox.joinSeed = {{ .ClusterAddress }};
+                };
+              }
+            '';
+            description = "Go template containing the complete host configuration. Defaults to the meta.hosts/configurations.nixos repository layout with shared base, boot and diskLayout modules.";
+          };
           ageKeyFile = mkOption { type = types.str; default = ""; description = "Runtime age identity file authorized to update SOPS files. Never use a Nix store path for private keys."; };
           sops = mkOption {
             default = null;
