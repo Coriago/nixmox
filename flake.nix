@@ -11,7 +11,7 @@
 
       mkPackage = target: nixpkgs.legacyPackages.${target}.callPackage ./nix/package.nix {
         ldflags = [
-          "-X nixmox/internal/config.Version=0.4.1"
+          "-X nixmox/internal/config.Version=0.4.2"
           "-X nixmox/internal/config.Commit=${self.rev or self.dirtyRev or "unknown"}"
         ];
       };
