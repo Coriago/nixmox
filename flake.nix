@@ -77,6 +77,7 @@
       }).config.system.build.sdImage;
 
       devShells.${system}.default = pkgs.mkShell {
+        NIXMOX_TEST_ANYWHERE_SOURCE = "${pkgs.nixos-anywhere}/bin/.nixos-anywhere-wrapped";
         packages = with pkgs; [
           go
           gopls

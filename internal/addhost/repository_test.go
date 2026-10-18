@@ -22,6 +22,15 @@ func testCommand(t *testing.T, dir string, env []string, name string, args ...st
 	return data
 }
 func TestPublishSOPSAndGit(t *testing.T) {
+	for _, grouped := range []bool{false, true} {
+		name := "age-string"
+		if grouped {
+			name = "key-group"
+		}
+		t.Run(name, func(t *testing.T) { testPublishSOPSAndGit(t, grouped) })
+	}
+}
+func testPublishSOPSAndGit(t *testing.T, grouped bool) {
 	for _, name := range []string{"git", "sops", "age-keygen"} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Skip("run in nix develop for Git/SOPS integration")
@@ -38,6 +47,9 @@ func TestPublishSOPSAndGit(t *testing.T) {
 	oldRecipient := strings.TrimSpace(string(testCommand(t, root, nil, "age-keygen", "-y", oldKey)))
 	newRecipient := strings.TrimSpace(string(testCommand(t, root, nil, "age-keygen", "-y", newKey)))
 	rules := "creation_rules:\n  - path_regex: '^secrets.yaml$'\n    age: " + oldRecipient + "\n"
+	if grouped {
+		rules = "keys:\n  - &existing " + oldRecipient + "\ncreation_rules:\n  - path_regex: '^secrets.yaml$'\n    key_groups:\n      - age:\n          - *existing\n"
+	}
 	if err := os.WriteFile(filepath.Join(source, ".sops.yaml"), []byte(rules), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +80,10 @@ func TestPublishSOPSAndGit(t *testing.T) {
 	if !strings.Contains(string(cleartext), "test-private-value") {
 		t.Fatal("new installer identity cannot decrypt")
 	}
+	oldCleartext := testCommand(t, repo.Directory, []string{"SOPS_AGE_KEY_FILE=" + oldKey, "SOPS_AGE_KEY="}, "sops", "--decrypt", "secrets.yaml")
+	if !bytes.Equal(oldCleartext, cleartext) {
+		t.Fatal("existing identity lost access")
+	}
 	committed := testCommand(t, root, nil, "git", "--git-dir", remote, "show", "main:secrets.yaml")
 	if bytes.Contains(committed, []byte("test-private-value")) || strings.Contains(log.String(), "AGE-SECRET-KEY") {
 		t.Fatal("secret leaked")
@@ -76,11 +92,44 @@ func TestPublishSOPSAndGit(t *testing.T) {
 	if string(sourceRules) != rules {
 		t.Fatal("mutated live checkout")
 	}
+	// Rebooted installer: authorize another identity without regenerating the host.
+	replacementKey := filepath.Join(root, "replacement.age")
+	testCommand(t, root, nil, "age-keygen", "-o", replacementKey)
+	replacementRecipient := strings.TrimSpace(string(testCommand(t, root, nil, "age-keygen", "-y", replacementKey)))
+	replacement := repo
+	replacement.Directory = filepath.Join(root, "replacement")
+	previousSHA := sha
+	sha, err = replacement.AuthorizeExisting(context.Background(), *c.SOPS, sha, replacementRecipient, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.TrimSpace(string(testCommand(t, replacement.Directory, nil, "git", "diff", "--name-only", previousSHA, sha)))
+	if changed != ".sops.yaml\nsecrets.yaml" {
+		t.Fatal("unexpected recovery changes", changed)
+	}
+	for _, key := range []string{oldKey, newKey, replacementKey} {
+		decrypted := testCommand(t, replacement.Directory, []string{"SOPS_AGE_KEY_FILE=" + key, "SOPS_AGE_KEY="}, "sops", "--decrypt", "secrets.yaml")
+		if !bytes.Equal(decrypted, cleartext) {
+			t.Fatal("recovery changed secrets or lost access")
+		}
+	}
+	stale := repo
+	stale.Directory = filepath.Join(root, "stale")
+	if _, err := stale.AuthorizeExisting(context.Background(), *c.SOPS, previousSHA, replacementRecipient, &log); err == nil {
+		t.Fatal("accepted stale review")
+	}
+	retry := repo
+	retry.Directory = filepath.Join(root, "idempotent")
+	if got, err := retry.AuthorizeExisting(context.Background(), *c.SOPS, sha, replacementRecipient, &log); err != nil || got != sha {
+		t.Fatal("already authorized retry", got, err)
+	}
 	for _, failure := range []string{"unauthorized-age", "rejected-push"} {
 		t.Run(failure, func(t *testing.T) {
 			failed := repo
 			failed.Directory = filepath.Join(root, failure)
-			recipient := newRecipient
+			fourth := filepath.Join(root, failure+".age")
+			testCommand(t, root, nil, "age-keygen", "-o", fourth)
+			recipient := strings.TrimSpace(string(testCommand(t, root, nil, "age-keygen", "-y", fourth)))
 			if failure == "unauthorized-age" {
 				third := filepath.Join(root, "third.age")
 				testCommand(t, root, nil, "age-keygen", "-o", third)
@@ -91,7 +140,7 @@ func TestPublishSOPSAndGit(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			_, err := failed.Publish(context.Background(), c, Result{Path: "hosts/" + failure + ".nix", Content: "{}"}, recipient, &log)
+			_, err := failed.AuthorizeExisting(context.Background(), *c.SOPS, sha, recipient, &log)
 			if err == nil {
 				t.Fatal("expected stop on failure")
 			}

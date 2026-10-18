@@ -68,6 +68,7 @@ func (s *Server) installerGate(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 func (s *Server) mountInstaller() {
+	s.Mux.Post("/api/v1/installer/reset-plan", s.resetInstallerPlan)
 	s.Mux.Get("/api/v1/installer/info", func(w http.ResponseWriter, r *http.Request) {
 		if !s.installerGate(w, r) {
 			return
@@ -247,6 +248,68 @@ func (s *Server) mountInstaller() {
 		}
 		respond(w, 202, map[string]string{"status": "reboot scheduled"})
 	})
+}
+
+// Reset only preparation state. Once an installation job has been submitted,
+// changing its plan is deliberately forbidden even if that job later failed.
+func (s *Server) resetInstallerPlan(w http.ResponseWriter, r *http.Request) {
+	if !s.installerGate(w, r) {
+		return
+	}
+	s.onboardingMu.Lock()
+	defer s.onboardingMu.Unlock()
+	var plan addhost.InstallPlan
+	if err := decode(r, &plan); err != nil || !onboardingID.MatchString(plan.ID) {
+		http.Error(w, "invalid plan", 400)
+		return
+	}
+	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil || strings.TrimSpace(string(boot)) != plan.BootID {
+		http.Error(w, "installer identity changed; select it again", 409)
+		return
+	}
+	reservation, err := os.ReadFile(s.Config.DataDirPath("onboarding-installer", "reservation"))
+	if err != nil || string(reservation) != plan.ID {
+		http.Error(w, "installer reservation does not match", 409)
+		return
+	}
+	if !s.installerIdle(w) {
+		return
+	}
+	list, err := s.Store.List()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	for _, job := range list {
+		if job.Kind == "host-install" && len(job.Args) > 0 && job.Args[0] == plan.ID {
+			http.Error(w, "installation has already started; cannot replace its plan", 409)
+			return
+		}
+	}
+	old, err := s.loadInstall(plan.ID)
+	if os.IsNotExist(err) {
+		respond(w, 200, map[string]string{"status": "ready"})
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if old.BootID != plan.BootID || old.Recipient != plan.Recipient {
+		http.Error(w, "installer identity does not match recorded plan", 409)
+		return
+	}
+	archive := s.Config.DataDirPath("onboarding-installer", "archive")
+	if err := os.MkdirAll(archive, 0700); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := os.Rename(s.installPath(plan.ID), filepath.Join(archive, fmt.Sprintf("%s-%d", plan.ID, time.Now().UnixNano()))); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	respond(w, 200, map[string]string{"status": "archived"})
 }
 func (s *Server) installerIdle(w http.ResponseWriter) bool {
 	list, err := s.Store.List()

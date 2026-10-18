@@ -228,7 +228,10 @@ func GitOps(cfg *config.Config) (*gitops.Manager, error) {
 	if cfg.NetrcPath != "" {
 		env = append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=netrc -f '"+strings.ReplaceAll(cfg.NetrcPath, "'", `'"'"'`)+"'")
 	}
-	mgr := gitops.NewManager(cfg.DataDir, gitops.ExecClient{ExtraEnv: env})
+	mgr := gitops.NewManager(cfg.DataDir, gitops.ExecClient{
+		ExtraEnv:       env,
+		InstallerHTTPS: cfg.InstallerMode && cfg.SSHKeyPath == "" && cfg.NetrcPath == "",
+	})
 	if err := mgr.Load(); err != nil {
 		return nil, err
 	}

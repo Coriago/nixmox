@@ -224,6 +224,8 @@ button.danger {
   border-color: #cb6565;
   color: #ffc1c1;
 }
+#add-host-page [hidden] { display: none; }
+
 form {
   display: grid;
   gap: 12px;

@@ -7,9 +7,20 @@
 <section><h2>Repository preparation</h2><label>Cluster node with Git write access and SOPS identity<select id="onboarding-writer"></select></label><p id="onboarding-repository" class="hint"></p></section>
 <section><h2>Discovered installers</h2><div id="onboarding-installers">Loading…</div><button id="onboarding-refresh" type="button">Refresh installers</button></section>
 <section id="onboarding-configure" hidden><h2 id="onboarding-target">Host configuration</h2><p id="onboarding-network"></p><p id="onboarding-recipient" class="hint"></p>
+<label>Configuration source<select id="onboarding-mode"><option value="generate">Generate a new host configuration</option><option value="existing">Use an existing configuration</option></select></label>
+<form id="onboarding-existing" hidden>
+<label>Git revision<input id="onboarding-revision" placeholder="Leave empty to load the latest branch commit" autocomplete="off"></label>
+<button id="onboarding-load-configurations" type="button">Load configurations</button>
+<label>Existing configuration<select id="onboarding-configuration" required><option value="">Load configurations first</option></select></label>
+<label>Installation drive<select id="onboarding-existing-drive" required></select></label>
+<label><input id="onboarding-authorize-recipient" type="checkbox"> Authorize this installer’s new key in SOPS (commit and push)</label>
+<p class="hint">Use this after replacing or rebooting installer media. Existing recipients are preserved. The host configuration is unchanged.</p>
+<button id="onboarding-existing-review" type="submit">Review existing configuration</button>
+<p>The selected configuration must target this drive. Without the authorization option, its secrets must already authorize this installer and no Git changes are made.</p>
+</form>
 <form id="onboarding-form"><div id="onboarding-fields"></div><button id="onboarding-preview-button" type="submit">Preview configuration</button></form></section>
 <section id="onboarding-review" hidden><h2>Review and install</h2><p id="onboarding-path"></p><pre id="onboarding-preview" class="log"></pre>
-<p>The configuration and SOPS recipient updates will be committed and pushed together. The installer will pull that commit, erase the selected drive, install, and reboot.</p>
+<p id="onboarding-review-action">The configuration and SOPS recipient updates will be committed and pushed together. The installer will pull that commit, erase the selected drive, install, and reboot.</p>
 <form id="onboarding-start"><label>Confirm exact installation drive<input id="onboarding-confirm" autocomplete="off" required placeholder="/dev/nvme0n1"></label>
 <label><input id="onboarding-network-plan" type="checkbox"> I have an alternative wired or network connection ready if Wi-Fi cannot be transferred.</label>
 <button id="onboarding-start-button" class="danger">Push configuration and erase / install</button></form></section>

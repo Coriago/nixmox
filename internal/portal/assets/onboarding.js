@@ -18,6 +18,7 @@
     $("onboarding-writer").disabled = value;
     $("onboarding-preview-button").disabled = value;
     $("onboarding-start-button").disabled = value;
+    for (const id of ["onboarding-mode", "onboarding-load-configurations", "onboarding-existing-review", "onboarding-authorize-recipient"]) $(id).disabled = value;
   }
   function renderFields() {
     const fields = $("onboarding-fields"); fields.replaceChildren();
@@ -58,7 +59,48 @@
     $("onboarding-network").textContent = session.info.network.message;
     $("onboarding-recipient").textContent = "Installer public age recipient: " + session.info.recipient;
     $("onboarding-configure").hidden = false;
+    const drives = $("onboarding-existing-drive"); drives.replaceChildren(new Option("Select a whole drive", ""));
+    for (const disk of session.info.disks) {
+      if (disk.whole && !disk.installer) drives.add(new Option(`${disk.path} · ${disk.model || "Unknown model"} · serial ${disk.serial || "unavailable"}`, disk.path));
+    }
+    drives.value = session.plan?.drive?.path || "";
+    $("onboarding-revision").value = session.revision || "";
+    $("onboarding-configuration").replaceChildren(new Option("Load configurations first", ""));
+    $("onboarding-authorize-recipient").checked = !!session.authorize_recipient;
+    $("onboarding-mode").value = session.existing ? "existing" : "generate";
+    showMode();
   }
+  function showMode() {
+    const existing = $("onboarding-mode").value === "existing";
+    $("onboarding-existing").hidden = !existing;
+    $("onboarding-form").hidden = existing;
+  }
+  $("onboarding-mode").onchange = () => { invalidate(); showMode(); };
+  $("onboarding-revision").oninput = () => {
+    invalidate(); $("onboarding-configuration").replaceChildren(new Option("Load configurations first", ""));
+  };
+  for (const id of ["onboarding-configuration", "onboarding-existing-drive", "onboarding-authorize-recipient"]) $(id).onchange = invalidate;
+  $("onboarding-load-configurations").onclick = async () => {
+    error(null); invalidate(); busy(true);
+    const current = epoch;
+    try {
+      const result = await request(endpoint() + "/configurations", "POST", {revision: $("onboarding-revision").value.trim()});
+      if (current !== epoch) return;
+      $("onboarding-revision").value = result.revision;
+      const list = $("onboarding-configuration"); list.replaceChildren(new Option("Select a configuration", ""));
+      for (const name of result.configurations) list.add(new Option(name, name));
+      if (result.configurations.includes(session.plan?.hostname)) list.value = session.plan.hostname;
+    } catch(e) { error(e); } finally { busy(false); }
+  };
+  $("onboarding-existing").onsubmit = async event => {
+    event.preventDefault(); error(null); invalidate(); busy(true);
+    const current = epoch;
+    try {
+      const result = await request(endpoint() + "/select", "POST", {session: session.id, revision: $("onboarding-revision").value.trim(), hostname: $("onboarding-configuration").value, drive: $("onboarding-existing-drive").value, authorize_recipient: $("onboarding-authorize-recipient").checked});
+      if (current !== epoch) return;
+      session = result; review();
+    } catch(e) { error(e); } finally { busy(false); }
+  };
   async function selectInstaller(peer) {
     error(null); invalidate(); busy(true);
     const current = ++epoch;
@@ -107,7 +149,8 @@
     $("onboarding-preview").textContent = session.result.content;
     $("onboarding-review").hidden = false;
     $("onboarding-confirm").value = "";
-    $("onboarding-start-button").textContent = session.installed ? "Resume reboot and join checks" : session.revision ? "Retry recorded revision and erase / install" : "Push configuration and erase / install";
+    $("onboarding-start-button").textContent = session.installed ? "Resume reboot and join checks" : session.authorize_recipient ? "Authorize key, push, and install — erase drive" : session.existing ? "Install selected revision — erase drive" : session.revision ? "Retry recorded revision and erase / install" : "Push configuration and erase / install";
+    $("onboarding-review-action").textContent = session.authorize_recipient ? `Authorize ${session.info.recipient} in the reviewed SOPS files, commit and push, then install ${session.plan.hostname}. Existing recipients and host configuration are preserved. The confirmed drive will be erased.` : session.revision ? `Install ${session.plan.hostname} at commit ${session.revision}. No Git changes or push. The installer will erase the confirmed drive, install, and reboot.` : "The configuration and SOPS recipient updates will be committed and pushed together. The installer will pull that commit, erase the selected drive, install, and reboot.";
     $("onboarding-form").querySelectorAll("input,select,button").forEach(el => {el.disabled = !!session.revision;});
   }
   $("onboarding-form").onsubmit = async event => {

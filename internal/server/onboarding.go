@@ -29,20 +29,23 @@ import (
 var onboardingID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 type onboardingSession struct {
-	ID         string              `json:"id"`
-	NodeID     string              `json:"node_id"`
-	Address    string              `json:"address"`
-	Info       installerInfo       `json:"info"`
-	Values     map[string]any      `json:"values"`
-	Result     addhost.Result      `json:"result"`
-	Digest     string              `json:"digest"`
-	Revision   string              `json:"revision"`
-	JobID      string              `json:"job_id"`
-	Phase      string              `json:"phase"`
-	Plan       addhost.InstallPlan `json:"plan"`
-	InstallJob string              `json:"install_job"`
-	Installed  bool                `json:"installed"`
-	Completed  bool                `json:"completed"`
+	ReviewedSOPS       *addhost.SOPSConfig `json:"reviewed_sops,omitempty"`
+	AuthorizeRecipient bool                `json:"authorize_recipient,omitempty"`
+	Existing           bool                `json:"existing,omitempty"`
+	ID                 string              `json:"id"`
+	NodeID             string              `json:"node_id"`
+	Address            string              `json:"address"`
+	Info               installerInfo       `json:"info"`
+	Values             map[string]any      `json:"values"`
+	Result             addhost.Result      `json:"result"`
+	Digest             string              `json:"digest"`
+	Revision           string              `json:"revision"`
+	JobID              string              `json:"job_id"`
+	Phase              string              `json:"phase"`
+	Plan               addhost.InstallPlan `json:"plan"`
+	InstallJob         string              `json:"install_job"`
+	Installed          bool                `json:"installed"`
+	Completed          bool                `json:"completed"`
 }
 
 func (s *Server) sessionPath(id string) string { return s.Config.DataDirPath("onboarding", id+".json") }
@@ -95,6 +98,8 @@ func (s *Server) writerError() error {
 }
 func (s *Server) mountOnboarding(p *portal.Portal) {
 	s.mountInstaller()
+	s.Mux.Post("/api/v1/hosts/{nodeID}/onboarding/configurations", s.listExistingConfigurations)
+	s.Mux.Post("/api/v1/hosts/{nodeID}/onboarding/select", s.selectExistingConfiguration)
 	if s.Runner != nil {
 		s.Runner.Register("host-onboard", s.runOnboarding)
 	}
@@ -482,6 +487,23 @@ func (s *Server) runOnboarding(ctx context.Context, j *jobs.Job, out io.Writer) 
 	}
 	if err := s.installerRequest(ctx, session.NodeID, session.Address, "POST", "/api/v1/installer/reserve", session.Plan, nil); err != nil {
 		return err
+	}
+	if session.AuthorizeRecipient {
+		if s.Config.AddHost.SOPS == nil || session.ReviewedSOPS == nil {
+			return fmt.Errorf("SOPS configuration was removed; review again")
+		}
+		if err := phase("Authorizing replacement installer in SOPS and pushing Git"); err != nil {
+			return err
+		}
+		repo := addhost.Repository{URL: session.Plan.Repository, Branch: session.Plan.Branch, Directory: s.Config.DataDirPath("onboarding", session.ID+"-"+j.ID), SSHKey: s.Config.SSHKeyPath, Netrc: s.Config.NetrcPath, AgeKey: s.Config.AddHost.AgeKeyFile}
+		sha, err := repo.AuthorizeExisting(ctx, *session.ReviewedSOPS, session.Revision, session.Info.Recipient, out)
+		if err != nil {
+			return err
+		}
+		session.Revision, session.Plan.Revision, session.AuthorizeRecipient = sha, sha, false
+		if err := s.saveSession(session); err != nil {
+			return err
+		}
 	}
 	if session.Revision == "" {
 		if err := phase("Generating configuration, updating SOPS, and pushing Git"); err != nil {

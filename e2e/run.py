@@ -445,6 +445,9 @@ class Suite:
             page = self.text(node, '/add-host')
             require('onboarding-form' in page and 'onboarding-start' in page,
                     'browser onboarding form or confirmation missing')
+            require('onboarding-existing' in page and 'onboarding-configuration' in page,
+                    'existing configuration selection missing')
+            require('onboarding-authorize-recipient' in page, 'replacement installer SOPS authorization missing')
             capabilities = self.api(node, '/api/v1/onboarding/coordinators')
             require(any(c['node_id'] == f'node{node}' for c in capabilities),
                     'onboarding omitted the serving coordinator')
@@ -556,6 +559,21 @@ class Suite:
             require(self.state['revision'] == self.state['expected_revision'], 'guests did not pull the snapshot')
         self.save()
         self.say(f'{self.state["source_mode"]} revision: {self.state["revision"]}')
+        self.stage('1.3b SOPS onboarding: preserve existing recipients and authorize a new host')
+        sops_job = self.command(2, 1, 'Verify SOPS onboarding key groups',
+            'cd /var/lib/nixmox/git/repo; '
+            'nix develop --command sh -ec '\
+            + shlex.quote('command -v sops; command -v age-keygen; '
+                          'go test ./internal/addhost ./internal/server -run "^(TestPublishSOPSAndGit|TestExistingConfigurationAuthorizesReplacement)$" -count=1 -v'))
+        self.artifact('onboarding-sops-key-groups.json', sops_job)
+        transport_job = self.command(2, 1, 'Verify installer Git read transport',
+            'cd /var/lib/nixmox/git/repo; '
+            'nix develop --command go test ./internal/gitops -run "^TestInstallerGitHubReadTransport$" -count=1 -v')
+        self.artifact('installer-git-read-transport.json', transport_job)
+        target_store_job = self.command(2, 1, 'Verify installer target-store sequence',
+            'cd /var/lib/nixmox/git/repo; '
+            'nix develop --command go test ./internal/addhost -run "^TestAnywhereBuildsInTargetStoreAfterPartitioning$" -count=1 -v')
+        self.artifact('installer-target-store.json', target_store_job)
         self.system_preview()
         self.stage('1.4 Single-node apply through another node')
         job = self.live_deployment()

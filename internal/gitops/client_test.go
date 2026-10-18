@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,27 @@ func TestExecClient(t *testing.T) {
 	}
 	if err := c.ResetHard(ctx, cloneDir, "main"); err != nil {
 		t.Fatalf("ResetHard: %v", err)
+	}
+}
+
+func TestInstallerGitHubReadTransport(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	for _, url := range []string{"git@github.com:owner/config.git", "ssh://git@github.com/owner/config.git", "https://github.com/owner/config.git", "git@private.example:owner/config.git"} {
+		for _, installer := range []bool{false, true} {
+			client := ExecClient{InstallerHTTPS: installer}
+			got, err := client.run(context.Background(), "", "ls-remote", "--get-url", url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := url
+			if installer && (strings.HasPrefix(url, "git@github.com:") || strings.HasPrefix(url, "ssh://git@github.com/")) {
+				want = "https://github.com/owner/config.git"
+			}
+			if got != want {
+				t.Fatalf("installer=%v %s became %s; want %s", installer, url, got, want)
+			}
+		}
 	}
 }
 

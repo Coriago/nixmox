@@ -23,6 +23,9 @@ type Client interface {
 // ExtraEnv is appended to each command's environment (e.g. GIT_SSH_COMMAND).
 type ExecClient struct {
 	ExtraEnv []string
+	// Live installers without provisioned credentials can read public GitHub
+	// repositories over HTTPS even when the coordinator publishes over SSH.
+	InstallerHTTPS bool
 }
 
 func (c ExecClient) run(ctx context.Context, dir string, args ...string) (string, error) {
@@ -30,10 +33,17 @@ func (c ExecClient) run(ctx context.Context, dir string, args ...string) (string
 	if dir != "" {
 		full = append([]string{"-C", dir}, args...)
 	}
+	if c.InstallerHTTPS {
+		full = append([]string{
+			"-c", "url.https://github.com/.insteadOf=git@github.com:",
+			"-c", "url.https://github.com/.insteadOf=ssh://git@github.com/",
+		}, full...)
+	}
 	cmd := exec.CommandContext(ctx, "git", full...)
 	if len(c.ExtraEnv) > 0 {
 		cmd.Env = append(cmd.Environ(), c.ExtraEnv...)
 	}
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

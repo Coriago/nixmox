@@ -86,7 +86,7 @@ func TestInstallerHTTPControlRemoved(t *testing.T) {
 	s := operationServer(t)
 	s.Config.InstallerMode = true
 	for _, method := range []string{"GET", "POST"} {
-		for _, path := range []string{"info", "reserve", "pull", "install", "jobs/test", "reboot"} {
+		for _, path := range []string{"info", "reserve", "pull", "install", "jobs/test", "reboot", "reset-plan"} {
 			if w := call(s, method, "/api/v1/installer/"+path, `{}`); w.Code != 404 {
 				t.Fatalf("HTTP control still exposed: %s %s: %d", method, path, w.Code)
 			}

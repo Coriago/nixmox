@@ -191,6 +191,21 @@ Use `path:.#...` instead of `.#...` when testing newly added, untracked files (G
 
 ### Browser host onboarding
 
+Live installers without configured Git credentials read GitHub SSH URLs over HTTPS.
+The coordinator keeps its configured SSH URL and key for publishing. Private repositories
+still require read credentials provisioned in the installer (`gitops.sshKeyPath` or
+`gitops.netrcPath`); coordinator credentials are not copied to live media. This behavior
+requires an installer image built with the updated agent.
+
+To install a configuration already in Git, choose **Use an existing configuration — no Git push**.
+Load the latest branch commit (leave the revision empty), or enter a full commit SHA,
+then select the configuration and installation drive. Review validates the selected
+configuration and existing SOPS recipients before enabling installation. It does not
+generate files, update secrets, commit, or push. The review displays the exact commit
+that will be installed. Before disk installation starts, selecting a corrected revision
+archives the previous preparation state on updated installers. Older live images must
+be updated or have their failed preparation state cleared locally first.
+
 Open **Set up host** in the sidebar, or choose **Set up host** next to a discovered
 live installer. The browser selects a configured repository writer, collects the
 installer's hardware, public age recipient and whole-drive inventory, and renders
@@ -270,7 +285,10 @@ The temporary installer's own GitOps task pulls and pins the published commit.
 It verifies that the evaluated configuration enables nixmox, has the assigned
 hostname and cluster seed, and that disko targets only the confirmed drive. Its
 nixmox runs nixos-anywhere against itself using an ephemeral SSH daemon listening
-only on loopback. No cluster SSH key is embedded in the image. The host SSH key
+only on loopback. It uses `--build-on remote`: here the target is the same machine,
+so nixos-anywhere partitions the confirmed disk first and then builds the system
+in its disk-backed `/mnt` store. The live RAM store holds evaluation inputs and
+the partitioning tools, not the full installed system. No cluster SSH key is embedded in the image. The host SSH key
 is copied locally into the installed system. NetworkManager Wi-Fi profiles are
 copied locally with restricted permissions when compatible; otherwise installation
 requires an explicitly confirmed alternative connection plan.
@@ -316,3 +334,11 @@ The browser test simulates installer API responses. Git/SOPS integration tests u
 real encryption and disposable local repositories. Neither proves disk installation,
 Wi-Fi reconnection, or reboot/join on actual hardware; the full VM acceptance remains
 required before treating the destructive workflow as acceptance-tested.
+
+After replacing or rebooting live installer media, use **Set up host → Use an
+existing configuration**, load the latest branch commit, select the host and
+drive, and enable **Authorize this installer’s new key in SOPS**. Review the
+recipient and SOPS paths, then confirm installation. The coordinator commits
+and pushes only the configured SOPS rules and encrypted files, preserving
+existing recipients and host configuration. Installation pulls the resulting
+commit. A changed branch or failed push stops setup before disk erasure.

@@ -127,7 +127,7 @@ func CheckInstall(ctx context.Context, checkout string, p InstallPlan) (bool, er
 	expression := `c: { enabled = c.services.nixmox.enable or false; installer = c.services.nixmox.installerMode or false; seed = c.services.nixmox.joinSeed or ""; hostname = c.networking.hostName; networkManager = c.networking.networkmanager.enable or false; disks = builtins.map (d: d.device) (builtins.attrValues (c.disko.devices.disk or {})); }`
 	b, err := exec.CommandContext(ctx, "nix", "eval", "--no-write-lock-file", "--json", "--apply", expression, flake).Output()
 	if err != nil {
-		return false, fmt.Errorf("evaluate selected host configuration: %w", err)
+		return false, evaluationError("evaluate selected host configuration", err)
 	}
 	var checked struct {
 		Enabled        bool
@@ -260,8 +260,15 @@ func LocalInstall(ctx context.Context, checkout string, p InstallPlan, out io.Wr
 		return fmt.Errorf("loopback installation transport did not start")
 	}
 	flake := "path:" + filepath.Join(checkout, p.FlakeDirectory) + "#" + p.Hostname
-	args := []string{"--flake", flake, "--target-host", "root@127.0.0.1", "--ssh-port", strconv.Itoa(port), "-i", key, "--build-on", "local", "--phases", "disko,install", "--extra-files", extra}
-	fmt.Fprintln(out, "Running nixos-anywhere locally against the confirmed disk; reboot follows successful installation")
+	return runLocalAnywhere(ctx, flake, port, key, extra, out)
+}
+
+func runLocalAnywhere(ctx context.Context, flake string, port int, key, extra string, out io.Writer) error {
+	// "remote" is the loopback target, not another cluster host. nixos-anywhere
+	// partitions first, then builds in local?root=/mnt on the confirmed disk.
+	// "local" would build the entire system in the live image's RAM-backed store.
+	args := []string{"--flake", flake, "--target-host", "root@127.0.0.1", "--ssh-port", strconv.Itoa(port), "-i", key, "--build-on", "remote", "--phases", "disko,install", "--extra-files", extra}
+	fmt.Fprintln(out, "Running nixos-anywhere against the confirmed disk: partition first, then build in the target store under /mnt; reboot follows successful installation")
 	cmd := exec.CommandContext(ctx, "nixos-anywhere", args...)
 	cmd.Stdout = out
 	cmd.Stderr = out

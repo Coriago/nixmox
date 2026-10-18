@@ -115,6 +115,57 @@ func (r Repository) Publish(ctx context.Context, c Config, result Result, recipi
 	return strings.TrimSpace(string(sha)), nil
 }
 
+// AuthorizeExisting changes only SOPS metadata on the reviewed branch head.
+// It preserves all existing recipients and never regenerates host configuration.
+func (r Repository) AuthorizeExisting(ctx context.Context, c SOPSConfig, revision, recipient string, out io.Writer) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(r.Directory), 0700); err != nil {
+		return "", err
+	}
+	head, err := r.CheckoutExisting(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	if head != revision {
+		return "", fmt.Errorf("repository changed since review; load the latest configurations and review again")
+	}
+	if !regexp.MustCompile(`^age1[0-9a-z]+$`).MatchString(recipient) {
+		return "", fmt.Errorf("invalid installer age recipient")
+	}
+	if err := CheckExistingRecipients(r.Directory, &c, recipient); err == nil {
+		return head, nil
+	}
+	if err := UpdateRules(r.Directory, c, recipient); err != nil {
+		return "", err
+	}
+	for _, file := range c.Files {
+		if err := regularRepositoryFile(r.Directory, file); err != nil {
+			return "", err
+		}
+		if _, err := r.command(ctx, "sops", "--config", c.RulesFile, "updatekeys", "--yes", file); err != nil {
+			return "", fmt.Errorf("update SOPS recipients for %s failed; check coordinator age identity authorization: %w", file, err)
+		}
+	}
+	if err := CheckExistingRecipients(r.Directory, &c, recipient); err != nil {
+		return "", err
+	}
+	files := append([]string{c.RulesFile}, c.Files...)
+	if _, err := r.command(ctx, "git", append([]string{"add", "--"}, files...)...); err != nil {
+		return "", err
+	}
+	if _, err := r.command(ctx, "git", "-c", "user.name=nixmox", "-c", "user.email=nixmox@localhost", "commit", "-m", "Authorize replacement installer SOPS recipient"); err != nil {
+		return "", err
+	}
+	sha, err := r.command(ctx, "git", "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintln(out, "Pushing SOPS recipient update; existing configuration and recipients preserved")
+	if _, err := r.command(ctx, "git", "push", "origin", "HEAD:refs/heads/"+r.Branch); err != nil {
+		return "", fmt.Errorf("SOPS push failed; check write access or concurrent updates: %w", err)
+	}
+	return strings.TrimSpace(string(sha)), nil
+}
+
 func regularRepositoryFile(repo, path string) error {
 	if !filepath.IsLocal(path) || strings.HasPrefix(path, "-") {
 		return fmt.Errorf("invalid repository file path")
@@ -245,8 +296,36 @@ func UpdateRules(repo string, c SOPSConfig, recipient string) error {
 			return fmt.Errorf("selected SOPS rule does not match %s", file)
 		}
 	}
-	if mapping(selected, "key_groups") != nil {
-		return fmt.Errorf("SOPS key_groups is unsupported; select a rule with an age recipient list")
+	if groups := mapping(selected, "key_groups"); groups != nil {
+		// A single group preserves the existing OR-of-recipients policy.
+		// Multiple groups need an explicit policy for assigning new hosts.
+		if groups.Kind != yaml.SequenceNode || len(groups.Content) != 1 || groups.Content[0].Kind != yaml.MappingNode {
+			return fmt.Errorf("onboarding supports one SOPS key group; multiple groups require an explicit recipient placement policy")
+		}
+		group := groups.Content[0]
+		age := mapping(group, "age")
+		if age == nil {
+			age = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			group.Content = append(group.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "age"}, age)
+		}
+		if age.Kind != yaml.SequenceNode {
+			return fmt.Errorf("SOPS key group age recipients must be a list")
+		}
+		found := false
+		for _, key := range age.Content {
+			if key.Kind != yaml.ScalarNode {
+				return fmt.Errorf("SOPS key group age recipients must be strings")
+			}
+			found = found || key.Value == recipient
+		}
+		if !found {
+			age.Content = append(age.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: recipient})
+		}
+		encoded, err := yaml.Marshal(&doc)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, encoded, 0600)
 	}
 	age := mapping(selected, "age")
 	if age == nil {
