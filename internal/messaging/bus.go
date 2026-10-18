@@ -398,3 +398,18 @@ func (b *Bus) Stop() {
 	b.mu.Unlock()
 	b.workers.Wait()
 }
+
+// ForgetTemporary removes the installer consumer after its leaf is detached.
+// Completed command receipts remain in the installer's local state; retained
+// stream messages expire under the normal command retention policy.
+func (b *Bus) ForgetTemporary(ctx context.Context, node string) error {
+	emb := b.connection()
+	if emb == nil {
+		return fmt.Errorf("NATS transport unavailable")
+	}
+	err := emb.JS.DeleteConsumer(ctx, Stream, "host_"+token(node))
+	if errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return nil
+	}
+	return err
+}

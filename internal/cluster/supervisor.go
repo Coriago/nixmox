@@ -64,7 +64,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	s.ident = ident
 
 	spec := natsx.ClusterSpec{}
-	if ident.ClusterName != "" && len(ident.Routes) > 0 {
+	if !s.cfg.InstallerMode && ident.ClusterName != "" && len(ident.Routes) > 0 {
 		spec = natsx.ClusterSpec{Name: ident.ClusterName, Routes: ident.Routes}
 	}
 	err = s.startLocked(spec)
@@ -76,6 +76,13 @@ func (s *Supervisor) startLocked(spec natsx.ClusterSpec) error {
 	opts, err := natsx.NewOptions(s.ident.NodeID, s.cfg.NATSPort, s.cfg.ClusterPort, s.clusterIP, s.dataDir, spec)
 	if err != nil {
 		return err
+	}
+	if s.cfg.InstallerMode {
+		opts.JetStream = false
+		opts.StoreDir = ""
+		opts.LeafNode.Host = "0.0.0.0"
+		opts.LeafNode.Port = natsx.InstallerPort
+		opts.LeafNode.NoAdvertise = true
 	}
 	emb, err := natsx.Start(opts)
 	if err != nil {
@@ -110,6 +117,31 @@ func (s *Supervisor) startLocked(spec natsx.ClusterSpec) error {
 		}
 	}()
 	return nil
+}
+
+func (s *Supervisor) ConnectInstaller(address string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg.InstallerMode || s.emb == nil || s.ident.ClusterName == "" {
+		return fmt.Errorf("a permanent cluster coordinator is required")
+	}
+	return s.emb.ConnectInstaller(address)
+}
+
+func (s *Supervisor) DisconnectInstaller(ctx context.Context, nodeID, address string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.emb == nil {
+		return fmt.Errorf("NATS unavailable")
+	}
+	if err := s.emb.DisconnectInstaller(address); err != nil {
+		return err
+	}
+	kv, err := s.emb.JS.KeyValue(ctx, "hosts")
+	if err != nil {
+		return err
+	}
+	return kv.Purge(ctx, "hosts."+nodeID)
 }
 
 // Reconfigure swaps the running embedded server for one with the given

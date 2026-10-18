@@ -21,6 +21,7 @@ import (
 	"nixmox/internal/hostinfo"
 	"nixmox/internal/jobs"
 	"nixmox/internal/messaging"
+	"nixmox/internal/natsx"
 	"nixmox/internal/portal"
 	"nixmox/internal/statefile"
 )
@@ -212,7 +213,7 @@ func (s *Server) inspectOnboarding(w http.ResponseWriter, r *http.Request) {
 	found := false
 	if s.Discoveries != nil {
 		for _, peer := range s.Discoveries.List() {
-			if peer.NodeID == req.NodeID && peer.Address == req.Address && peer.Cluster == "" {
+			if peer.NodeID == req.NodeID && peer.Address == req.Address && peer.Cluster == "" && peer.Installer {
 				found = true
 			}
 		}
@@ -222,7 +223,7 @@ func (s *Server) inspectOnboarding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var info installerInfo
-	if err := s.installerRequest(r.Context(), req.Address, "GET", "/api/v1/installer/info", nil, &info); err != nil {
+	if err := s.installerRequest(r.Context(), req.NodeID, req.Address, "GET", "/api/v1/installer/info", nil, &info); err != nil {
 		http.Error(w, err.Error(), 502)
 		return
 	}
@@ -376,10 +377,40 @@ func (s *Server) startOnboarding(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, 202, map[string]any{"session": session, "job": j})
 }
-func (s *Server) installerRequest(ctx context.Context, address, method, path string, body, out any) error {
-	// Standalone installer daemons retain their own command queue. They never join
-	// voting Raft; only the recorded, explicitly selected HTTP address is used.
-	return s.requestPeer(ctx, cluster.HostPayload{HTTPAddress: address}, method, path, body, out)
+func (s *Server) installerRequest(ctx context.Context, nodeID, address, method, path string, body, out any) error {
+	if s.Bus == nil || nodeID == "" {
+		return fmt.Errorf("installer requires the cluster NATS transport")
+	}
+	connector, ok := s.Cluster.(interface{ ConnectInstaller(string) error })
+	if !ok {
+		return fmt.Errorf("temporary NATS participation is unavailable")
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	if err := connector.ConnectInstaller(net.JoinHostPort(host, fmt.Sprint(natsx.InstallerPort))); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	// Connecting the leaf and arming its durable consumer are asynchronous.
+	// Read-only readiness queries may be retried; mutations use Bus.Command's
+	// durable receipts and never fall back to an installer HTTP connection.
+	for {
+		probe, stop := context.WithTimeout(ctx, time.Second)
+		_, err = s.Bus.Query(probe, messaging.Request{Target: nodeID, Method: "GET", Path: "/api/v1/host"})
+		stop()
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("temporary installer NATS connection: %w", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return s.requestPeer(ctx, cluster.HostPayload{NodeID: nodeID}, method, path, body, out)
 }
 func (s *Server) runOnboarding(ctx context.Context, j *jobs.Job, out io.Writer) error {
 	s.onboardingMu.Lock()
@@ -404,6 +435,9 @@ func (s *Server) runOnboarding(ctx context.Context, j *jobs.Job, out io.Writer) 
 	}
 	if session.InstallJob != "" {
 		if old, ok := s.peer(session.Plan.Hostname); ok && old.Online && old.AgeRecipient == session.Info.Recipient {
+			if err := s.removeTemporary(ctx, session); err != nil {
+				return err
+			}
 			session.Completed = true
 			return phase("Installed host is reachable and joined; temporary installer removed")
 		}
@@ -413,7 +447,7 @@ func (s *Server) runOnboarding(ctx context.Context, j *jobs.Job, out io.Writer) 
 		var previous struct {
 			Job jobs.Job `json:"job"`
 		}
-		if err := s.installerRequest(ctx, session.Address, "GET", "/api/v1/installer/jobs/"+session.InstallJob, nil, &previous); err != nil {
+		if err := s.installerRequest(ctx, session.NodeID, session.Address, "GET", "/api/v1/installer/jobs/"+session.InstallJob, nil, &previous); err != nil {
 			return err
 		}
 		if previous.Job.State == "applied" {
@@ -431,7 +465,7 @@ func (s *Server) runOnboarding(ctx context.Context, j *jobs.Job, out io.Writer) 
 		return err
 	}
 	var info installerInfo
-	if err := s.installerRequest(ctx, session.Address, "GET", "/api/v1/installer/info?session="+session.ID, nil, &info); err != nil {
+	if err := s.installerRequest(ctx, session.NodeID, session.Address, "GET", "/api/v1/installer/info?session="+session.ID, nil, &info); err != nil {
 		return err
 	}
 	if info.NodeID != session.NodeID || info.BootID != session.Info.BootID || info.Recipient != session.Info.Recipient {
@@ -446,7 +480,7 @@ func (s *Server) runOnboarding(ctx context.Context, j *jobs.Job, out io.Writer) 
 	if !valid {
 		return fmt.Errorf("drive changed or became busy; refresh the installer before proceeding")
 	}
-	if err := s.installerRequest(ctx, session.Address, "POST", "/api/v1/installer/reserve", session.Plan, nil); err != nil {
+	if err := s.installerRequest(ctx, session.NodeID, session.Address, "POST", "/api/v1/installer/reserve", session.Plan, nil); err != nil {
 		return err
 	}
 	if session.Revision == "" {
@@ -478,24 +512,24 @@ func (s *Server) runOnboarding(ctx context.Context, j *jobs.Job, out io.Writer) 
 		return err
 	}
 	var pull jobs.Job
-	if err := s.installerRequest(ctx, session.Address, "POST", "/api/v1/installer/pull", session.Plan, &pull); err != nil {
+	if err := s.installerRequest(ctx, session.NodeID, session.Address, "POST", "/api/v1/installer/pull", session.Plan, &pull); err != nil {
 		return err
 	}
-	if err := s.waitInstallerJob(ctx, session.Address, pull.ID, out); err != nil {
+	if err := s.waitInstallerJob(ctx, session.NodeID, session.Address, pull.ID, out); err != nil {
 		return err
 	}
 	if err := phase("Installing locally on the selected disk"); err != nil {
 		return err
 	}
 	var install jobs.Job
-	if err := s.installerRequest(ctx, session.Address, "POST", "/api/v1/installer/install", map[string]any{"id": session.ID, "confirm": session.Plan.Drive.Path, "alternative_network": session.Plan.AlternativeNetwork}, &install); err != nil {
+	if err := s.installerRequest(ctx, session.NodeID, session.Address, "POST", "/api/v1/installer/install", map[string]any{"id": session.ID, "confirm": session.Plan.Drive.Path, "alternative_network": session.Plan.AlternativeNetwork}, &install); err != nil {
 		return err
 	}
 	session.InstallJob = install.ID
 	if err := s.saveSession(session); err != nil {
 		return err
 	}
-	if err := s.waitInstallerJob(ctx, session.Address, install.ID, out); err != nil {
+	if err := s.waitInstallerJob(ctx, session.NodeID, session.Address, install.ID, out); err != nil {
 		return err
 	}
 	session.Installed = true
@@ -516,7 +550,7 @@ func (s *Server) finishOnboarding(ctx context.Context, session *onboardingSessio
 	}
 	fmt.Fprintln(out, session.Phase)
 	// A lost reply can mean the reboot already began. Never erase again here.
-	if err := s.installerRequest(ctx, session.Address, "POST", "/api/v1/installer/reboot", map[string]string{"job": session.InstallJob}, nil); err != nil {
+	if err := s.installerRequest(ctx, session.NodeID, session.Address, "POST", "/api/v1/installer/reboot", map[string]string{"job": session.InstallJob}, nil); err != nil {
 		fmt.Fprintln(out, "Installer reboot reply unavailable; checking installed-host reachability")
 	}
 	deadline := time.NewTimer(20 * time.Minute)
@@ -527,6 +561,9 @@ func (s *Server) finishOnboarding(ctx context.Context, session *onboardingSessio
 		if peer, ok := s.peer(session.Plan.Hostname); ok && peer.Online && peer.AgeRecipient == session.Info.Recipient {
 			var h hostinfo.HostInfo
 			if err := s.requestPeer(ctx, peer, "GET", "/api/v1/host", nil, &h); err == nil && h.Hostname == session.Plan.Hostname && h.AgeRecipient == session.Info.Recipient {
+				if err := s.removeTemporary(ctx, *session); err != nil {
+					return err
+				}
 				session.Completed = true
 				session.Phase = "Installed host is reachable and joined; temporary installer removed"
 				j.Phase = session.Phase
@@ -543,7 +580,33 @@ func (s *Server) finishOnboarding(ctx context.Context, session *onboardingSessio
 		}
 	}
 }
-func (s *Server) waitInstallerJob(ctx context.Context, address, id string, out io.Writer) error {
+func (s *Server) removeTemporary(ctx context.Context, session onboardingSession) error {
+	connector, ok := s.Cluster.(interface {
+		DisconnectInstaller(context.Context, string, string) error
+	})
+	if !ok {
+		return fmt.Errorf("temporary NATS removal is unavailable")
+	}
+	host, _, err := net.SplitHostPort(session.Address)
+	if err != nil {
+		return err
+	}
+	if err := connector.DisconnectInstaller(ctx, session.NodeID, net.JoinHostPort(host, fmt.Sprint(natsx.InstallerPort))); err != nil {
+		return err
+	}
+	if s.Bus == nil {
+		return fmt.Errorf("NATS transport unavailable")
+	}
+	if err := s.Bus.ForgetTemporary(ctx, session.NodeID); err != nil {
+		return err
+	}
+	if s.View != nil {
+		s.View.Remove(session.NodeID)
+	}
+	return nil
+}
+
+func (s *Server) waitInstallerJob(ctx context.Context, nodeID, address, id string, out io.Writer) error {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	previous := ""
@@ -552,7 +615,7 @@ func (s *Server) waitInstallerJob(ctx context.Context, address, id string, out i
 			Job jobs.Job `json:"job"`
 			Log string   `json:"log"`
 		}
-		if err := s.installerRequest(ctx, address, "GET", "/api/v1/installer/jobs/"+id, nil, &result); err != nil {
+		if err := s.installerRequest(ctx, nodeID, address, "GET", "/api/v1/installer/jobs/"+id, nil, &result); err != nil {
 			return fmt.Errorf("installer task status unavailable (inspect before retrying): %w", err)
 		}
 		if result.Log != previous {

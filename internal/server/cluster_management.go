@@ -44,7 +44,7 @@ func (s *Server) addDiscoveredNode(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Discoveries != nil {
 		for _, peer := range s.Discoveries.List() {
-			if peer.NodeID != req.NodeID || peer.Address != req.Address || peer.Cluster != "" {
+			if peer.NodeID != req.NodeID || peer.Address != req.Address || peer.Cluster != "" || peer.Installer {
 				continue
 			}
 			var result cluster.ClusterState

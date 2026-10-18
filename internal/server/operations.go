@@ -238,7 +238,11 @@ func (s *Server) hostAction(w http.ResponseWriter, r *http.Request) {
 		}
 		peers := []cluster.HostPayload{}
 		if s.View != nil {
-			peers = s.View.List()
+			for _, peer := range s.View.List() {
+				if !peer.Temporary {
+					peers = append(peers, peer)
+				}
+			}
 		}
 		route := s.clusterState().NATSRoute
 		if preparer, ok := s.Cluster.(interface {

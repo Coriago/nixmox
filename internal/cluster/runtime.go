@@ -94,7 +94,7 @@ func (rt *Runtime) arm(rtCtx context.Context, emb *natsx.EmbeddedServer) {
 		scaler := ReplicaScaler{Buckets: []string{"KV_hosts", "KV_applylog", messaging.Stream}, PeerCount: func() int {
 			n := 0
 			for _, h := range rt.View.List() {
-				if h.Online {
+				if h.Online && !h.Temporary {
 					n++
 				}
 			}

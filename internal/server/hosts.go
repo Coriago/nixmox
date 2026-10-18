@@ -16,6 +16,7 @@ func (s *Server) hostRows() []portal.HostRow {
 		var rows []portal.HostRow
 		for _, p := range s.View.List() {
 			row := portal.HostRow{ConsoleAddress: p.HTTPAddress, Host: p.Info(), Latest: p.ApplyRecord, Online: p.Online, PulledSHA: p.PulledSHA, RemoteSHA: p.RemoteSHA, Active: p.ActiveDeployment, Unavailable: p.StatusUnavailable, SampledAt: p.ObservedAt}
+			row.Temporary = p.Temporary
 			if !p.Online {
 				row.Active = nil
 			}
@@ -32,6 +33,7 @@ func (s *Server) hostRows() []portal.HostRow {
 func (s *Server) localHostRow() portal.HostRow {
 	h := hostinfo.Get(s.Config)
 	row := portal.HostRow{Host: h, Latest: s.latestRecord(h.Hostname), Online: true, SampledAt: time.Now()}
+	row.Temporary = s.Config.InstallerMode
 	if s.Git != nil {
 		state := s.Git.State()
 		row.PulledSHA, row.RemoteSHA = state.LastPulledSHA, state.RemoteSHA

@@ -35,6 +35,7 @@ type PageData struct {
 	Job          *JobDetailView
 }
 type HostRow struct {
+	Temporary      bool
 	ConsoleAddress string
 	SampledAt      time.Time
 	Active         *jobs.Job

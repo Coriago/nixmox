@@ -2,7 +2,7 @@
 
 buildGoModule {
   pname = "nixmox";
-  version = "0.4.0";
+  version = "0.4.1";
   src = ../.;
   vendorHash = "sha256-SBbrhC/71KblCkz/uuT8JlgERpjD7npCMVXk5xm7B9s=";
   subPackages = [ "cmd/nixmox" ];

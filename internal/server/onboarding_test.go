@@ -95,7 +95,7 @@ func TestTemporaryInstallerCannotVoteOrInstallWithoutPull(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	s.Config.InstallerMode = false
-	if w := call(s, "GET", "/api/v1/installer/info", ""); w.Code != 403 {
+	if w := call(s, "GET", "/api/v1/installer/info", ""); w.Code != 404 {
 		t.Fatal("installed node exposed install workflow", w.Code)
 	}
 }
@@ -105,7 +105,7 @@ func TestOnboardingRetryKeepsRevisionAndStopsOnPullFailure(t *testing.T) {
 	session.Revision = strings.Repeat("a", 40)
 	session.Plan = addhost.InstallPlan{ID: session.ID, Revision: session.Revision, Hostname: "newhost", Drive: session.Info.Disks[0], Repository: "test", Branch: "main"}
 	calls := []string{}
-	installer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	installer := installerBus(t, s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.URL.Path)
 		switch r.URL.Path {
 		case "/api/v1/installer/info":
@@ -126,8 +126,7 @@ func TestOnboardingRetryKeepsRevisionAndStopsOnPullFailure(t *testing.T) {
 			http.Error(w, "unexpected", 500)
 		}
 	}))
-	defer installer.Close()
-	session.Address = strings.TrimPrefix(installer.URL, "http://")
+	session.Address = installer
 	if err := s.saveSession(session); err != nil {
 		t.Fatal(err)
 	}
@@ -176,8 +175,8 @@ func TestOnboardingPublishesPullsInstallsAndVerifiesJoin(t *testing.T) {
 	session, _ = s.loadSession(session.ID)
 	var pulled string
 	calls := []string{}
-	var installer *httptest.Server
-	installer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var installer string
+	installer = installerBus(t, s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.URL.Path)
 		switch r.URL.Path {
 		case "/api/v1/installer/info":
@@ -210,7 +209,7 @@ func TestOnboardingPublishesPullsInstallsAndVerifiesJoin(t *testing.T) {
 		case "/api/v1/installer/jobs/install":
 			respond(w, 200, map[string]any{"job": jobs.Job{State: "applied", GitSHA: pulled}, "log": "installed\n"})
 		case "/api/v1/installer/reboot":
-			s.View.Upsert(cluster.HostPayload{NodeID: "newhost", Hostname: "newhost", AgeRecipient: session.Info.Recipient, HTTPAddress: strings.TrimPrefix(installer.URL, "http://")})
+			s.View.Upsert(cluster.HostPayload{NodeID: "newhost", Hostname: "newhost", AgeRecipient: session.Info.Recipient, HTTPAddress: installer})
 			respond(w, 202, map[string]string{"status": "reboot scheduled"})
 		case "/api/v1/host":
 			respond(w, 200, hostinfo.HostInfo{Hostname: "newhost", AgeRecipient: session.Info.Recipient})
@@ -219,8 +218,7 @@ func TestOnboardingPublishesPullsInstallsAndVerifiesJoin(t *testing.T) {
 			http.Error(w, "unexpected", 500)
 		}
 	}))
-	defer installer.Close()
-	session.Address = strings.TrimPrefix(installer.URL, "http://")
+	session.Address = installer
 	if err := s.saveSession(session); err != nil {
 		t.Fatal(err)
 	}

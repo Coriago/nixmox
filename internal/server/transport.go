@@ -20,6 +20,10 @@ type deliveredCommand struct{}
 // local ones, enter the same durable NATS consumer before reaching handlers.
 func (s *Server) transport(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/installer/") && r.Context().Value(deliveredCommand{}) == nil {
+			http.NotFound(w, r)
+			return
+		}
 		if s.Bus == nil || r.Context().Value(deliveredCommand{}) != nil || r.Method == "GET" || r.Method == "HEAD" {
 			next.ServeHTTP(w, r)
 			return

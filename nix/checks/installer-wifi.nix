@@ -43,18 +43,18 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     machine.start()
     machine.wait_for_unit("nixmox.service")
-    machine.wait_for_unit("nixmox-wifi.service")
-    assert "Wired connection ready" in machine.succeed("nixmox-wifi --auto")
+    machine.wait_for_unit("nixmox-installer.service")
+    assert "Wired connection ready" in machine.succeed("nixmox installer --auto")
 
     # Drop wired carrier, leaving only the simulated radio pair. The console
     # selector must not block nixmox even while waiting for a password.
     machine.succeed("ip link set eth1 down")
     machine.wait_for_unit("hostapd.service")
-    machine.succeed("systemctl stop getty@tty1.service; systemctl restart --no-block nixmox-wifi")
+    machine.succeed("systemctl stop getty@tty1.service; systemctl restart --no-block nixmox-installer")
     machine.wait_until_tty_matches("1", "Onboarding-test")
     machine.succeed("systemctl is-active nixmox.service")
     machine.screenshot("wifi-selector")
-    machine.send_key("ret")
+    machine.send_chars("1\n")
     machine.wait_until_tty_matches("1", "Password")
     machine.send_chars("onboarding-test-password")
     machine.send_key("ret")
@@ -63,8 +63,8 @@ pkgs.testers.runNixOSTest {
     # NetworkManager must save a system connection for the later install task.
     machine.succeed("test -n \"$(find /etc/NetworkManager/system-connections -name '*.nmconnection' -perm 0600)\"")
     machine.screenshot("wifi-connected")
-    machine.send_key("esc")
-    machine.wait_for_unit("nixmox-wifi.service")
+    machine.send_chars("q\n")
+    machine.wait_for_unit("nixmox-installer.service")
     machine.succeed("systemctl start getty@tty1.service")
     machine.wait_for_unit("getty@tty1.service")
   '';

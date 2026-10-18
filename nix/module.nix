@@ -4,6 +4,9 @@ with lib;
 
 let
   cfg = config.services.nixmox;
+  addHostConfig = if cfg.addHost == null then null else cfg.addHost // {
+    template = "${cfg.addHost.template}";
+  };
 in
 {
   options.nixmox-inputs = mkOption {
@@ -194,6 +197,12 @@ in
   };
 
   config = mkIf cfg.enable {
+    environment.systemPackages = [ cfg.package ];
+    # Interactive CLI invocations do not inherit the service's environment.
+    environment.etc."nixmox/config.yaml".text = mkDefault (builtins.toJSON {
+      http_addr = "127.0.0.1:${toString cfg.httpPort}";
+      add_host = addHostConfig;
+    });
     nixmox-inputs = mkDefault (
       if builtins.pathExists cfg.inputsFile
       then builtins.fromJSON (builtins.readFile cfg.inputsFile)
@@ -235,11 +244,7 @@ in
         NIXMOX_AUTO_APPLY = boolToString cfg.autoApply;
         NIXMOX_APPLY_MODE = cfg.applyMode;
       } // optionalAttrs (cfg.addHost != null) {
-        NIXMOX_ADD_HOST_CONFIG = toString (pkgs.writeText "nixmox-add-host.json" (builtins.toJSON (cfg.addHost // {
-          # Interpolation copies a path template to the store and retains its
-          # dependency in the service closure; a raw JSON path is not portable.
-          template = "${cfg.addHost.template}";
-        })));
+        NIXMOX_ADD_HOST_CONFIG = toString (pkgs.writeText "nixmox-add-host.json" (builtins.toJSON addHostConfig));
       } // optionalAttrs (cfg.gitops.repoUrl != "") {
         NIXMOX_GIT_REPO_URL = cfg.gitops.repoUrl;
       } // optionalAttrs (cfg.gitops.sshKeyPath != "") {
@@ -265,9 +270,9 @@ in
     };
 
     networking.firewall.allowedUDPPorts = mkIf (cfg.openFirewall && cfg.discovery) [ 8099 ];
-    networking.firewall.allowedTCPPorts = mkIf cfg.openFirewall [
+    networking.firewall.allowedTCPPorts = mkIf cfg.openFirewall ([
       cfg.httpPort
       6222
-    ];
+    ] ++ optionals cfg.installerMode [ 7422 ]);
   };
 }

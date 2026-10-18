@@ -23,7 +23,7 @@
 {{define "hosts_partial"}}
 {{range .Hosts}}
 <tr data-node="{{.Host.Hostname}}">
-    <td><a href="/hosts/{{.Host.Hostname}}">{{.Host.Hostname}}</a></td>
+    <td><a href="/hosts/{{.Host.Hostname}}">{{.Host.Hostname}}</a>{{if .Temporary}} <span class="badge">Temporary installer</span>{{end}}</td>
     <td>{{.Host.NixOSVersion}}</td>
     <td>{{template "host_uptime" .}}</td>
     <td>{{.Host.AgentVersion}}</td>

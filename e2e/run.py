@@ -454,13 +454,17 @@ class Suite:
         self.stage('1.1 Fresh standalone VMs and discovery')
         for node in NODES:
             self.start(node)
+            require(self.ssh(node, 'command -v nixmox').startswith('/run/current-system/sw/bin/'),
+                    'enabled module did not install the CLI on the system PATH')
+            cli_status = json.loads(self.ssh(node, 'nixmox status'))
+            require(cli_status['status'] == 'unclustered', 'interactive CLI cannot read local agent status')
             root_bytes = int(self.ssh(node, 'df -B1 --output=size /').split()[-1])
             require(root_bytes >= 12 * 1024**3, 'boot partition did not grow to provide guest build space')
             require(self.api(node, '/api/v1/bootstrap')['status'] == 'unclustered', 'bootstrap is already joined')
             self.topology([node], 1, 1)
             poll(f'node{node} installer network setup finished', lambda: self.ssh(node,
-                'systemctl show nixmox-wifi -p ActiveState --value', quiet=True) == 'active')
-            require('Wired connection ready' in self.ssh(node, 'nixmox-wifi --auto'),
+                'systemctl show nixmox-installer -p ActiveState --value', quiet=True) == 'active')
+            require('Wired connection ready' in self.ssh(node, 'nixmox installer --auto'),
                     'wired installer boot would prompt for Wi-Fi')
         self.check_add_host_generator()
         self.state['age_recipients'] = {}
@@ -474,6 +478,20 @@ class Suite:
         poll('bidirectional LAN discovery', lambda: all(
             {p['node_id'] for p in self.api(i, '/api/v1/discovery')} == {f'node{j}' for j in NODES if j != i}
             for i in NODES))
+        # Discovery must join a newly available interface even when the daemon
+        # advertises another network (as with Tailscale plus Wi-Fi).
+        try:
+            self.ssh(1, 'ip link add discovery-test type dummy')
+            self.ssh(1, 'ip address add 192.0.2.1/24 dev discovery-test')
+            self.ssh(1, 'ip link set discovery-test up multicast on')
+            poll('discovery listens on late interface', lambda:
+                 '239.255.80.99' in self.ssh(1, 'ip maddr show dev discovery-test', quiet=True))
+            require({p['node_id'] for p in self.api(1, '/api/v1/discovery')} >= {'node2', 'node3'},
+                    'new interface displaced LAN discovery')
+            self.artifact('multi-interface-discovery.json', self.api(1, '/api/v1/discovery'))
+        finally:
+            with contextlib.suppress(Exception):
+                self.ssh(1, 'ip link delete discovery-test')
         for node in NODES:
             require(self.api(node, '/api/v1/bootstrap')['status'] == 'unclustered', 'discovery joined implicitly')
         self.stage('1.2 Create, peer-address join, then cluster-initiated discovered-node add')
@@ -813,6 +831,38 @@ class Suite:
             self.topology(remaining, len(remaining), 1)
             self.quorum_probe(remaining[0])
 
+    def temporary_installer(self):
+        self.stage('2.6a Temporary installer participates over NATS without voting')
+        unit = 'nixmox-temporary-e2e'
+        try:
+            self.ssh(3, 'systemd-run --unit=' + unit + ' --collect '
+                     '--setenv=PATH=/run/current-system/sw/bin '
+                     '--setenv=NIXMOX_HOSTNAME=temporary-e2e '
+                     '--setenv=NIXMOX_INSTALLER_MODE=true '
+                     '--setenv=NIXMOX_DISCOVERY=true '
+                     '--setenv=NIXMOX_HTTP_ADDR=0.0.0.0:18080 '
+                     '--setenv=NIXMOX_NATS_PORT=0 '
+                     '--setenv=NIXMOX_CLUSTER_PORT=0 '
+                     '--setenv=NIXMOX_DATA_DIR=/tmp/nixmox-temporary-e2e '
+                     '$(command -v nixmox) serve')
+            peer = poll('temporary installer discovery', lambda: next((p for p in
+                        self.api(1, '/api/v1/discovery') if p['node_id'] == 'temporary-e2e' and p['installer']), None))
+            # The selected coordinator attaches over the leaf protocol; HTTP
+            # inspection is deliberately unavailable on the temporary host.
+            status = self.ssh(3, "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/api/v1/installer/info")
+            require(status == '404', 'installer HTTP control remains exposed')
+            session = self.api(1, '/api/v1/hosts/node1/onboarding/inspect',
+                               {'node_id': peer['node_id'], 'address': peer['address']})
+            require(session['info']['node_id'] == 'temporary-e2e' and session['info']['recipient'].startswith('age1'), session)
+            poll('temporary NATS inventory', lambda: self.hosts(1).get('temporary-e2e', {}).get('temporary'))
+            require(self.api(1, '/api/v1/bootstrap')['member_count'] == 1, 'temporary installer counted as voter')
+            self.topology([1], 1, 1)
+            require('Temporary installer' in self.text(1, '/'), 'temporary role missing from browser')
+            self.artifact('temporary-nats-installer.json', session)
+        finally:
+            with contextlib.suppress(Exception):
+                self.ssh(3, 'systemctl stop ' + unit)
+
     def teardown(self):
         self.stage('2.4 Graceful 3 -> 2 -> 1; R=3 -> R=1 and finally no metadata Raft')
         self.leave(1, 3, [1, 2])
@@ -834,6 +884,8 @@ class Suite:
             self.topology([node], 1, 1)
             self.quorum_probe(node)
             self.command(node, node, 'Fresh cluster local task', f'test "$(uname -n)" = node{node}')
+            if node == 1:
+                self.temporary_installer()
             self.leave(node, node, [])
         self.snapshot('part2')
         self.state['phase'] = 'part2-passed'

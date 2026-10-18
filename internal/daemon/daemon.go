@@ -89,6 +89,10 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 		h := hostinfo.Get(cfg)
 		// Public recipient travels with inventory through the existing NATS KV.
 		p := cluster.HostPayload{Kernel: h.Kernel, NodeID: cfg.Hostname, Hostname: h.Hostname, NixOSVersion: h.NixOSVersion, AgentVersion: h.AgentVersion, Uptime: h.Uptime, Resources: h.Resources, HTTPAddress: cfg.PeerAddress(), ClusterRoute: fmt.Sprintf("nats://%s:%d", clusterIP, cfg.ClusterPort), RemoteSHA: git.State().RemoteSHA, PulledSHA: git.State().LastPulledSHA}
+		p.Temporary = cfg.InstallerMode
+		if p.Temporary {
+			p.ClusterRoute = ""
+		}
 		active, err := jobs.ActiveDeployment(store)
 		p.AgeRecipient, p.AgeRecipientError = h.AgeRecipient, h.AgeRecipientError
 		p.ActiveDeployment, p.StatusUnavailable = active, err != nil
@@ -116,7 +120,7 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 	if cfg.Discovery {
 		spawn(func() {
 			if err := registry.Run(ctx, func() discovery.Peer {
-				return discovery.Peer{NodeID: cfg.Hostname, Address: cfg.PeerAddress(), Cluster: supervisor.State(0).ClusterName, Installer: cfg.InstallerMode}
+				return discovery.Peer{NodeID: cfg.Hostname, Address: cfg.HTTPAddr, Cluster: supervisor.State(0).ClusterName, Installer: cfg.InstallerMode}
 			}); err != nil {
 				log.Printf("discovery: %v", err)
 			}

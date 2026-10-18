@@ -27,7 +27,8 @@ in
 
   networking.hostName = name;
   # Reference converter used by the end-to-end host identity checks.
-  environment.systemPackages = [ pkgs.ssh-to-age ];
+  environment.systemPackages = [ pkgs.ssh-to-age pkgs.nixos-install-tools ];
+  networking.firewall.allowedTCPPorts = [ 7422 ];
 
   # NetworkManager supplies DHCP on the external interface; cluster0 stays static.
   networking.useDHCP = false;
@@ -51,6 +52,7 @@ in
     allowConfigWrite = true;
     enableCustomTasks = true;
     discovery = true;
+    addHost = {};
     autoApply = false;
     gitops = {
       repoUrl = "https://github.com/Coriago/nixmox.git";

@@ -26,6 +26,8 @@ type ClusterSpec struct {
 	Routes []string
 }
 
+const InstallerPort = 7422
+
 type EmbeddedServer struct {
 	options server.Options
 	Srv     *server.Server
@@ -55,6 +57,9 @@ func NewOptions(serverName string, clientPort, clusterPort int, clusterHost, dat
 		JetStream:  true,
 		StoreDir:   filepath.Join(dataDir, storeSub),
 		NoSigs:     true,
+		// Keep the existing default JetStream API reachable across temporary
+		// leaf links without sharing $SYS or extending the Raft group.
+		JsAccDefaultDomain: map[string]string{"$G": ""},
 	}
 	if spec.Name != "" {
 		opts.Cluster = server.ClusterOpts{
@@ -164,7 +169,43 @@ func (e *EmbeddedServer) Stop() {
 	}
 }
 
+// ConnectInstaller extends this server's account to a selected temporary node.
+// The installer has no JetStream store; commands remain durable in the hub.
+func (e *EmbeddedServer) ConnectInstaller(address string) error {
+	u, err := url.Parse("nats://" + address)
+	if err != nil || u.Hostname() == "" || u.Port() == "" {
+		return fmt.Errorf("invalid installer NATS address")
+	}
+	for _, remote := range e.options.LeafNode.Remotes {
+		if len(remote.URLs) == 1 && remote.URLs[0].String() == u.String() {
+			return nil
+		}
+	}
+	opts := e.options
+	opts.LeafNode.Remotes = append(append([]*server.RemoteLeafOpts{}, opts.LeafNode.Remotes...), &server.RemoteLeafOpts{URLs: []*url.URL{u}, Hub: true})
+	if err := e.Srv.ReloadOptions(&opts); err != nil {
+		return err
+	}
+	e.options = opts
+	return nil
+}
+
 type stdLogger struct{ l *log.Logger }
+
+func (e *EmbeddedServer) DisconnectInstaller(address string) error {
+	opts := e.options
+	opts.LeafNode.Remotes = nil
+	for _, remote := range e.options.LeafNode.Remotes {
+		if len(remote.URLs) != 1 || remote.URLs[0].Host != address {
+			opts.LeafNode.Remotes = append(opts.LeafNode.Remotes, remote)
+		}
+	}
+	if err := e.Srv.ReloadOptions(&opts); err != nil {
+		return err
+	}
+	e.options = opts
+	return nil
+}
 
 func newStdLogger() *stdLogger { return &stdLogger{l: log.New(os.Stderr, "[nats] ", 0)} }
 

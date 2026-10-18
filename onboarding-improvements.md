@@ -34,10 +34,19 @@ Temporary installer members do not participate in Raft. Use nixmox communication
 for orchestration and information collection; do not add SSH public keys to the
 bootable image for cluster access.
 
+Discovery listens and broadcasts on all eligible IPv4 interfaces and rechecks
+them every five seconds. Selecting an installer establishes a NATS leaf link from
+the coordinator to the installer's LAN address on TCP 7422. The installer has no
+JetStream store or Raft vote; its commands use the coordinator's durable queue.
+There is no direct HTTP installer-control fallback. Temporary inventory is marked
+explicitly, excluded from replica counts, and removed after the installed host joins.
+
 ## Form and template
 
-The repository owner supplies the form, destination path, and template. Start with
-one template; no profile framework or repository-specific generator is needed.
+The Nix module supplies the form, destination path, and template below by default
+when `services.nixmox.addHost = {};` is set. The repository owner can override
+them; setting `form` replaces the default field set. Git credentials and SOPS
+settings are configured separately. No profile framework is needed.
 
 ```nix
 services.nixmox.addHost = {

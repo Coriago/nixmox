@@ -16,6 +16,7 @@ import (
 )
 
 type HostPayload struct {
+	Temporary         bool               `json:"temporary,omitempty"`
 	AgeRecipient      string             `json:"age_recipient,omitempty"`
 	AgeRecipientError string             `json:"age_recipient_error,omitempty"`
 	ObservedAt        time.Time          `json:"-"`
@@ -99,7 +100,13 @@ func (v *View) List() []HostPayload {
 func (v *View) Count() int {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	return len(v.hosts)
+	n := 0
+	for _, h := range v.hosts {
+		if !h.Temporary {
+			n++
+		}
+	}
+	return n
 }
 
 // Heartbeater publishes this node's HostPayload to hosts.<nodeID> every

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"sort"
 	"sync"
@@ -43,12 +44,85 @@ func (r *Registry) List() []Peer {
 	return out
 }
 func (r *Registry) Run(ctx context.Context, build func() Peer) error {
+	return r.run(ctx, build, localInterfaces, r.runInterface, 5*time.Second)
+}
+
+type endpoint struct {
+	iface net.Interface
+	ip    net.IP
+}
+
+func (e endpoint) key() string { return fmt.Sprintf("%d/%s", e.iface.Index, e.ip) }
+
+// Reconcile sockets continuously: a failed VPN or a late Wi-Fi connection must
+// not disable discovery on the other interfaces, or require a daemon restart.
+func (r *Registry) run(ctx context.Context, build func() Peer, scan func() ([]endpoint, error), serve func(context.Context, func() Peer, endpoint) error, interval time.Duration) error {
+	type worker struct {
+		cancel context.CancelFunc
+		done   chan error
+	}
+	active := map[string]worker{}
+	defer func() {
+		for _, w := range active {
+			w.cancel()
+		}
+		for _, w := range active {
+			<-w.done
+		}
+	}()
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		endpoints, err := scan()
+		if err != nil {
+			log.Printf("discovery interfaces: %v", err)
+		} else {
+			wanted := map[string]endpoint{}
+			for _, e := range endpoints {
+				wanted[e.key()] = e
+			}
+			for key, w := range active {
+				if _, ok := wanted[key]; !ok {
+					w.cancel()
+					<-w.done
+					delete(active, key)
+					continue
+				}
+				select {
+				case err := <-w.done:
+					w.cancel()
+					delete(active, key)
+					if err != nil {
+						log.Printf("discovery %s: %v", key, err)
+					}
+				default:
+				}
+			}
+			for key, e := range wanted {
+				if _, ok := active[key]; ok {
+					continue
+				}
+				child, cancel := context.WithCancel(ctx)
+				done := make(chan error, 1)
+				active[key] = worker{cancel: cancel, done: done}
+				go func() { done <- serve(child, build, e) }()
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-tick.C:
+		}
+	}
+}
+
+func (r *Registry) runInterface(ctx context.Context, build func() Peer, endpoint endpoint) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	iface, ip, err := advertisedInterface(build().Address)
-	if err != nil {
-		return err
-	}
+	iface, ip := &endpoint.iface, endpoint.ip
 	group := &net.UDPAddr{IP: net.IPv4(239, 255, 80, 99), Port: Port}
 	c, err := net.ListenMulticastUDP("udp4", iface, group)
 	if err != nil {
@@ -79,9 +153,11 @@ func (r *Registry) Run(ctx context.Context, build func() Peer) error {
 		defer tick.Stop()
 		send := func() {
 			p := build()
-			if p.Address == "" {
+			_, port, err := net.SplitHostPort(p.Address)
+			if err != nil || port == "" {
 				return
 			}
+			p.Address = net.JoinHostPort(ip.String(), port)
 			b, _ := json.Marshal(p)
 			out.WriteToUDP(b, group)
 		}
@@ -130,32 +206,26 @@ func (r *Registry) Run(ctx context.Context, build func() Peer) error {
 	}
 }
 
-// Bind discovery to the advertised LAN, rather than the default (often NAT)
-// interface on multi-homed machines.
-func advertisedInterface(address string) (*net.Interface, net.IP, error) {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, nil, err
-	}
-	resolved, err := net.ResolveIPAddr("ip4", host)
-	if err != nil {
-		return nil, nil, err
-	}
+func localInterfaces() ([]endpoint, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	var out []endpoint
 	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagMulticast == 0 {
+			continue
+		}
 		addresses, err := iface.Addrs()
 		if err != nil {
 			continue
 		}
 		for _, address := range addresses {
 			ip, _, err := net.ParseCIDR(address.String())
-			if err == nil && ip.Equal(resolved.IP) && ip.To4() != nil {
-				return &iface, ip.To4(), nil
+			if err == nil && ip.To4() != nil && ip.IsGlobalUnicast() {
+				out = append(out, endpoint{iface: iface, ip: ip.To4()})
 			}
 		}
 	}
-	return nil, nil, fmt.Errorf("discovery address %q is not a local IPv4 interface", host)
+	return out, nil
 }

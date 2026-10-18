@@ -16,6 +16,9 @@ func (r HostRow) SyncLabel() string {
 	if !r.Online {
 		return "Unknown · offline"
 	}
+	if r.Temporary {
+		return "Temporary installer"
+	}
 	if r.Unavailable {
 		return "Status unavailable"
 	}
@@ -104,5 +107,5 @@ func (r HostRow) ApplyLabel() string {
 }
 
 func (r HostRow) ApplyDisabled() bool {
-	return !r.Online || r.Unavailable || r.Active != nil || r.PulledSHA == "" || (r.RemoteSHA != "" && r.RemoteSHA != r.PulledSHA)
+	return r.Temporary || !r.Online || r.Unavailable || r.Active != nil || r.PulledSHA == "" || (r.RemoteSHA != "" && r.RemoteSHA != r.PulledSHA)
 }

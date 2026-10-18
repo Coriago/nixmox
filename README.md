@@ -47,9 +47,18 @@ host's recipient before encrypting its secrets.
 }
 ```
 
-The module opens TCP 8080/6222 and, when discovery is enabled, UDP 8099. Set `openFirewall = false` and manage access yourself if these ports must be interface-restricted. Standalone CLI defaults to loopback HTTP; the module listens on all interfaces. An unset advertise address selects the first up, non-loopback IPv4 interface.
+The module opens TCP 8080/6222 and, when discovery is enabled, UDP 8099. Live installers also listen on TCP 7422 for the selected coordinator's NATS leaf connection. Set `openFirewall = false` and manage access yourself if these ports must be interface-restricted. Standalone CLI defaults to loopback HTTP; the module listens on all interfaces. An unset advertise address selects the first up, non-loopback IPv4 interface for permanent cluster routing. Discovery independently listens and announces on every active multicast-capable IPv4 interface, rescanning every five seconds so late Wi-Fi connections and address changes recover automatically.
 
 Configuration precedence: defaults → YAML (`--config` / `NIXMOX_CONFIG`) → environment. New settings are `enable_power`, `enable_provision`, `discovery`, `join_seed`, and `inputs_file`, with corresponding `NIXMOX_` uppercase environment variables. Existing settings remain supported.
+
+Enabling the module installs `nixmox` on the system PATH and supplies
+`/etc/nixmox/config.yaml` with the local API port and configured `addHost` defaults
+for interactive CLI use. Run `nixmox status`, `nixmox join <peer-host:port>`,
+`nixmox version`, or `nixmox add-host --help`. The CLI also provides `serve`,
+`help`, and shell `completion`. `nixmox installer` opens the native terminal
+menu for Wi-Fi selection, rescanning, enabling Wi-Fi, and local agent status.
+It requires NetworkManager, which is included on the live installer. This is an
+installer setup menu, not a general cluster management TUI.
 
 ## Console workflows
 
@@ -96,13 +105,16 @@ nix build .#packages.aarch64-linux.installer-sd    # generic aarch64 SD image
 
 Enable `services.nixmox.enableMedia = true` and open **Operations → Add a host · USB installer** to prepare and write the x86_64 ISO from the UI. Optionally include an SSH public key, select the attached drive, type its exact path, and follow write/readback verification progress. `services.nixmox.installerFlake` selects a trusted source/output (default `github:Coriago/nixmox#installer-iso`; pin a revision for reproducibility). The drive must be attached to the node serving the portal. Mounted/active disks and stale drive identities are rejected. The UI writes the whole image; it does not require pre-formatting.
 
-On boot, the installer opens a network selector on the first local console when
-no wired interface has a usable address and a Wi-Fi adapter is available. Select
-the network, enter its password, and quit the selector when connected. Wired
-boots skip the selector; nixmox and LAN discovery start independently. Network
-setup can be reopened with `nixmox-wifi`. Connections are saved by NetworkManager
-in the live environment; transferring them to an installed host will be part of
-the host-install workflow.
+On boot, `nixmox installer --auto` opens the native network menu on the first
+local console when no wired or Wi-Fi interface has a usable IPv4 address and a
+Wi-Fi adapter is available. Enter a network's number, enter its password when
+NetworkManager asks, then choose `q` to return to the console. `r` rescans, `e`
+enables Wi-Fi, and `s` shows local agent status. Connected boots skip the menu;
+the daemon and LAN discovery start independently. Reopen it with `nixmox installer`.
+The `nixmox-installer.service` runs the CLI directly; there is no separate shell
+handler or `nmtui` interface. NetworkManager saves system-wide connection profiles
+for the installation workflow. New Wi-Fi profiles use DHCP; enterprise networks
+require a preconfigured NetworkManager profile.
 
 See [design decisions and the complete bootstrap workflow](docs/ui-and-bootstrap.md) for configuration, validation, preview limits, and reasoning. You can still write CLI-built images using another imaging tool. **Double-check the destination device.** The aarch64 image requires an aarch64 builder (or configured emulation) and a compatible board/bootloader; it is not a universal image for every SBC.
 
@@ -188,6 +200,17 @@ mounted disks, partitions and installer media are excluded.
 
 Configure at least one installed cluster node as the repository writer:
 
+Set `services.nixmox.addHost = {};` to use the built-in onboarding form and
+template. The default fields are Name (`newhost`), Username (`helios`),
+StateVersion (`26.05`), Modules (`workstation` and `development`, with `nvidia`
+and `gaming` also available), and a required Drive selection. The destination is
+`modules/hosts/{{ .Name }}/configuration.nix`. The template uses your repository's
+`meta.hosts` and `configurations.nixos` layout and shared `base`, `boot`, and
+`diskLayout` modules, plus the selected modules. Those modules must exist in your
+repository and enable nixmox. Override `form`, `path`, or `template` for another
+layout; supplying `form` replaces the default field set. Onboarding remains
+disabled when `addHost` is unset. Git credentials and SOPS settings remain explicit.
+
 ```nix
 services.nixmox = {
   gitops = {
@@ -234,6 +257,15 @@ threshold/key-group rule, failed key update or failed push stops the workflow.
 Only public recipients and encrypted secrets enter Git. Git/SOPS errors omit
 command output that could disclose credentials.
 
+Selecting an installer attaches it to the coordinator's NATS account over its
+LAN address on TCP 7422. Its embedded server has JetStream disabled: it consumes
+commands from the cluster's durable queue and publishes temporary host inventory,
+without becoming a Raft voter or increasing replica counts. Installer inspection,
+Git pull, install, logs, status and reboot use NATS; direct HTTP installer-control
+requests are rejected. The browser continues to use the coordinator's web API.
+This temporary LAN connection can coexist with permanent cluster routes over
+Tailscale. The installed host must still have reachable permanent cluster routes.
+
 The temporary installer's own GitOps task pulls and pins the published commit.
 It verifies that the evaluated configuration enables nixmox, has the assigned
 hostname and cluster seed, and that disko targets only the confirmed drive. Its
@@ -245,12 +277,13 @@ requires an explicitly confirmed alternative connection plan.
 
 The UI shows task phases and logs through reboot and installed-host reachability.
 Temporary installer sessions never join voting Raft. After the installed hostname
-joins with the preserved public identity, setup is marked complete. Failures
+joins with the preserved public identity, the temporary NATS link and inventory
+entry are removed and setup is marked complete. Failures
 retain logs and the published revision; retries require a fresh drive confirmation
 and reuse the recorded revision. A completed installation is checked for join or
 reboot without repeating disk erasure. Busy or changed disks stop a retry.
 
-`services.nixmox.installerMode` enables destructive local onboarding endpoints and
+`services.nixmox.installerMode` enables destructive local onboarding commands and
 is enabled by the live installer profile, not on normal installed hosts. Management
 APIs use the existing trusted-management-network model; discovery is an untrusted
 hint, so verify the selected node's address and drive before confirming.
