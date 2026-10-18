@@ -10,6 +10,7 @@
     discovery = true;
     allowConfigWrite = true;
     enablePower = true;
+    enableCustomTasks = true;
   };
   services.openssh = {
     enable = true;

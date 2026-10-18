@@ -288,7 +288,10 @@ nixmox runs nixos-anywhere against itself using an ephemeral SSH daemon listenin
 only on loopback. It uses `--build-on remote`: here the target is the same machine,
 so nixos-anywhere partitions the confirmed disk first and then builds the system
 in its disk-backed `/mnt` store. The live RAM store holds evaluation inputs and
-the partitioning tools, not the full installed system. No cluster SSH key is embedded in the image. The host SSH key
+the partitioning tools, not the full installed system. Existing live-store paths
+are signed with a temporary installation key, trusted only by the loopback
+transport, so transfer into the target store retains signature verification.
+The temporary signing key is not installed. No cluster SSH key is embedded in the image. The host SSH key
 is copied locally into the installed system. NetworkManager Wi-Fi profiles are
 copied locally with restricted permissions when compatible; otherwise installation
 requires an explicitly confirmed alternative connection plan.

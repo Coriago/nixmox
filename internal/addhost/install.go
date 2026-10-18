@@ -178,6 +178,10 @@ func LocalInstall(ctx context.Context, checkout string, p InstallPlan, out io.Wr
 		return err
 	}
 	defer os.RemoveAll(dir)
+	storeKey, err := prepareLocalStoreTrust(ctx, dir, out)
+	if err != nil {
+		return err
+	}
 	extra := filepath.Join(dir, "extra")
 	if err := os.MkdirAll(filepath.Join(extra, "etc/ssh"), 0755); err != nil {
 		return err
@@ -229,6 +233,7 @@ func LocalInstall(ctx context.Context, checkout string, p InstallPlan, out io.Wr
 	port := listener.Addr().(*net.TCPAddr).Port
 	listener.Close()
 	conf := fmt.Sprintf("ListenAddress 127.0.0.1\nPort %d\nHostKey /etc/ssh/ssh_host_ed25519_key\nAuthorizedKeysFile %s.pub\nPermitRootLogin prohibit-password\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nStrictModes yes\nPidFile %s/sshd.pid\n", port, key, dir)
+	conf += fmt.Sprintf("SetEnv NIX_CONFIG=\"extra-trusted-public-keys = %s\"\n", storeKey)
 	configFile := filepath.Join(dir, "sshd_config")
 	if err := os.WriteFile(configFile, []byte(conf), 0600); err != nil {
 		return err
@@ -261,6 +266,36 @@ func LocalInstall(ctx context.Context, checkout string, p InstallPlan, out io.Wr
 	}
 	flake := "path:" + filepath.Join(checkout, p.FlakeDirectory) + "#" + p.Hostname
 	return runLocalAnywhere(ctx, flake, port, key, extra, out)
+}
+
+// Trust the already-present live store when copying into the separate target
+// store. Local builds in the ISO can be unsigned. Keep signature checks enabled;
+// the public key is scoped to the ephemeral loopback SSH daemon, never installed.
+func prepareLocalStoreTrust(ctx context.Context, dir string, out io.Writer) (string, error) {
+	key := filepath.Join(dir, "store-signing-key")
+	public := key + ".pub"
+	cmd := exec.CommandContext(ctx, "nix-store", "--generate-binary-cache-key", "nixmox-installer", key, public)
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("generate temporary store signing key: %w", err)
+	}
+	if err := os.Chmod(key, 0600); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(public)
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSpace(string(data))
+	if strings.ContainsAny(value, "\n\r\" ") || !strings.HasPrefix(value, "nixmox-installer:") {
+		return "", fmt.Errorf("invalid temporary store public key")
+	}
+	fmt.Fprintln(out, "Signing existing live store paths for verified transfer to the target store")
+	cmd = exec.CommandContext(ctx, "nix", "store", "sign", "--all", "--key-file", key)
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("sign live store: %w", err)
+	}
+	return value, nil
 }
 
 func runLocalAnywhere(ctx context.Context, flake string, port int, key, extra string, out io.Writer) error {

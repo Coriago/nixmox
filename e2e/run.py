@@ -572,7 +572,7 @@ class Suite:
         self.artifact('installer-git-read-transport.json', transport_job)
         target_store_job = self.command(2, 1, 'Verify installer target-store sequence',
             'cd /var/lib/nixmox/git/repo; '
-            'nix develop --command go test ./internal/addhost -run "^TestAnywhereBuildsInTargetStoreAfterPartitioning$" -count=1 -v')
+            'nix develop --command go test ./internal/addhost -run "^(TestAnywhereBuildsInTargetStoreAfterPartitioning|TestTemporaryStoreSigning)$" -count=1 -v')
         self.artifact('installer-target-store.json', target_store_job)
         self.system_preview()
         self.stage('1.4 Single-node apply through another node')
@@ -857,6 +857,7 @@ class Suite:
                      '--setenv=PATH=/run/current-system/sw/bin '
                      '--setenv=NIXMOX_HOSTNAME=temporary-e2e '
                      '--setenv=NIXMOX_INSTALLER_MODE=true '
+                     '--setenv=NIXMOX_ENABLE_CUSTOM_TASKS=true '
                      '--setenv=NIXMOX_DISCOVERY=true '
                      '--setenv=NIXMOX_HTTP_ADDR=0.0.0.0:18080 '
                      '--setenv=NIXMOX_NATS_PORT=0 '
@@ -876,6 +877,14 @@ class Suite:
             require(self.api(1, '/api/v1/bootstrap')['member_count'] == 1, 'temporary installer counted as voter')
             self.topology([1], 1, 1)
             require('Temporary installer' in self.text(1, '/'), 'temporary role missing from browser')
+            command = self.api(1, '/api/v1/hosts/temporary-e2e/jobs',
+                               {'kind': 'command', 'name': 'Installer command delivery',
+                                'command': '/run/current-system/sw/bin/sh',
+                                'args': ['-ec', 'printf installer-command-delivered']})
+            result = poll('installer command completion', lambda: (lambda j: j if j['state'] in ('applied', 'failed') else None)(
+                self.api(1, '/api/v1/hosts/temporary-e2e/jobs/' + command['id'])))
+            require(result['state'] == 'applied' and 'installer-command-delivered' in '\n'.join(result.get('log', [])), result)
+            self.artifact('temporary-installer-command.json', result)
             self.artifact('temporary-nats-installer.json', session)
         finally:
             with contextlib.suppress(Exception):

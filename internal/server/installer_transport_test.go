@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"nixmox/internal/jobs"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,5 +93,48 @@ func TestInstallerHTTPControlRemoved(t *testing.T) {
 				t.Fatalf("HTTP control still exposed: %s %s: %d", method, path, w.Code)
 			}
 		}
+	}
+}
+
+func TestInstallerCommandOverNATS(t *testing.T) {
+	coordinator := operationServer(t)
+	installer := operationServer(t)
+	installer.Config.Hostname = "installer"
+	installer.Config.InstallerMode = true
+	installer.Config.EnableCustomTasks = true
+	address := installerBus(t, coordinator, installer.Mux)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var job jobs.Job
+	request := map[string]any{"kind": "command", "name": "Installer recovery probe", "command": "sh", "args": []string{"-ec", "printf installer-command-delivered"}}
+	if err := coordinator.installerRequest(ctx, "installer", address, "POST", "/api/v1/hosts/installer/jobs", request, &job); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var result struct {
+			jobs.Job
+			Log []string `json:"log"`
+		}
+		if err := coordinator.installerRequest(ctx, "installer", address, "GET", "/api/v1/hosts/installer/jobs/"+job.ID, nil, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.State == "failed" {
+			t.Fatal(result)
+		}
+		if result.State == "applied" {
+			if !strings.Contains(strings.Join(result.Log, "\n"), "installer-command-delivered") {
+				t.Fatal("missing remote command output", result)
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	installer.Config.EnableCustomTasks = false
+	if err := coordinator.installerRequest(ctx, "installer", address, "POST", "/api/v1/hosts/installer/jobs", request, &job); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatal("disabled custom commands accepted", err)
 	}
 }
