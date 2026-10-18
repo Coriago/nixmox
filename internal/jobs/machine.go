@@ -9,6 +9,12 @@ var ErrInvalidTransition = errors.New("invalid state transition")
 
 // Next returns the next state given the current state and an event.
 func Next(current, event string) (string, error) {
+	if event == "cancel" && (current == "pending" || current == "building" || current == "applying") {
+		return "cancelling", nil
+	}
+	if current == "cancelling" && event == "cancelled" {
+		return "cancelled", nil
+	}
 	switch current {
 	case "pending":
 		if event == "start" {

@@ -22,7 +22,17 @@ type queuedJob struct {
 	job Job
 }
 
+type jobControl struct {
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+	stop   func() bool
+}
+
+var ErrCancelled = errors.New("cancelled by user")
+var ErrNotCancellable = errors.New("task is no longer cancellable")
+
 type Runner struct {
+	controls   map[string]*jobControl
 	store      Store
 	mu         sync.Mutex
 	submitMu   sync.Mutex
@@ -37,7 +47,7 @@ type Runner struct {
 
 func NewRunner(store Store) *Runner {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &Runner{store: store, queues: make(map[string][]queuedJob), actions: make(map[string]Action), ctx: ctx, cancel: cancel, OnTerminal: func(Job) {}}
+	r := &Runner{store: store, controls: make(map[string]*jobControl), queues: make(map[string][]queuedJob), actions: make(map[string]Action), ctx: ctx, cancel: cancel, OnTerminal: func(Job) {}}
 	for kind, command := range map[string]string{"echo": "echo", "shutdown": "shutdown", "reboot": "shutdown", "provision": "nixos-anywhere"} {
 		r.Register(kind, Command(command))
 	}
@@ -78,12 +88,9 @@ func Command(command string) Action {
 // A process group ensures cancellation reaches child processes as well.
 func RunCommand(ctx context.Context, j *Job, out io.Writer, command string, args ...string) error {
 	fmt.Fprintf(out, "$ %s %q\n", command, args)
-	cmd := exec.CommandContext(ctx, command, args...)
+	cmd := CommandContext(ctx, command, args...)
 	cmd.Dir = j.Directory
 	cmd.Stdout, cmd.Stderr = out, out
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
 	code := 0
 	if err != nil {
@@ -100,6 +107,16 @@ func RunCommand(ctx context.Context, j *Job, out io.Writer, command string, args
 	return err
 }
 
+// CommandContext terminates a command's process group on cancellation, including
+// helpers such as Git's SSH transport and shell-script children.
+func CommandContext(ctx context.Context, command string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
+}
+
 // Start enqueues a persisted job. Each host has one FIFO worker.
 func (r *Runner) Start(ctx context.Context, j Job) error {
 	r.mu.Lock()
@@ -107,8 +124,17 @@ func (r *Runner) Start(ctx context.Context, j Job) error {
 	if r.closed {
 		return fmt.Errorf("runner is shutting down")
 	}
+	if _, exists := r.controls[j.ID]; exists {
+		return fmt.Errorf("job already queued")
+	}
+	jobCtx, cancel := context.WithCancelCause(r.ctx)
+	stop := context.AfterFunc(ctx, func() { cancel(ctx.Err()) })
+	if ctx.Err() != nil {
+		cancel(ctx.Err())
+	}
+	r.controls[j.ID] = &jobControl{jobCtx, cancel, stop}
 	_, running := r.queues[j.Host]
-	r.queues[j.Host] = append(r.queues[j.Host], queuedJob{ctx, j})
+	r.queues[j.Host] = append(r.queues[j.Host], queuedJob{jobCtx, j})
 	if !running {
 		r.wg.Add(1)
 		go r.drain(j.Host)
@@ -130,14 +156,7 @@ func (r *Runner) drain(host string) {
 		r.queues[host] = queue[1:]
 		action := r.actions[next.job.Kind]
 		r.mu.Unlock()
-		ctx, cancel := context.WithCancel(r.ctx)
-		stop := context.AfterFunc(next.ctx, cancel)
-		if next.ctx.Err() != nil {
-			cancel()
-		}
-		r.run(ctx, next.job, action)
-		stop()
-		cancel()
+		r.run(next.ctx, next.job, action)
 	}
 }
 
@@ -154,6 +173,10 @@ func (w jobWriter) Write(p []byte) (int, error) {
 }
 
 func (r *Runner) run(ctx context.Context, j Job, action Action) {
+	if ctx.Err() != nil {
+		r.failJob(j, ctx.Err())
+		return
+	}
 	j.State = "building"
 	j.StartedAt = time.Now().UTC()
 	j.UpdatedAt = j.StartedAt
@@ -184,11 +207,25 @@ func (r *Runner) failJob(j Job, err error) {
 	r.finish(j)
 }
 func (r *Runner) finish(j Job) {
+	r.mu.Lock()
+	if control := r.controls[j.ID]; control != nil {
+		if errors.Is(context.Cause(control.ctx), ErrCancelled) {
+			j.State = "cancelled"
+			j.Error = ErrCancelled.Error()
+			j.Phase = "Cancelled; completed effects are not undone"
+		}
+		control.stop()
+		control.cancel(nil)
+		delete(r.controls, j.ID)
+	}
+
 	j.UpdatedAt = time.Now().UTC()
 	if err := r.store.Update(j); err != nil {
 		log.Printf("job %s persist terminal state: %v", j.ID, err)
+		r.mu.Unlock()
 		return
 	}
+	r.mu.Unlock()
 	log.Printf("job %s (%s on %s): %s %s", j.ID, j.Kind, j.Host, j.State, j.Error)
 	r.OnTerminal(j)
 }
@@ -203,6 +240,10 @@ func (r *Runner) Recover() error {
 	sort.SliceStable(list, func(i, j int) bool { return list[i].CreatedAt.Before(list[j].CreatedAt) })
 	for _, j := range list {
 		switch j.State {
+		case "cancelling":
+			j.State = "cancelled"
+			j.Error = "cancellation interrupted by daemon restart; inspect effects before retrying"
+			r.finish(j)
 		case "building", "applying":
 			r.failJob(j, fmt.Errorf("daemon interrupted this job; inspect effects before retrying"))
 		case "pending":
@@ -228,4 +269,47 @@ func (r *Runner) Shutdown() {
 	r.cancel()
 	r.mu.Unlock()
 	r.wg.Wait()
+}
+
+// Cancel removes queued work or signals the active action. Completion is reported
+// only after the action returns, including any remote cancellation cleanup.
+func (r *Runner) Cancel(id string) (Job, error) {
+	r.submitMu.Lock()
+	defer r.submitMu.Unlock()
+	r.mu.Lock()
+	j, err := r.store.Get(id)
+	if err != nil {
+		r.mu.Unlock()
+		return Job{}, err
+	}
+	if j.State == "cancelled" || j.State == "cancelling" {
+		r.mu.Unlock()
+		return j, nil
+	}
+	control := r.controls[id]
+	if control == nil {
+		r.mu.Unlock()
+		return j, ErrNotCancellable
+	}
+	j.State = "cancelling"
+	j.UpdatedAt = time.Now().UTC()
+	if err := r.store.Update(j); err != nil {
+		r.mu.Unlock()
+		return j, err
+	}
+	control.cancel(ErrCancelled)
+	queued := false
+	for i, next := range r.queues[j.Host] {
+		if next.job.ID == id {
+			r.queues[j.Host] = append(r.queues[j.Host][:i], r.queues[j.Host][i+1:]...)
+			queued = true
+			break
+		}
+	}
+	r.mu.Unlock()
+	_ = r.store.AppendLog(id, "\nCancellation requested; completed effects are not undone.\n")
+	if queued {
+		r.finish(j)
+	}
+	return r.store.Get(id)
 }

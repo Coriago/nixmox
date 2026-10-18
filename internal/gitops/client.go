@@ -5,7 +5,7 @@ package gitops
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"nixmox/internal/jobs"
 	"strings"
 )
 
@@ -39,7 +39,7 @@ func (c ExecClient) run(ctx context.Context, dir string, args ...string) (string
 			"-c", "url.https://github.com/.insteadOf=ssh://git@github.com/",
 		}, full...)
 	}
-	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd := jobs.CommandContext(ctx, "git", full...)
 	if len(c.ExtraEnv) > 0 {
 		cmd.Env = append(cmd.Environ(), c.ExtraEnv...)
 	}

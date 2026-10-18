@@ -28,6 +28,9 @@ func (r HostRow) SyncLabel() string {
 		}
 		return "Deploying"
 	}
+	if r.Latest != nil && r.Latest.Status == "cancelled" {
+		return "Apply cancelled"
+	}
 	if r.Latest != nil && r.Latest.Status == "failed" {
 		return "Apply failed"
 	}
@@ -63,7 +66,7 @@ func (r HostRow) SyncClass() string {
 		return "deploying"
 	case "Revision applied":
 		return "online"
-	case "Apply failed":
+	case "Apply failed", "Apply cancelled":
 		return "failed"
 	case "Unknown · offline", "Revision recorded", "Status unavailable":
 		return "offline"

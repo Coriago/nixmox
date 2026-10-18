@@ -171,7 +171,7 @@ func (s *Server) activeMediaJob() (*jobs.Job, error) {
 		return nil, err
 	}
 	for _, j := range list {
-		if (j.Kind == "installer-build" || j.Kind == "installer-write") && (j.State == "pending" || j.State == "building" || j.State == "applying") {
+		if (j.Kind == "installer-build" || j.Kind == "installer-write") && (j.State == "pending" || j.State == "building" || j.State == "applying" || j.State == "cancelling") {
 			return &j, nil
 		}
 	}

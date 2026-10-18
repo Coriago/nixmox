@@ -173,7 +173,7 @@ func Run(ctx context.Context, cfg *config.Config, out io.Writer) error {
 					for {
 						notification := updates.Watch()
 						current, err := store.Get(j.ID)
-						if err != nil || current.State == "failed" {
+						if err != nil || current.State == "failed" || current.State == "cancelled" {
 							return
 						}
 						if current.State == "applied" {

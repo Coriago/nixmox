@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"nixmox/internal/jobs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -29,7 +29,7 @@ func ValidateRepositoryURL(value string) error {
 }
 
 func (r Repository) command(ctx context.Context, program string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, program, args...)
+	cmd := jobs.CommandContext(ctx, program, args...)
 	cmd.Dir = r.Directory
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'" }

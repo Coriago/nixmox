@@ -5,7 +5,7 @@
     <div data-live="/partials/hosts/{{.NodeID}}/age">{{template "age_recipient" .Host}}</div>
 <section><h2>Configuration sync</h2><div data-live="/partials/hosts/{{.NodeID}}/sync">Loading revision status…</div>
 <div class="actions"><button data-host-action="pull" data-node="{{.NodeID}}">Pull latest revision</button><button data-host-action="preview" data-node="{{.NodeID}}">Preview packages & configuration</button></div><p class="hint">Preview builds the pulled revision without activating it. Review the package closure and configuration diff in its task log, then apply.</p></section>
-    <h2>Host tasks</h2><p><a href="/hosts/{{.NodeID}}/jobs">All tasks and command logs →</a></p><div class="table-scroll"><table><thead><tr><th>Task</th><th>Kind</th><th>Host</th><th>Progress</th><th>Created</th></tr></thead><tbody data-live="/partials/hosts/{{.NodeID}}/jobs"><tr><td colspan="5">Loading tasks…</td></tr></tbody></table></div>
+    <h2>Host tasks</h2><p><a href="/hosts/{{.NodeID}}/jobs">All tasks and command logs →</a></p><div class="table-scroll"><table><thead><tr><th>Task</th><th>Kind</th><th>Host</th><th>Progress</th><th>Actions</th><th>Created</th></tr></thead><tbody data-live="/partials/hosts/{{.NodeID}}/jobs"><tr><td colspan="6">Loading tasks…</td></tr></tbody></table></div>
 <details><summary>Hardware, live telemetry & host controls</summary>
     <table class="table">
         <tr><th>NixOS Version</th><td>{{.Host.NixOSVersion}}</td></tr>

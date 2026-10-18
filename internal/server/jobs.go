@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -74,6 +75,7 @@ func (s *Server) mountJobs(p *portal.Portal) {
 			io.Copy(w, f)
 		})
 		s.Mux.Post(prefix, s.submitJob)
+		s.Mux.Post(prefix+"/{id}/cancel", s.cancelJob)
 	}
 	for _, path := range []string{"/jobs", "/hosts/{nodeID}/jobs"} {
 		s.Mux.Get(path, func(w http.ResponseWriter, r *http.Request) {
@@ -237,4 +239,25 @@ func (s *Server) submitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(j)
+}
+
+func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
+	if s.jobTarget(w, r) {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if _, err := s.Store.Get(id); err != nil {
+		http.Error(w, "unknown job", 404)
+		return
+	}
+	j, err := s.Runner.Cancel(id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, jobs.ErrNotCancellable) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	respond(w, http.StatusAccepted, j)
 }

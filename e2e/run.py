@@ -769,6 +769,20 @@ class Suite:
             f'/api/v1/hosts/node{target}/jobs/{failed["id"]}'))['state'] == 'failed' else None))
         require(failure['exit_code'] == 7 and 'expected stderr' in failure['log'], failure)
         self.artifact('expected-failed-task.json', failure)
+        running = self.command(observer, target, 'Cancel running task', 'echo ready; sleep 60', wait=False)
+        base = f'/api/v1/hosts/node{target}/jobs/'
+        poll('cancellable running task', lambda: self.api(observer, base + running['id'])['state'] == 'building')
+        queued = self.command(observer, target, 'Cancel queued task', 'echo must-not-run', wait=False)
+        require('data-cancel-job=' in self.text(observer, f'/hosts/node{target}/jobs/{running["id"]}'), 'detail cancellation control missing')
+        self.api(observer, base + queued['id'] + '/cancel', {})
+        require(self.api(observer, base + queued['id'])['state'] == 'cancelled', 'queued task did not cancel')
+        self.api(observer, base + running['id'] + '/cancel', {})
+        cancelled = poll('remote task cancellation', lambda: (value if (value := self.api(observer, base + running['id']))['state'] == 'cancelled' else None))
+        self.api(observer, base + running['id'] + '/cancel', {})
+        require('data-cancel-job=' not in self.text(observer, f'/hosts/node{target}/jobs/{running["id"]}'), 'terminal cancel button remains')
+        self.command(observer, target, 'Queue works after cancellation', 'echo recovered')
+        self.artifact('cancelled-remote-task.json', cancelled)
+
 
     def availability(self):
         self.stage('1.6 Original seed shutdown; remaining pair stays writable')

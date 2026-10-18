@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -252,7 +254,7 @@ func (s *Server) sessionIdle(session onboardingSession) error {
 		if err != nil {
 			return err
 		}
-		if j.State == "pending" || j.State == "building" || j.State == "applying" {
+		if j.State == "pending" || j.State == "building" || j.State == "applying" || j.State == "cancelling" {
 			return fmt.Errorf("host setup is already running")
 		}
 	}
@@ -462,7 +464,7 @@ func (s *Server) runOnboarding(ctx context.Context, j *jobs.Job, out io.Writer) 
 			}
 			return s.finishOnboarding(ctx, &session, j, out)
 		}
-		if previous.Job.State != "failed" {
+		if previous.Job.State != "failed" && previous.Job.State != "cancelled" {
 			return fmt.Errorf("previous installation is still active; refusing a second erase")
 		}
 	}
@@ -629,6 +631,37 @@ func (s *Server) removeTemporary(ctx context.Context, session onboardingSession)
 }
 
 func (s *Server) waitInstallerJob(ctx context.Context, nodeID, address, id string, out io.Writer) error {
+	defer func() {
+		if !errors.Is(context.Cause(ctx), jobs.ErrCancelled) {
+			return
+		}
+		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stop()
+		path := "/api/v1/hosts/" + url.PathEscape(nodeID) + "/jobs/" + url.PathEscape(id)
+		if err := s.installerRequest(cleanup, nodeID, address, "POST", path+"/cancel", nil, nil); err != nil {
+			fmt.Fprintf(out, "Remote cancellation could not be confirmed: %v; inspect installer task %s.\n", err, id)
+		} else {
+			fmt.Fprintf(out, "Cancellation delivered to installer task %s.\n", id)
+			for {
+				var child jobs.Job
+				err := s.installerRequest(cleanup, nodeID, address, "GET", path, nil, &child)
+				if err != nil {
+					fmt.Fprintf(out, "Could not confirm installer task stopped: %v; inspect task %s.\n", err, id)
+					return
+				}
+				if child.State == "cancelled" || child.State == "failed" || child.State == "applied" {
+					return
+				}
+				select {
+				case <-cleanup.Done():
+					fmt.Fprintf(out, "Installer cancellation still pending; inspect task %s.\n", id)
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+		}
+	}()
+
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	previous := ""
@@ -651,7 +684,7 @@ func (s *Server) waitInstallerJob(ctx context.Context, nodeID, address, id strin
 		if result.Job.State == "applied" {
 			return nil
 		}
-		if result.Job.State == "failed" {
+		if result.Job.State == "failed" || result.Job.State == "cancelled" {
 			return fmt.Errorf("installer task failed: %s", result.Job.Error)
 		}
 		select {

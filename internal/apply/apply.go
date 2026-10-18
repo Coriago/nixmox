@@ -173,6 +173,9 @@ func (m *Manager) HandleTerminal(j jobs.Job) {
 	status := "success"
 	if j.State != "applied" {
 		status = "failed"
+		if j.State == "cancelled" {
+			status = "cancelled"
+		}
 	}
 	r := cluster.Record{
 		Kind: j.Kind, Mode: j.Mode,

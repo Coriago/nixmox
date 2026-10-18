@@ -175,7 +175,7 @@ func (s *Server) applyAndWait(ctx context.Context, h cluster.HostPayload) error 
 		switch j.State {
 		case "applied":
 			return nil
-		case "failed":
+		case "failed", "cancelled":
 			return fmt.Errorf("job %s failed", id)
 		}
 		select {

@@ -318,7 +318,7 @@ func (s *Server) installerIdle(w http.ResponseWriter) bool {
 		return false
 	}
 	for _, j := range list {
-		if (j.Kind == "host-pull" || j.Kind == "host-install") && (j.State == "pending" || j.State == "building" || j.State == "applying") {
+		if (j.Kind == "host-pull" || j.Kind == "host-install") && (j.State == "pending" || j.State == "building" || j.State == "applying" || j.State == "cancelling") {
 			http.Error(w, "installer already has an active task", 409)
 			return false
 		}

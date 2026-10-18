@@ -187,7 +187,7 @@
       $("onboarding-log").textContent = result.log;
       $("onboarding-task").textContent = "View task " + result.job.id;
       $("onboarding-task").href = `/hosts/${encodeURIComponent(writer)}/jobs/${encodeURIComponent(result.job.id)}`;
-      if (result.job.state === "failed") {busy(false); review(); error(new Error(result.job.error)); await refresh();}
+      if (["failed", "cancelled"].includes(result.job.state)) {busy(false); review(); error(new Error(result.job.error)); await refresh();}
       else if (session.completed) {busy(false); invalidate(); $("onboarding-configure").hidden = true; await refresh();}
       else {busy(true); timer = setTimeout(monitor, 1500);}
     } catch(e) {error(e); timer = setTimeout(monitor, 3000);}

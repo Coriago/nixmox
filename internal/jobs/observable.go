@@ -38,7 +38,7 @@ func ActiveDeployment(store Store) (*Job, error) {
 	}
 	var active *Job
 	for _, j := range list {
-		if (j.Kind == "apply" || j.Kind == "rollback") && (j.State == "pending" || j.State == "building") {
+		if (j.Kind == "apply" || j.Kind == "rollback") && (j.State == "pending" || j.State == "building" || j.State == "applying" || j.State == "cancelling") {
 			if active == nil || j.State == "building" {
 				active = &Job{ID: j.ID, Kind: j.Kind, State: j.State, Phase: j.Phase, Progress: j.Progress, Total: j.Total}
 			}

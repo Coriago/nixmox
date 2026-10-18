@@ -83,6 +83,22 @@
       return text;
     }
   }
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-cancel-job]");
+    if (!button || button.disabled) return;
+    if (!confirm("Cancel this task? Changes already made will not be undone. An interrupted installation or USB write may be incomplete.")) return;
+    button.disabled = true;
+    button.textContent = "Cancelling…";
+    try {
+      const job = await request(button.dataset.cancelJob, "POST", {});
+      button.textContent = job.state === "cancelled" ? "Cancelled" : "Cancelling…";
+      notice("Cancellation requested. Task history and logs will show the result.");
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Cancel task";
+      notice(error.message, true);
+    }
+  });
   function commandID() {
     return "ui-" + Array.from(crypto.getRandomValues(new Uint8Array(16)),
       (b) => b.toString(16).padStart(2, "0")).join("");
@@ -505,7 +521,7 @@
         ? "/partials/hosts/" + encodeURIComponent(id) + "/jobs"
         : "/partials/jobs";
       $("#jobs-table").innerHTML =
-        '<tr><td colspan="5">Loading tasks…</td></tr>';
+        '<tr><td colspan="6">Loading tasks…</td></tr>';
       if (id && taskHost) {
         taskHost.value = id;
       }

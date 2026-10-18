@@ -147,6 +147,14 @@ func (s *fileStore) Update(j Job) error {
 		return fmt.Errorf("job %s not found", j.ID)
 	}
 
+	// Progress updates from an action must not erase an accepted cancellation.
+	previous, err := s.readJob(j.ID)
+	if err != nil {
+		return err
+	}
+	if previous.State == "cancelling" && (j.State == "pending" || j.State == "building" || j.State == "applying") {
+		j.State = "cancelling"
+	}
 	return s.writeJob(j)
 }
 

@@ -8,6 +8,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"io"
 	"net"
+	"nixmox/internal/jobs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -304,10 +305,7 @@ func runLocalAnywhere(ctx context.Context, flake string, port int, key, extra st
 	// "local" would build the entire system in the live image's RAM-backed store.
 	args := []string{"--flake", flake, "--target-host", "root@127.0.0.1", "--ssh-port", strconv.Itoa(port), "-i", key, "--build-on", "remote", "--phases", "disko,install", "--extra-files", extra}
 	fmt.Fprintln(out, "Running nixos-anywhere against the confirmed disk: partition first, then build in the target store under /mnt; reboot follows successful installation")
-	cmd := exec.CommandContext(ctx, "nixos-anywhere", args...)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err := cmd.Run(); err != nil {
+	if err := jobs.RunCommand(ctx, &jobs.Job{}, out, "nixos-anywhere", args...); err != nil {
 		return fmt.Errorf("local nixos-anywhere installation failed: %w", err)
 	}
 	return nil
