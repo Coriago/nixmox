@@ -5,11 +5,16 @@ operations use the task engine; all durable mutations use NATS/JetStream. Native
 protocols handle discovery, remote Git fetches, closure transfer, SSH, and disk I/O.
 
 Apply/rollback use the standard Nix build/rebuild and activation toolchain;
-`deployment.install` uses pinned nixos-anywhere/Disko adapters. Shared installer
-modules produce media and kexec payloads containing the agent. SSH only bootstraps
-temporary agents or serves scoped backend transport; subsequent host orchestration
-uses the same NATS protocol. Reject installation-incompatible environments instead
-of inventing another fallback or formatting a running system.
+`deployment.install` runs partition/install phases through the Nixmox installer
+agent using Disko/Nix installation tools. Nixos-anywhere is not used.
+Shared installer modules produce media and kexec payloads containing the agent.
+SSH can bootstrap temporary agents; subsequent host orchestration
+uses the same NATS protocol. Reboot entry may prepare a compatible spare device
+through confirmed media tasks. Reject hosts with neither kexec nor a ready/preparable
+adapter/media route; never format storage required by the running system.
+Cross-host Nix outputs use the [streaming cache gateway](cache-gateway.md), sharing
+the API port. NATS carries discovery/control/progress, never archive bytes. No
+HTTP-over-NATS or generic SSH-over-NATS fallback is included.
 
 ## Component contracts
 
@@ -20,7 +25,7 @@ of inventing another fallback or formatting a running system.
 | Task engine | Execution, resource exclusion, phases, recovery | Form or page state |
 | Feature services | Git, deployment, onboarding, membership rules | Duplicate local/remote mutation paths |
 | Adapters | Git/Nix/process/device operations | Silent retries of destructive effects |
-| Gateway | API, snapshot/event streams, interface assets | Authoritative state in browser sessions |
+| Gateway | API, snapshot/event streams, interface assets, cache routing | Authoritative state in browser sessions or package archive storage |
 | Presentation core | Forms, action availability, state formatting | Secrets or authoritative authorization |
 
 Proposed implementation language: Go for daemon/CLI/TUI and a pure Go presentation
@@ -67,6 +72,7 @@ must use those configured ports rather than its conventional defaults.
 | `nx.<cluster>.command.<node>` | Command ID/type/target, expiry, payload, trace context | JetStream, explicit ack, per-executor durable consumer |
 | `nx.<cluster>.query.<node>` | Request ID, typed query, chunked reply address | Core request/reply, bounded timeout |
 | `nx.<cluster>.activity.<node>` | Replaceable resource counters | Core, no replay |
+| `nx.<cluster>.result.<node>` | Command/task ID, executor, versioned outcome | JetStream, deduped by task/command receipt |
 | `nx.<cluster>.log.<task>` | Absolute offset, bytes, owner ID | Core; recover from persisted logs |
 | `nx.<cluster>.progress.<task>` | Versioned progress snapshots and activity updates | Core; recover latest persisted snapshot via query |
 | `nx_state` KV | Versioned membership, refs, host/task projections | Watch plus snapshot reconciliation |
@@ -75,6 +81,12 @@ must use those configured ports rather than its conventional defaults.
 Cluster separation also uses NATS accounts/permissions; subject prefixes alone are
 not isolation. Pending-node permissions cannot include another node's command
 consumer or arbitrary KV/administration access.
+Leaves stream assigned commands, replies, logs/progress, and results; they do not
+become durable voting replicas. Full services manage their consumers and exact
+delivery/ack permissions. Enforce task-scoped subjects and reply inboxes on the
+accepting cluster broker, not only on the leaf's local server. The authoritative
+[security contract](identity-and-trust.md#managed-tls-and-nats-permissions) requires
+mutual TLS on clients/routes/leaves and an explicit full-broker key allowlist.
 
 Commands expire after 120 seconds if not admitted. Broker deduplication is an
 optimization; durable request fingerprints/receipts enforce retry identity.
@@ -93,8 +105,9 @@ byte offset. Reconnection starts a fresh snapshot; safety refresh catches missed
 final updates. Telemetry never renews membership by itself. A disconnected browser
 freezes uptime rather than pretending the source is still live.
 
-Enrollment between disconnected brokers uses a narrowly scoped bootstrap bridge.
-After association, commands and peer reads use NATS. Topology changes may interrupt
+Enrollment uses a limited TLS bootstrap exchange outside NATS; unapproved nodes
+have no cluster broker connection. After cluster approval/Add, commands and control
+queries use authenticated NATS. Topology changes may interrupt
 the transport carrying a result; look up the durable receipt, never rerun effects
 through an unqueued fallback.
 
@@ -148,12 +161,9 @@ replacement for local execution evidence. Logs are append-only bytes with offset
 Quorum loss blocks new durable commands; already-admitted work follows its effect
 policy. No takeover of uncertain target effects based solely on a coordinator lease.
 
-Version every persisted record and wire envelope. Unsupported major versions block
-mutation and explain the mismatch; compatible unknown additive fields are retained
-where records are rewritten. A migration backs up affected state before replacing
-it. **Decision required:** supported mixed-version windows, migration/downgrade
-policy, and coordinated backup/restore. System rollback must check daemon-state
-compatibility before activating an older service.
+Version persisted records and wire envelopes for identification. Mixed-version
+operation, state migration/downgrade orchestration, and coordinated backup/restore
+are outside v1 scope; no compatibility guarantee is implied by system rollback.
 
 ## OpenTelemetry and diagnostics
 
@@ -176,7 +186,8 @@ its originating command; traces do not determine task success.
 
 Metrics: command admission latency, queue depth, phase duration, failures by error
 code, broker reconnects, Git bytes transferred, artifact storage failures, log catch-up,
-and stale hosts. IDs belong in logs/traces, not unbounded metric labels.
+cache lookup latency, streamed bytes, peer failures, and stale hosts. IDs belong
+in logs/traces, not unbounded metric labels.
 Redact tokens, private keys, secret command output, and sensitive payload fields.
 Exporter failure must not stop tasks; bounded buffers/drop counters are mandatory.
 
@@ -196,6 +207,7 @@ OTLP export is optional; local structured diagnostics work without a collector.
 | First use | Public remote base plus local changes needs no Git write/SOPS credentials |
 | Interface parity | Same form validation, payload, confirmation, and task result in CLI/TUI/browser |
 | Three-node deployment | Pinned unpublished source builds on a non-target node and activates on target |
+| Cache gateway | One closure pulls disjoint outputs from two peers through one URL; peer failure is bounded; signatures, streaming, GC safety, and actual source progress are verified |
 | Apply latest | Host-list/detail action runs build/diff/deploy; default review and explicit auto-approval match CLI `apply --yes`; restart preserves the choice and pinned source |
 | CLI defaults | Bare `nixmox apply` targets the local node, follows progress, previews and confirms before switch; remote gateways require an explicit target |
 | Stream recovery | Missing/duplicate log chunks reconcile; stale UI is visible |
@@ -212,7 +224,7 @@ OTLP export is optional; local structured diagnostics work without a collector.
 | Installer profiles | Pinned x86/Pi/custom recipes prefer the capable writing host for builds; remote overrides/fallback transfer verified images; USB/SD writing is architecture-independent; advertised board/boot support has physical test evidence |
 | Git durability | Another node fetches the remote base and applies retained changes after writer loss |
 | Git retention | No full repo in JetStream; published inclusion or reviewed deletion controls change cleanup |
-| Security boundary | Pending node cannot read credentials or command another node |
+| Security boundary | No anonymous broker reads/writes; unapproved request gets no broker access; approved leaf streams only permitted subjects; reject pending route peers; rotation/removal update connections and grants. Unrestricted management API remains outside this boundary |
 
 For application changes, extend `e2e/run.py` and run both parts of comprehensive
 three-node E2E. Test the actual changed source with working-tree snapshot mode,

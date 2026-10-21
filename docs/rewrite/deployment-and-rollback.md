@@ -9,7 +9,7 @@ confirmation, and installation. Ordinary Apply never formats disks.
 | Action | CLI / command type | Behavior / backend |
 | --- | --- | --- |
 | Apply latest | `nixmox apply [host]` or `deploy apply`; `deployment.apply` | Update an existing NixOS system through Nix build/rebuild and activation tools; never partition/format |
-| Install | `nixmox deploy install <host>`; `deployment.install` | First installation or fresh replacement of an existing system; enter installer if needed, then use nixos-anywhere/Disko after disk review |
+| Install | `nixmox deploy install <host>`; `deployment.install` | First installation or fresh replacement of an existing system; enter installer if needed, then partition/install after disk review |
 | Reboot into installer | `nixmox hosts reboot <host> --into installer`; `host.enter_installer` | Enter the installer only; no erasure or installation |
 | Prepare configuration | `nixmox onboarding inspect/prepare/commit` | Collect facts, render/review configuration, and commit; never install |
 
@@ -443,15 +443,17 @@ pin source → validate → build → verify output → diff → approval
 ```
 
 The builder materializes the pinned repository, evaluates the named configuration,
-and produces the NixOS system closure. The target verifies transferred output
-integrity/trust and records the intended generation before activation. Serialize
+and consults the [cache gateway](cache-gateway.md) before building missing outputs.
+The target pulls the exact candidate closure through its own local gateway from
+available holders; Nix verifies integrity/trust. No SSH push is required. Record
+the intended generation before activation. Serialize
 apply, rollback, and installation effects on a target.
 
 Use standard Nix build/rebuild tooling for ordinary deployment: `nix build` for
 the pinned system output and the NixOS activation/bootloader tools for that exact
 output. A nixos-rebuild adapter must preserve this separation: activation cannot
 resolve a newer ref or build a different candidate after diff approval. Do not run
-nixos-anywhere or Disko formatting phases as part of Apply or rollback.
+Disko formatting or fresh-install phases as part of Apply or rollback.
 
 `switch` activates now and selects the system for subsequent boot. `boot` updates
 the boot selection only and reports staged, not running. Reboot is explicit.
@@ -479,8 +481,9 @@ Use a retained output; if absent, return `OUTPUT_UNAVAILABLE` and offer a separa
 rebuild task. Pin five recent generations by default plus active, boot, requested
 rollback, and task-referenced outputs. Do not garbage-collect referenced source.
 Rollback changes system generation, not application data or Git history. Keep
-source tracking unchanged and display desired/running drift. An older daemon must
-not start against an incompatible migrated state format: compatibility is a gate.
+source tracking unchanged and display desired/running drift. Nixmox version/state
+compatibility management is outside v1 scope; rollback does not promise application
+data or daemon-state compatibility across versions.
 
 ## Reboot into installer and fresh install
 
@@ -506,7 +509,8 @@ submits `deployment.install` with `host_id`, `method` (default `auto`), and opti
 `confirmation`. A preparation must belong to this host, match any explicit
 configuration, and reference a committed source; revalidate observations before
 effects. Without a preparation, guide the user through the shared onboarding forms.
-With no assigned configuration, require selection/creation before proceeding.
+With no assigned configuration, require selection/creation before target preparation
+and installation; entering the installer and preparing its media need no assignment.
 `--task task_01` supplies optional `task_id` to resume that same installation with
 new review input rather than create another task. Validate task version and current
 review binding; changing the target or pinned source requires a new reviewed plan.
@@ -519,31 +523,63 @@ onboarding contract. Interactive `--wait` guides these reviews; noninteractive
 waiting returns `APPROVAL_REQUIRED`/exit 4 with the pending review and task IDs.
 Configuration defaults are suggestions; pin the chosen revision before building.
 When already in a verified installer, skip entry and its boot approval. Otherwise
-check entry compatibility before starting preparation/builds or disruptive actions.
+inspect entry compatibility, including media that can be prepared, before disruptive
+actions. Compatible but unwritten media is a preparation step, not an unsupported host.
 
 | Entry method | Requirement |
 | --- | --- |
 | Already in installer | Verified compatible agent/environment, including USB/SD or kexec boot; no transition required |
 | kexec | Verified capability, sufficient memory, and a compatible Nixmox installer kernel/initrd |
-| reboot | Verified bootloader adapter and a retained or staged bootable installer independent of the erase targets |
+| reboot | Compatible boot adapter and device containing a valid installer, or eligible to be formatted with one; prepare and verify it before boot selection |
 
-`auto` prefers supported kexec; otherwise use a ready reboot route. Never assume
+`auto` prefers supported kexec; otherwise use a ready or preparable reboot route. Never assume
 that an architecture guarantees kexec or a bootloader supports one-shot selection.
 An explicit method fails clearly when unavailable. A failed/uncertain handoff is
 reconciled, not retried by blindly switching methods. A running-OS target with
-neither supported kexec nor a usable reboot route is **incompatible for installation**:
+neither supported kexec nor a ready/preparable reboot route is **incompatible for installation**:
 return `INSTALLATION_UNSUPPORTED` with the capability reasons before any effects.
-Do not introduce another fallback or leave the task waiting for manual media boot.
+Do not require manual media boot when the agent can prepare media and select it.
 This restriction does not prevent ordinary management or adoption. USB/SD remains
 an independent entry path: a node booted into a compatible installer is evaluated
 in that new environment. These rules apply to every machine profile.
 
+### Preparing reboot media
+
+Install and Reboot into installer reuse media inspect/fetch/build/plan/write as
+child tasks. Offer compatible attached devices, reusing a valid Nixmox installer
+without formatting or writing a compatible image to an eligible spare device.
+Compatibility includes board/profile boot support, adapter reachability, capacity,
+and continued availability outside the subsequent installation erase targets.
+
+Formatting requires a separate device-bound confirmation. Reject devices backing
+the running root, boot/EFI files, swap, active storage stacks, or required Nixmox
+state/handoff; unmounted alone does not mean disposable. Recheck before writing,
+verify readback, then stage the host-specific handoff on preserved storage. Do not
+erase the installed-system target until the same node reports a verified installer.
+
+All interfaces show Select/reuse installer media → review SD/USB erase if needed
+→ prepare media → approve reboot → select/create configuration → prepare/install.
+CLI `nixmox deploy install cedar --method reboot --wait` guides these steps;
+noninteractive execution pauses with the normal approval-required result. Record
+the profile, device, media plan, and entry adapter in the parent task. The installer
+status reports `state: "needs_media_preparation"` with `installation_supported: true`
+when a compatible route exists but media still needs writing.
+
 Use the shared Nixmox installer definition for both media and kexec, packaged as
-disk images or a kernel/initrd payload respectively. Reuse nixos-anywhere's kexec
-phase with the pinned custom payload; do not implement another kexec loader or
-use a stock environment missing the Nixmox agent. The SSH-bootstrap or running-OS
-agent prepares the same protected handoff before invoking that phase. Agent
+disk images or a kernel/initrd payload respectively. Use `kexec-tools` to load the
+profile's kernel/initrd and explicit installer command line, then `systemctl kexec`
+for orderly service shutdown. Do not inherit the running system's root arguments
+or force an immediate `kexec -e`. Verify platform/kernel support and loading before
+shutdown; unload a task's staged payload on cancellation. Respect kernel lockdown
+and signing requirements; unavailable kexec follows the existing method-selection rules.
+[kexec-tools](https://github.com/horms/kexec-tools/blob/main/kexec/kexec.8),
+[systemd kexec](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html#kexec)
+Do not use an environment missing the Nixmox agent. The SSH-bootstrap or running-OS
+agent prepares the same protected handoff before entering the installer. Agent
 identity and task checkpoints persist across bootstrap → installer → installed OS.
+Preserve scoped TLS credentials/trust and required SSH/SOPS keys using the
+[security state inventory](identity-and-trust.md#generated-and-preserved-state),
+including issuer state when this node owns it.
 
 Read `/hosts/{id}/installer` for entry capabilities and the selected recovery image:
 
@@ -556,6 +592,8 @@ Read `/hosts/{id}/installer` for entry capabilities and the selected recovery im
   "installation_supported": true,
   "unsupported_reasons": [],
   "boot_entry": "nixmox-installer",
+  "entry_adapter": "rpi-eeprom",
+  "installed_adapter": "rpi-uboot-sd",
   "state": "ready",
   "protected_device_ids": ["disk_sd"],
   "preserve_identity": true,
@@ -565,11 +603,53 @@ Read `/hosts/{id}/installer` for entry capabilities and the selected recovery im
 
 Readiness requires verified image/boot files, boot selection support, and handoff
 storage/network prerequisites; it is not proof that hardware has already booted it.
-The bootloader adapter verifies/stages the entry, arms the next boot, records its
-receipt, and restores normal selection after the installer acknowledges arrival.
+The bootloader adapter verifies/stages the entry, arms the next boot, and records
+its receipt. Record consumption of one-shot selection on installer arrival.
+Persistent selectors stay on the installer until an installed system is ready;
+then select that system before reboot. Installer arrival never authorizes erasure.
 Where one-shot selection is unavailable, use a tested persistent-selection/restore
 adapter with explicit interrupted-boot recovery; otherwise that reboot method is
 unsupported. If kexec is also unavailable, installation is incompatible for now.
+
+### Reboot adapters
+
+Profiles declare the adapter and boot layout; hardware model alone cannot select
+one. Each adapter implements inspect, stage, select installer, select installed
+system, and observe. Persist prior/desired selection and reconcile interrupted
+changes; never blindly repeat firmware updates or destructive installation.
+Track `entry_adapter` and `installed_adapter` separately: migration may change the
+boot layout; the latter is null until selected through configuration/preparation.
+After installation, use the installed adapter's boot selection, not a blind restore
+of the old firmware order. Subsequent installer entry follows the new layout.
+
+| Adapter | Boot layout and selection |
+| --- | --- |
+| `rpi-uboot-sd` | nixos-hardware + U-Boot on SD; select installer or installed entry in the SD extlinux configuration. Both entries load kernel/initrd/device trees from SD; installed Linux mounts NVMe root. |
+| `rpi-eeprom` | Independent firmware-bootable SD installer and NVMe installed system; use raspberrypi-eeprom tools to change EEPROM `BOOT_ORDER`. NVMe needs its own boot files/partition, not just a root filesystem. |
+| `uefi-bootnext` | Dedicated installer EFI executable on a preserved ESP; use `efibootmgr` to select its firmware entry for the next boot. |
+
+For `rpi-uboot-sd`, own a profile-defined extlinux selection file and stage complete
+entries before replacing it. Preserve installer assets and integrate with NixOS
+boot-file generation so Apply cannot remove the installer or overwrite an armed
+selection. Do not assume generic extlinux provides one-shot boot or U-Boot can read
+NVMe on Pi 5. The SD installer root remains separate from NVMe erase targets.
+[nixos-hardware boot layout](https://github.com/NixOS/nixos-hardware/blob/master/raspberry-pi/README.md)
+
+For `rpi-eeprom`, read the existing configuration and preserve unrelated settings.
+Example orders: `0xf61` = SD, NVMe, repeat; `0xf16` = NVMe, SD, repeat (right to left).
+These are persistent preferences, not one-shot selection. Keep SD first during
+installation; select NVMe first only after its boot files/system are ready. Use
+pinned EEPROM tooling/image, retain the previous settings in the task receipt,
+and observe the applied configuration after any required reboot before advancing.
+Fallback to another device is not evidence that the intended installer booted.
+[Raspberry Pi boot order](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#BOOT_ORDER)
+
+For `uefi-bootnext`, require UEFI mode and writable EFI variables. Stage
+a dedicated firmware-loadable installer image/loader, preserving normal BootOrder.
+Select its resolved entry with `efibootmgr --bootnext 0007` (example ID), verify
+BootNext, then reboot. A GRUB/systemd-boot menu entry alone is not an EFI Boot####
+entry. Secure Boot requires an accepted signed loader/payload; do not disable it.
+[efibootmgr](https://github.com/rhboot/efibootmgr/blob/main/README)
 
 ```text
 plan → stage installer + protected handoff → confirm entry → kexec/reboot
@@ -599,17 +679,13 @@ handoff; no repeated partitioning; retained recovery survives apply/rollback/GC.
 Verify the same install command from USB/SD, kexec, and an installed system; reject
 unsupported entry without fallback/effects; Apply must never invoke formatting.
 
-## Multiple targets and decisions
+## V1 deployment scope
 
-Proposed first slice: explicit single-target deployments. Proposed rollout command:
-`nixmox deploy rollout --plan rollout.json --strategy serial --wait`, where the plan
-maps target IDs to candidate IDs. Persist child tasks and stop advancing after
-failed/unknown outcomes. Canary and bounded batches require defined health/pause
-policies before implementation.
-
-**Decision required:** cross-node closure transfer and signing trust; mixed-version
-state rollback; rollout scope and automatic apply/rollback policy. These must not
-be approximated by disabling output verification or replaying uncertain effects.
+Deployments target one host. Multi-host rollouts, canaries, and automatic rollout
+rollback are future work; no rollout command is exposed in v1. Host and cluster
+[health status](host-inventory-and-lifecycle.md#health-status) is included in v1.
+After activation, refresh and display health alongside exact running-output
+verification. Report degraded health separately; it does not trigger automatic rollback.
 
 Acceptance: unpublished remote build; preview without activation; source pinned
 during rebase; boot staging without changing running output; observed reboot;

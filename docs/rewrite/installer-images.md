@@ -11,12 +11,19 @@ Built-in profiles are complete recipes: users select one without writing Nix.
 
 | Layer | Defaults supplied |
 | --- | --- |
-| Shared installer module | Daemon, automatic installer TUI, browser, wired/Wi-Fi setup, discovery/enrollment, installation tools; fresh identity at boot, initially unjoined unless join settings are supplied |
+| Shared installer module | Daemon, automatic installer TUI, browser, wired/Wi-Fi setup, discovery/enrollment, installation tools; fresh identity at boot; join settings submit a request awaiting cluster approval |
 | Hardware/image profile | Architecture, kernel, drivers, firmware, bootloader, partition layout, image format |
 
 Images contain no assigned permanent host configuration, shared machine identity,
 or private credentials. Customization uses ordinary Nix modules and exported image
 derivations, not a separate hardware configuration language.
+Generated machine keys and required SSH/SOPS keys follow the
+[security state inventory](identity-and-trust.md#generated-and-preserved-state);
+protected handoff state belongs to the individual host, never the reusable image.
+Each fresh boot uses ephemeral identity state; moving media between hosts must
+not carry the previous host's ID/keys. Authorized transitions restore the existing
+host identity before agent startup, for both media and kexec variants. See
+[reusable installer identity](identity-and-trust.md#reusable-installer-identity).
 
 | Initial profile | Target system | Image | Boot media |
 | --- | --- | --- | --- |
@@ -29,17 +36,20 @@ Nixpkgs, hardware modules, kernel, firmware, bootloader, and Nixmox through its
 source/lock file. Record board models, supported boot media, firmware prerequisites,
 and test evidence with the profile. Label untested custom profiles accordingly.
 
-**Pi 5 decision:** choose and pin the image/bootloader integration before declaring
-USB support. The nixos-hardware Pi profile supplies board-specific support, but its
-documented U-Boot route has Pi 5 USB/NVMe boot limitations. An alternative recipe
-must be tested on physical hardware; a successful build is not evidence of boot.
+Pi profiles declare one of two [reboot adapters](deployment-and-rollback.md#reboot-adapters):
+`rpi-uboot-sd` keeps firmware/U-Boot and both systems' boot files on SD, with NVMe
+root for the installed system; `rpi-eeprom` provides independent SD/NVMe boot chains
+and changes firmware boot priority. An NVMe root-only layout cannot use the latter.
+Do not assume the nixos-hardware U-Boot recipe supports boot-file reads from NVMe
+or USB on Pi 5. Custom profiles explicitly declare their supported boot media.
 [Pi hardware/boot integration](https://github.com/NixOS/nixos-hardware/blob/master/raspberry-pi/README.md)
 
 ## Build and write
 
 The same pinned installer module/profile also supplies a **kexec variant** where
 the hardware supports it. USB/SD packages it as a disk image; kexec packages the
-kernel/initrd and required runtime into the payload accepted by nixos-anywhere.
+kernel/initrd and required runtime into a kexec payload. Launch with `kexec-tools`
+and orderly systemd shutdown as defined in the deployment contract.
 An ISO/raw image is not passed directly to kexec. Both variants contain the same
 Nixmox agent, networking, UI, and installation tools; variant-specific boot wiring
 is the only difference in behavior. Build/fetch the variant through the task engine
@@ -78,6 +88,9 @@ media, and prerequisites before building. One available profile skips selection;
 multiple profiles prompt, or require `--profile` for noninteractive commands.
 The writer can be x86 even when the image is ARM; writing bytes does not execute
 the target system. SD readers use the same device identity/confirmation rules as USB.
+A pending bootstrap agent may be the writer for its own installation media, with
+scoped media-write authorization and device confirmation. No permanent agent or
+assigned host configuration is required to prepare the media.
 
 Builder selection: honor an explicit `--builder`; otherwise prefer the writer
 when it can execute the recipe's required build system, natively or through already
@@ -90,8 +103,9 @@ arbitrary NixOS image. Explicitly supported cross-build recipes must declare the
 build and target systems separately. No compatible builder returns
 `BUILDER_UNAVAILABLE` with the missing system/capability.
 
-For a remote build, transfer the completed image directly to the writer and verify
-its digest before writing. Build, transfer, write, and readback have separate task
+For a remote build, the writer pulls the completed image's Nix store output through
+its local [cache gateway](cache-gateway.md) and verifies its digest before writing.
+Build, transfer, write, and readback have separate task
 phases/progress. Build failure or interrupted transfer must not start a device write.
 JetStream carries metadata and progress, not image bytes. There is no transfer step
 when the verified artifact is already available on the writer.
@@ -214,9 +228,12 @@ recovery dependencies, or handoff state. Recovery on the same physical disk requ
 a partition-preserving plan; whole-disk erasure requires a separate boot source.
 Initial supported adapters and recovery-selection mechanisms must be pinned and
 physically validated per profile before advertising readiness.
-For a running-OS node, no supported kexec/reboot route means installation is
-incompatible for now. Media creation is still an independent onboarding entry
-path, not an automatic/manual fallback within a rejected install task.
+For a running-OS node, a compatible adapter plus reusable installer media or an
+eligible spare device is a supported reboot route. Install can prepare that device
+through the media task flow before entering the installer. Only reject entry when
+neither kexec nor a ready/preparable reboot route exists. Never format media required
+by the running system; writing installer media and erasing the final installation
+target are separate confirmed operations.
 
 Acceptance: x86 VM boot plus physical USB; physical Pi 5 SD boot, Ethernet/Wi-Fi,
 TUI/browser enrollment, installation to a separate target and reboot; compressed
@@ -227,3 +244,6 @@ types, and extending a built-in recipe without losing installer behavior.
 Add physical USB/NVMe boot evidence before advertising those Pi boot methods.
 Verify media/kexec variants expose the same installer behavior, preserve handoff
 identity, and never silently substitute a stock installer missing the agent.
+Verify the same medium boots two hosts with different IDs; daemon restart keeps
+the current boot's ID; authorized reinstall retains the installed host's ID;
+stale/invalid handoff cannot restore a previous media user's identity.

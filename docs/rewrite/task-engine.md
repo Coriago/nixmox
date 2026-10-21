@@ -49,6 +49,11 @@ tasks without counting the same download/build twice. Recovery starts from the
 persisted snapshot and reconciles active work; neither restart nor retransmission
 may inflate counters or invent completion. Log bytes remain a separate stream.
 
+Build substitution and output transfer use the [cache gateway](cache-gateway.md).
+Pin required source outputs and report actual serving peers, bytes, and retries.
+Transfer retry preserves candidate identity and never repeats activation or disk
+effects. Cancellation releases requests and task pins after safe reconciliation.
+
 ## State machine
 
 ```text

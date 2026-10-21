@@ -24,8 +24,9 @@ Additional persisted fields require a schema-version decision.
 | [Runtime configuration](runtime-configuration.md) | NixOS module, daemon options, credentials, precedence |
 | [Configuration generation](configuration-generation.md) | Form schema, templates, drafts, validation |
 | [GitOps](gitops.md) | Repositories, branches, artifacts, replication, publication |
+| [Cache gateway](cache-gateway.md) | Peer output lookup, streaming pulls, store serving, failure handling |
 | [Host lifecycle](host-inventory-and-lifecycle.md) | Discovery, joining, pending/full membership, removal |
-| [Identity and trust](identity-and-trust.md) | Stable identities, interface handoff, credentials |
+| [Identity and trust](identity-and-trust.md) | Join approval, managed TLS/NATS permissions, leaf streaming, canonical secret/state inventory and preservation |
 | [Onboarding](host-onboarding.md) | Agent bootstrap, observations, preparation, disk confirmation, installation backend |
 | [Installer images](installer-images.md) | Architecture/board profiles, custom recipes, builders, USB/SD images |
 | [Deployment and rollback](deployment-and-rollback.md) | Apply versus Install, installer entry, source pinning, activation, generations |
@@ -62,10 +63,16 @@ already upstream tracks that branch and its named configuration directly.
 
 Apply updates an installed NixOS system without formatting, using standard Nix
 build/rebuild tools. `nixmox deploy install <host>` is the single first/fresh-install
-workflow, using nixos-anywhere/Disko. Onboarding commands only inspect/prepare/commit.
+workflow, with partition/install execution in the installer environment. Onboarding
+commands only inspect/prepare/commit.
+Builders, deployment targets, and image writers pull Nix outputs through a local
+streaming cache gateway. Peer serving shares the API port; NATS carries control
+and progress, not artifact bytes.
 USB/SD, kexec, an installed agent, and temporary SSH agent bootstrap converge on
-the same agent/task protocol. A running OS without supported kexec or reboot entry
-is installation-incompatible; a verified installer can install directly.
+the same agent/task protocol. Without kexec, a compatible boot adapter can use
+existing installer media or prepare a spare device not required by the running
+system. Only hosts without either entry route are installation-incompatible;
+a verified installer can install directly.
 
 ## Implementation order and gates
 
@@ -79,8 +86,13 @@ Build CLI, browser, and TUI adapters alongside each feature; interface parity is
 an acceptance requirement, not a final polish step. The foundational gates are
 restart-safe command admission, exact revision execution, and no destructive replay.
 
-Decisions blocking complete implementation: production machine-auth issuance and
-recovery; optional SOPS updater; tested bootstrap/bootloader platform support;
-cross-node Nix output trust/transfer; mixed-version upgrade policy.
+Generic UEFI uses the `efibootmgr` BootNext adapter. SOPS preparation
+uses a bundled anchor updater with configured rule selectors and a custom override.
+Kexec uses `kexec-tools`; Pi
+reboot adapters cover SD U-Boot and EEPROM boot-order selection.
+Installer setup uses link/address readiness without internet probing. Manual force removal requires
+quorum; returning nodes become unjoined only after authenticating cluster removal.
+V1 includes host/cluster health, but no rollouts,
+identity recovery/backup, or version-compatibility management.
 Each owner document gives a concrete proposal or bounded options. Other numerical
 defaults are tunable implementation proposals, not unresolved product decisions.

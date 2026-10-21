@@ -3,6 +3,9 @@
 One administrator role operates all interfaces. Network access to the management
 console grants that authority; there are no human accounts or role hierarchy.
 Machine authentication is separate from that interface access model.
+V1 requires no preseeded enrollment secret or manually managed NATS credentials.
+The [state inventory](#generated-and-preserved-state) owns security paths and
+preservation rules; other documents reference it.
 
 ## Identity record and lifecycle
 
@@ -18,9 +21,11 @@ Machine authentication is separate from that interface access model.
 }
 ```
 
-Generate a random node ID and private key at first boot; store the private key in
-owner-only local state, not this public record. Do not derive identity from MAC,
-IP, hostname, firmware UUID, disk serial, SSH host key, or Tailscale identity.
+Generate a random node ID and daemon TLS key at first boot. `key_id` and
+`public_key` identify that replaceable key; no extra identity-signing key is needed.
+Store the private key in owner-only local state, not this public record. Do not
+derive identity from MAC, IP, hostname, firmware UUID, disk serial, SSH host key,
+or Tailscale identity.
 Hardware values are recognition/recovery hints, never takeover authorization.
 
 Preserve Nixmox identity locally through installation. A freshly booted installer
@@ -29,6 +34,8 @@ explicit operation. Cloned installed disks require identity reset. Conflicting
 simultaneous identity claims block affected operations and surface a diagnostic.
 Leaving clears membership credentials and increments membership epoch on rejoin,
 while keeping node identity and local history.
+Key rotation preserves `node_id`; changing a public key or claiming an existing
+ID without an authorized rotation/recovery never transfers that identity.
 
 An SSH-bootstrap agent, kexec/media installer, and installed agent use the same
 identity through an authorized handoff. Stage a scoped one-use handoff outside
@@ -45,6 +52,36 @@ nixmox identity reset --confirm-host cedar
 Reset is local-only and allowed only while unjoined, with explicit review of lost
 continuity. Browser/TUI: unjoined Settings → Identity → Reset → confirm. Joined
 hosts must leave first. No endpoint may reset a different node by name alone.
+
+### Reusable installer identity
+
+Choose identity before advertising discovery or starting enrollment:
+
+| Installer entry | `node_id` behavior |
+| --- | --- |
+| Fresh USB/SD boot, no authorized handoff | Generate a new ID and machine keys in ephemeral installer state |
+| Same media moved to another host | Generate a new ID; never reuse the previous session's identity |
+| Existing Nixmox host enters via authorized kexec/reboot handoff | Restore its ID, scoped credentials, and trust before starting the agent |
+| Installation completes | Preserve the active installer's ID and required keys into the installed system |
+| Same host boots media again without a handoff | New ID; v1 does not recover a lost identity from hardware |
+
+```text
+Reusable USB → host A → new n_A → install → installed n_A
+Same USB     → host B → new n_B → install → installed n_B
+Installed n_A → authorized handoff → installer n_A → reinstall → installed n_A
+```
+
+Installer state survives daemon restarts within a boot, but is not written back
+as the reusable medium's default identity. Retained recovery images follow the
+same rule. Do not automatically import leftover handoff files or identities found
+on attached disks. A plain `node_id` override cannot claim an existing host.
+
+An expected handoff must match the authorized transition, node identity/key, and
+one-use handoff record; the installer reports a fresh boot-session ID. Missing,
+invalid, or consumed handoffs block that transition rather than silently enrolling
+a replacement node. Keep recovery checkpoints outside erase targets and consume
+handoffs once. The [preservation inventory](#generated-and-preserved-state) defines
+the transferred values; hardware identifiers remain hints, never authorization.
 
 ## Address handoff example
 
@@ -78,27 +115,223 @@ or excluded by policy. Discovery is not assumed to cross virtual networks.
 
 ## Enrollment and trust boundary
 
-Configured cluster address/name triggers autojoin; unconfigured nodes remain
-unjoined and discoverable. A node can join a discovered cluster or a cluster can
-add a discovered node. Pin cluster ID and public identity after first enrollment.
-A name is a label, not a secret or proof of identity.
+```text
+Node → request join → awaiting cluster approval → approve → pending leaf
+Cluster → discover unjoined node → Add ────────────────────┘
+pending leaf → verified install/deploy/adoption → full member
+```
 
-Pending nodes are associated but non-voting until configuration is assigned and
-deployment verified. They receive their tasks, needed source, and inventory access;
-not cluster credential storage or broker administration. Full nodes can provide
-cluster services subject to capabilities. Membership rules live in
+Configured address/name submits a join request; it never approves one. Awaiting
+approval is a request state: the node remains unjoined, with no cluster broker or
+data access. Cluster-side Add supplies approval immediately; no node-side permission
+is required. Joined nodes cannot be claimed by another cluster. Cluster creation
+authorizes its creator's provisional standalone control plane.
+
+```json
+{
+  "id": "join_01", "version": 1, "node_id": "n_cedar",
+  "name": "cedar", "observed_address": "192.168.1.32",
+  "key_fingerprint": "SHA256_DAEMON_KEY_FIXTURE",
+  "state": "awaiting_approval", "expires_at": "2026-10-20T12:10:00Z"
+}
+```
+
+Approve the exact request/version/key after proof of possession; name/address are
+display hints. Bind issuance to its node ID, cluster ID, membership epoch, and
+approved key. Nixmox chooses certificate roles/names; never sign caller-selected
+privileges. Requests expire after ten minutes; bound request sizes/rates and dedupe
+retries. A changed key or expired/rejected request requires a new explicit attempt.
+
+Bootstrap uses a limited TLS exchange with locally generated keys and first-contact
+trust; it supports request submission/status and certificate provisioning only.
+No preinstalled token, CA secret, Git credential, or SOPS setup is needed. Pin the
+accepted cluster identity after admission. Approval controls admission but does
+not defeat an active attacker intercepting first contact on the management network.
+
+Pending nodes receive scoped credentials for onboarding, not full membership.
+Full membership requires verified deployment/adoption; see
 [host lifecycle](host-inventory-and-lifecycle.md).
+The unrestricted management API remains administrative authority, including join
+approval. Broker restrictions do not stop someone using that API; restrict its
+listeners to management interfaces. Human/interface authentication is outside v1.
 
-**Machine-auth proposal:** use managed TLS on agent links and NATS-authenticated
-identities with subject/account permissions. Apply authentication to server routes,
-leaf connections, and clients, not only the HTTP gateway. Automatically pin trust
-on first contact within the trusted management network. Optional join tokens or
-pinned cluster fingerprints can harden bootstrap without introducing human users.
+## Managed TLS and NATS permissions
 
-This does not protect an unrestricted administrator API from someone with network
-access. Restrict its listeners to configured management interfaces. Never describe
-autojoin by address/name as protection against a hostile first-contact peer.
-[NATS authentication](https://docs.nats.io/learn/security/authentication-basics)
+Nixmox generates a cluster CA and separate daemon/client and broker TLS keys.
+Use standard X.509/TLS libraries and certificate-to-user mapping; v1 requires no
+NKeys, JWT hierarchy, shared broker password, or manual certificate configuration.
+Daemon keys also identify agent machine links. All private keys are generated
+locally; enrollment exchanges public keys/CSRs and certificates only.
+Before enrollment, the local daemon/broker trust only their locally provisioned
+keys; this permits standalone operation without granting cluster access.
+
+```text
+Full daemon ── mTLS, loopback :63171 ── Full broker
+                                          ⇅ mTLS :63172, admitted broker keys
+                                      Full broker
+                                          ⇅ mTLS :63173, scoped leaf permissions
+Pending daemon ─ mTLS, loopback :63171 ─ Pending broker
+```
+
+| Connection | Authentication and authorization |
+| --- | --- |
+| Daemon → local broker | Require daemon certificate; no anonymous publish, subscribe, or JetStream access, even on loopback |
+| Full broker ↔ full broker | Verify TLS peer and explicit full-broker public-key allowlist in both directions; CA signature alone is insufficient |
+| Pending broker → cluster | Map leaf certificate to that node's scoped account/permissions; enforce limits at the accepting cluster broker |
+| Agent machine links | Verify pinned cluster trust, peer identity, current membership, and operation scope |
+
+Configure TLS independently for clients, routes, and leaves; reject plaintext and
+verification bypasses. Disable unused monitoring, profiling, WebSocket, MQTT, and
+gateway listeners. Restrict network listeners to management interfaces.
+[NATS TLS](https://docs.nats.io/learn/security/encryption),
+[certificate pinning](https://github.com/nats-io/nats.docs/blob/master/running-a-nats-service/configuration/securing_nats/tls.md)
+
+### Leaf streaming
+
+Approved leaves stream continuously in both directions; non-voting does not mean
+read-only or disconnected. They are not durable cluster replicas.
+
+| Cedar may receive | Cedar may publish |
+| --- | --- |
+| Its assigned commands and task-scoped query replies | Its observations, heartbeat, activity, and execution results |
+| Required source/artifact access and permitted inventory views | Logs/progress for tasks assigned to cedar; exact delivery acknowledgments |
+
+For example, allow delivery on `nx.c_lab.command.n_cedar`, publishing to
+`nx.c_lab.activity.n_cedar` and `nx.c_lab.result.n_cedar`, and explicit
+`nx.c_lab.log.<assigned-task>` / `nx.c_lab.progress.<assigned-task>` subjects.
+Full services own durable consumers and authorize deliveries/acks; do not grant
+leaves arbitrary consumer creation, KV/Object Store access, `$JS.API.>`, `$SYS.>`,
+other nodes' subjects, or unrestricted reply inboxes. Reconcile task-scoped grants
+on assignment/completion. Validate task ownership in the service as well.
+
+Logs/progress use Core NATS with snapshot/offset recovery; commands use durable
+delivery. Required Git increments are exposed through scoped application requests;
+Nix outputs stream directly through the authorized cache gateway. Backpressure and
+reconnect behavior follow [NATS durability](technical-requirements.md#nats-namespace-and-durability).
+[NATS permissions](https://docs.nats.io/learn/security/authorization)
+
+Only authorized Nixmox service clients originate application commands. Full brokers
+are trusted routing/replication infrastructure: v1 does not cryptographically prove
+message origin against a compromised full broker. Likewise, credentials authenticate
+their holder, not an executable; local root/key theft is outside this boundary.
+
+### Issuance, rotation, and removal
+
+V1 has one automatic issuer on the cluster creator; no automatic CA replication or
+issuer failover. The creator is the sole provisional-control-plane exception to
+pending-node restrictions. Protect/preserve its issuer state through installation.
+Issuer outage blocks admission/renewal; existing valid connections can continue.
+Block issuer removal or erasure unless its state is preserved through the operation.
+
+Proposed defaults: Ed25519 keys, 30-day machine certificates, renewal after 20 days.
+Renew only current authorized membership; distribute new public-key grants before
+retiring old ones. Leave/removal updates allowlists and permissions, closes affected
+connections, and denies renewal/reconnect. Do not claim revocation complete until
+active accepting brokers apply it; returning brokers reconcile before serving.
+Expiry alone is not revocation. Lost identity keys require a new identity and join;
+v1 has no lost-key/pin recovery or issuer backup/restore workflow. Never silently
+replace trust pins. Planned installation handoff still preserves existing keys/state.
+
+### Authenticated removal response
+
+After broker rejection, a node may query a known cluster peer's HTTPS
+`GET /api/v1/membership-status?node_id=n_cedar&membership_epoch=2` endpoint.
+Authenticate the server against the node's already pinned cluster trust and
+authorized peer identity. Never learn replacement trust from a removal message,
+discovery broadcast, redirect, or changed cluster name/address.
+
+Return only `{cluster_id, node_id, membership_epoch, status, removal_version}`;
+`removed` requires a durable quorum-committed removal record. Unknown/unavailable
+state is not removal. This narrowly scoped read remains available without valid
+client membership credentials, so a revoked node can learn its status; it grants
+no NATS access or other cluster reads/mutations. Use a fresh TLS request, no cached
+HTTP response. The node checks all identity/epoch fields before clearing membership;
+an old response cannot remove a later enrollment. Unsolicited notices are hints
+to perform this check, never authority to leave.
+
+Persist confirmed removal and autojoin suppression before stopping old broker
+participation and returning to unjoined state. Keep identity and the installed OS;
+rejoining requires explicit enrollment and new authorization.
+
+## Generated and preserved state
+
+The installation preservation checklist has two scopes below. `D` means
+`services.nixmox.dataDir` (default `/var/lib/nixmox`); `R` means `/run/nixmox`.
+Values may originate in the installer before being preserved into the installed OS.
+
+### Persistent node values
+
+| Value | Created or supplied | Stored / preserved |
+| --- | --- | --- |
+| `node_id` | Generated at first boot without existing state, or restored by authorized handoff | `D/identity.json`; preserve into installed OS and through managed reinstall, rotation, leave, and rejoin; see [installer identity](#reusable-installer-identity) |
+| SSH host key | Generated per node; also provides its SOPS decryption identity | `/etc/ssh/ssh_host_ed25519_key` and `.pub`; restore before SSH/SOPS startup |
+| Wi-Fi credentials, when needed | Supplied during network setup | Network backend's connection profiles; preserve the profiles needed after installation |
+| NATS/TLS credentials | Keys generated locally; certificates issued automatically on admission and renewed | `D/pki/daemon/` and `D/pki/broker/`, each containing `key.pem` and `cert.pem`; preserve current credentials through installation |
+
+NATS/TLS is one managed category with separate daemon and broker keypairs under
+the hood. Certificates and keys can rotate without changing `node_id`. The SOPS
+age recipient is derived from the SSH public key; no additional persistent age
+private key is required. Wi-Fi credentials are supplied, not generated by Nixmox.
+
+### Persistent cluster values
+
+Cluster-wide describes ownership, not replication of every value to every node.
+
+| Value | Created or supplied | Stored / preserved |
+| --- | --- | --- |
+| `cluster_id` | Generated once when creating the cluster | Cluster records and each joined node's `D/trust/`; unchanged across node reinstall/rejoin |
+| Cluster CA | Generated at cluster creation; signs machine certificates | CA private key/certificate and issuance ledger in issuer-only `D/pki/issuer/`; public CA and trust pin in members' `D/trust/` |
+| Membership and authorization | Recorded on approval/Add, promotion, rotation, and removal | Cluster records hold node IDs, membership epochs, approved public keys, and grants; local trust projection in `D/trust/` and enrollment receipt in `D/enrollment/` |
+
+Preserve each node's cluster association/trust alongside its node values during
+installation. Preserve CA issuer/control state when reinstalling the issuer.
+Leaving retires cluster credentials/grants but retains node ID and SSH/SOPS keys.
+
+### Other storage
+
+These are outside the base node-install checklist:
+
+- Optional application credentials: external `secretFile` or
+  `D/credentials/<credential-id>` on selected holders; independently provisioned,
+  never copied wholesale to installers. Cache signing uses `D/cache/signing/`;
+  its lifecycle remains an implementation gate.
+- Regenerated runtime values: `R/nats/server.conf`, `R/boot-session.json`, and
+  sops-nix outputs under `/run/secrets/`. Preserve their inputs, not these files.
+- Temporary input: `R/network/` and durable `D/secret-ingress/<reference>` staging;
+  delete after consumption/expiry. Unused join requests also expire.
+- Installation handoff: protected `nixmox/handoff/<handoff-id>/` on storage outside
+  erase targets; restore preserved values, then delete the consumed bundle.
+  `/run` alone cannot preserve a bundle across reboot.
+
+Secret directories/files use `0700`/`0600`, accessible only to the owning service/root;
+public policy files remain write-protected. Never place secrets in Git, the Nix
+store, JetStream, receipts, logs, or diagnostics. Persist
+required paths on ephemeral-root systems; block installation when preservation
+cannot be guaranteed. Reusable images contain no node keys. Clones require new
+node and machine identities, including SSH/SOPS keys, before simultaneous use.
+
+### SSH-backed SOPS example
+
+```nix
+{
+  services.openssh.enable = true;
+  sops.age = {
+    sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
+    generateKey = false;
+  };
+}
+```
+
+```sh
+ssh-to-age -i /etc/ssh/ssh_host_ed25519_key.pub
+# age1... → recipient in .sops.yaml
+```
+
+`generateKey = true` creates a separate age key at `sops.age.keyFile`; it is not
+SSH-key conversion and is unnecessary here. Restore the SSH key before sops-nix
+activation. Verify required secrets decrypt before retiring an old key; removing a
+recipient does not revoke access to previously copied ciphertext/plaintext.
+[sops-nix](https://github.com/Mic92/sops-nix), [ssh-to-age](https://github.com/Mic92/ssh-to-age)
 
 ## Credential record and operations
 
@@ -119,6 +352,10 @@ node's interactive SSH agent or copy its credentials onto an installer.
 
 ```sh
 nixmox credentials import github-writer --kind git-http-token --node alder --file /run/keys/token
+nixmox credentials import cache-signer --kind nix-cache-signing-key --node alder --file /run/keys/cache-key
+nixmox credentials import sops-editor --kind sops-age-key --node alder --file /run/keys/age-key
+nixmox cache credential set cache-signer
+nixmox onboarding sops credential set sops-editor
 nixmox credentials list
 nixmox repositories credential set lab github-writer
 nixmox credentials check github-writer --repository lab --wait
@@ -128,6 +365,16 @@ Browser: Settings → Credentials → Add → select storage node → hidden val
 → Save → Test access. TUI mirrors these controls with hidden input. Module-managed
 credentials show their source and cannot be overwritten by UI. Import requires
 local or encrypted gateway transport; do not send tokens over a plaintext LAN URL.
+
+Cache signing and SOPS update keys use the same import/storage rules as Git tokens.
+Select them in Settings → Cache → Signing credential or Settings → Onboarding →
+SOPS update credential, identically in browser/TUI. CLI selection commands above
+submit `cache.credential.set` and `onboarding.sops.credential.set`, each with
+`credential_id`; these set `cache.signingCredentialRef` and
+`prepare.sops.credentialRef`. Nix-declared bindings remain read-only in the UI.
+The SOPS updater uses its configured age key to authorize recipient changes; host
+SSH-derived recipients remain separate. The bundled anchor updater and optional
+custom updater follow the [preparation contract](host-onboarding.md#optional-sops-contract).
 
 Types: `credential.import`, `credential.check`, `credential.remove`; values are
 sensitive request data and must use a dedicated secure ingress that stores the
@@ -146,15 +393,22 @@ On leave, clear managed credential copies and revoke membership. Provider-side
 rotation is needed for copies on lost/unreachable machines. Nixmox cannot guarantee
 erasure on a disconnected host.
 
-## Implementation gates
+## V1 scope
 
-**Decision required before production machine trust:** key format and rotation,
-TLS issuance/renewal, cluster signing-key custody/failover, bootstrap pin recovery,
-and pending-node subject permissions. Do not implement an ad-hoc cryptographic
-protocol to fill these gaps. Manual independent credential replication is the
-proposed v1 baseline; automatic encrypted replication is deferred.
+Cache peers authenticate as machines and expose only their own valid store outputs.
+Cache signing keys are supplied through Nix configuration or runtime credentials;
+see [cache gateway](cache-gateway.md). Keep signature verification enabled;
+membership alone does not make pending nodes trusted output signers.
+
+V1 machine trust is the managed TLS/approval model above. Identity recovery, issuer backup/restore,
+automatic issuer failover, and cross-node application-secret replication are outside
+v1 scope. Preserving state through a planned reinstall remains required.
 
 Acceptance: identity survives installation and address changes; wrong key at a
-remembered endpoint is rejected; pending node cannot access credentials; removal
-revokes membership; credential loss affects only dependent operations; no secrets
+remembered endpoint is rejected; unapproved request has no broker access; Add needs
+no node confirmation; pending leaf streams its tasks/logs/results but cannot use
+other subjects or administration APIs; anonymous reads/writes and pending route
+connections fail; rotation preserves node ID; removal disconnects and denies rejoin
+with old credentials; issuer state survives reinstall; credential loss affects only
+dependent operations; no secrets
 appear in Git, JetStream command history, diagnostic logs, or error responses.

@@ -17,7 +17,8 @@ commits/artifacts; it does not own hardware collection or destructive confirmati
 All paths converge on an authenticated agent. Agent presence alone grants neither
 full membership nor installation compatibility. An ordinary OS agent must enter
 a verified installer before erasing its running system. No supported kexec/reboot
-route means installation is incompatible for now; there is no further fallback.
+route, including one prepared on eligible attached media, means installation is
+incompatible for now; there is no further fallback.
 A node already booted from USB/SD into the installer needs no entry transition.
 
 ### SSH agent bootstrap
@@ -32,6 +33,11 @@ the normal console and limited
 bootstrap capabilities, enrolls as pending, and uses NATS for subsequent operations.
 SSH does not become a parallel host-management workflow.
 
+A temporary pending agent can inspect devices and execute explicitly authorized
+media-write and boot-entry tasks on its own host. It need not become a full member
+or adopt the old configuration first. Stage required tools with those capabilities;
+media erasure still requires the normal plan and device confirmation.
+
 ```sh
 nixmox hosts bootstrap --ssh root@192.168.1.32 --credential bootstrap-ssh --wait
 ```
@@ -41,8 +47,9 @@ Browser/TUI: Hosts → Add via SSH → address + Nixmox credential → verify ho
 `credential_ref`, and confirmed `host_key_fingerprint`; interactive CLI performs
 the same verification. Scripts supply `--host-key-fingerprint`. Credentials come
 from Nixmox's protected store, not a node's ambient SSH agent, and never enter task
-payloads. A credential-capable executor performs bootstrap and hands over a scoped
-enrollment token; completion requires observing the authenticated agent connection.
+payloads. A credential-capable executor observes the generated public key over
+verified SSH and performs cluster-side Add bound to that key. No enrollment token
+is seeded; completion requires observing the authenticated agent connection.
 
 Reuse a verified existing Nixmox identity/service instead of starting a competing
 agent. Otherwise generate identity on the target and preserve it through installer
@@ -73,11 +80,26 @@ nixmox media write --plan media_plan_01 --confirm-device /dev/disk/by-id/usb-EXA
 The device must be attached to the writing node, which need not serve the console.
 A mount, identity change, or conflicting task invalidates the plan. Never select
 an arbitrary disk automatically or embed shared machine credentials in the image.
+Reboot-based installation can invoke this flow on the target itself, including a
+pending SSH-bootstrap agent. Reject media required by the running system even if
+its boot partition is currently unmounted; stage handoff only after image writing.
 
 Browser: Media → Create installer → profile + node alder/device → Build → review
 model/serial/capacity → type exact device → Write. TUI follows the same Media screens
 and requires the same typed confirmation. A task shows build/write/readback phases,
 plus transfer when another node built the image.
+
+### Example: Pi NVMe boot to SD U-Boot / NVMe root
+
+1. Bootstrap the NVMe-running Pi over SSH and join pending.
+2. Reuse a compatible SD installer, or confirm and write one to the unused SD card.
+3. Preserve identity/network handoff; use `rpi-eeprom` to select SD and reboot.
+4. In the installer, select/create a configuration with nixos-hardware templates:
+   boot files on SD, root on NVMe, installed adapter `rpi-uboot-sd`.
+5. Confirm NVMe erasure; install using cluster-cache outputs where available.
+   Preserve the SD installer and write the installed boot files/extlinux entry on SD.
+6. Keep EEPROM SD-first; select the installed U-Boot entry and reboot. Linux mounts
+   NVMe root, and the permanent agent reconnects under the same identity.
 
 ## Installer startup and network setup
 
@@ -86,11 +108,11 @@ the local console automatically. Installer mode uses the same UI and services,
 with network setup and onboarding as its starting screens. Neither a keyboard nor
 a display is required for the daemon, discovery, or browser gateway to start.
 
-1. Attempt wired DHCP and check internet access from the installer itself. Report
-   link, address, DNS, and internet status separately; an address alone is not
-   proof of internet access. A failed/expired probe reports offline or unknown,
-   rather than leaving an endless spinner.
-2. If internet is unavailable, show: “Not connected to the internet. Plug in a
+1. Attempt wired address configuration and observe link/address state on eligible
+   management interfaces. An active connection with a usable IPv4 or IPv6 address
+   is ready; loopback and unrelated interfaces do not qualify. While acquiring an
+   address, show “Obtaining network address…”; on timeout offer Retry/network settings.
+2. If no connection is active, show: “Not connected to a network. Plug in a
    wired connection, or connect to Wi-Fi.” Show Retry and, only when a supported
    Wi-Fi adapter is detected, Connect to Wi-Fi. Update automatically when a cable
    is connected or an adapter appears.
@@ -98,14 +120,13 @@ a display is required for the daemon, discovery, or browser gateway to start.
    a network, enter its password in a masked field, and Connect. Open networks
    need no password. Wrong passwords, unavailable adapters, unsupported security,
    and DHCP failures remain actionable in this screen; Rescan refreshes the list.
-4. Once internet is verified, open **Clusters**. Keep connectivity status visible;
+4. Once the connection is ready, open **Clusters**. Keep connection status visible;
    losing connectivity does not reset enrollment or installation state.
 
-The check measures the target's connectivity, never the browser device's. Local
-discovery and console access start as soon as a usable LAN address exists, even
-if internet is unavailable. Show that distinction and allow Continue on local
-network; Git fetch/build tasks report their actual missing network prerequisites.
-Internet probe failure must not prevent an existing cluster from adding the node.
+Observe the target's network state, never the browser device's. Discovery and
+console access start when the connection is ready. No internet/DNS reachability
+probe or captive-portal detection is performed; Git/cache tasks report their own
+connection failures when needed.
 
 ```json
 {
@@ -113,7 +134,7 @@ Internet probe failure must not prevent an existing cluster from adding the node
   "environment": "installer",
   "network": {
     "interface": "wlan0", "link": "up", "address": "192.168.1.32",
-    "dns": "ready", "internet": "online",
+    "status": "ready",
     "checked_at": "2026-10-20T12:00:00Z"
   },
   "wifi_networks": [
@@ -145,8 +166,7 @@ credential reference). `POST /api/v1/network/wifi/credentials` stages a password
 using the same redaction/protected-transport rules as credential import and returns
 an opaque, short-lived reference. No cluster membership or quorum is required for
 these node-local bootstrap operations. All interfaces use the same status/events.
-**Decision required:** configurable internet probe endpoint(s) and captive-portal
-detection. Probe failures must remain distinct from loss of the local network.
+`network.check` refreshes local link/address state; it sends no internet probe.
 
 ## Clusters, joining, and headless setup
 
@@ -163,25 +183,29 @@ CLI Search again: `nixmox discovery search --wait` (`discovery.search` command);
 `nixmox discovery list` reads the live results. The search task completes after its
 30-second window, even with no results; passive discovery continues independently.
 
-Select a cluster → show cluster name/ID and gateway → Confirm joining → pending
-membership → select an existing configuration or Create configuration. Creation
-uses the shared generation forms, then returns to target preparation. Configuration
+Select a cluster → show cluster name/ID and gateway → Request join → Awaiting
+cluster approval → pending membership → select an existing configuration or Create
+configuration. Creation uses the shared generation forms, then returns to target preparation. Configuration
 assignment alone never grants full membership. Installed nodes use deployment or
 verified adoption; installer nodes proceed through preparation and installation.
-Configured address/name autojoin still works and resumes at configuration setup.
+Configured address/name submits the same request and waits for approval. Cluster
+Hosts → Join requests exposes Approve/Reject with node/address/key details.
 
 ```text
-USB boot → installer TUI → network setup → Clusters → confirm join
-                          ↑                  ↑              ↓
-                    browser at IP:63170 ─────┘     pending → configuration → prepare/install
-Existing cluster → Discovery → installer → Add ─────┘
+USB boot → network setup → Clusters → Request join → cluster approval
+Browser at IP:63170 ───────────┘                            ↓
+Existing cluster → Discovery → installer → Add ────────→ pending
+                                                           ↓
+                                             configuration → prepare/install
 ```
 
 Ethernet DHCP automatically enables the media's management interface, browser
 gateway, and discovery; no local TUI confirmation is needed. Show current console
 URLs on the TUI and in discovery records. A headless host can be configured at
 `http://<installer-ip>:63170`, or through an existing cluster's Discovery → node
-→ Add. Browser and TUI reflect the same persisted enrollment/task state; joining
+→ Add, without a node-side prompt. Awaiting approval has no cluster data/broker
+access; approved pending leaves stream onboarding tasks/progress normally.
+Browser and TUI reflect the same persisted enrollment/task state; joining
 from either side advances all open consoles and does not enroll the node twice.
 Concurrent attempts to join different clusters must conflict, never overwrite an
 accepted association.
@@ -236,7 +260,7 @@ reconciliation rule for mounts created by that task, not a blanket busy-disk byp
     "disk": "existing-layout",
     "repository_commit": "0000000000000000000000000000000000000001"
   },
-  "sops": {"updater_ref": null, "state": "skipped", "reason": "no_updater_configured"},
+  "sops": {"updater": "anchors", "credential_ref": null, "update_rules": [], "state": "skipped", "reason": "no_rules_configured"},
   "state": "reviewable",
   "draft_id": "draft_prepare_01",
   "source_commit": null,
@@ -321,7 +345,7 @@ Set up cedar                      Pending • installer
 Configuration   lab / cedar       Local commit 1111111
 Builder         birch             x86_64-linux
 System disk     Example NVMe       512 GB • serial EXAMPLE
-Secrets         Skipped            No updater configured
+Secrets         Skipped            No update rules configured
 Network         LAN → tailscale0   Handoff must be verified
 
 [Review changes]  [Commit locally]  [Review installation]
@@ -349,36 +373,21 @@ Re-running preparation later generates a new diff/commit; it does not reinstall.
 
 [Install](deployment-and-rollback.md#reboot-into-installer-and-fresh-install)
 uses this flow for both first installation and replacement of an existing system,
-after Nixmox has entered and authenticated the installer. Use a
-pinned **nixos-anywhere** adapter for partition/install execution; Nixmox owns
-boot selection, source/candidate pinning, confirmations, progress, and recovery.
-Its phase selection permits skipping kexec/reboot, and prebuilt store paths avoid
-rebuilding a different configuration inside the adapter.
-[nixos-anywhere reference](https://github.com/nix-community/nixos-anywhere/blob/main/docs/reference.md)
+after Nixmox has entered and authenticated the installer. Nixmox owns boot selection,
+source/candidate pinning, confirmations, progress, and recovery. Verified build
+outputs can originate on another builder and must be available before destructive
+execution. The installer pulls exact outputs through its local
+[cache gateway](cache-gateway.md). Required outputs and handoff state must remain
+available outside the erase targets. Cluster orchestration remains over NATS.
 
-Run the adapter on the installer against a task-scoped, loopback-only SSH endpoint,
-with ephemeral credentials and host-key verification. Cluster orchestration remains
-over NATS; users need no SSH setup for enrolled nodes. This internal transport is
-separate from the initial SSH bootstrap described above. Verified build outputs can originate on
-another builder and must be available before destructive execution.
-
-Backend shape (service-provided paths/credentials, not user-run CLI commands):
-
-```sh
-nixos-anywhere --target-host root@127.0.0.1 --ssh-port "$installer_port" \
-  -i "$task_key" --ssh-option "UserKnownHostsFile=$task_known_hosts" \
-  --store-paths "$disko_closure" "$system_closure" --phases disko
-# Nixmox verifies the result, then mounts preserved boot partitions under /mnt.
-nixos-anywhere --target-host root@127.0.0.1 --ssh-port "$installer_port" \
-  -i "$task_key" --ssh-option "UserKnownHostsFile=$task_known_hosts" \
-  --store-paths "$disko_closure" "$system_closure" \
-  --extra-files "$handoff_directory" --phases install
-```
+The Nixmox installer agent runs Disko/Nix installation tools; nixos-anywhere is
+excluded. Artifact pulls follow the cache gateway contract. Installer entry uses
+`kexec-tools` or the profile's [reboot adapter](deployment-and-rollback.md#reboot-adapters).
 
 Phase receipts, actual filesystems, firmware population, and boot-entry verification
 are mandatory before selecting the installed system and rebooting. A shell exit
-code alone cannot establish readiness. Test the pinned adapter's phase boundaries;
-its default all-phases invocation must never bypass these checkpoints.
+code alone cannot establish readiness. Each phase has a durable receipt and
+reconciles its actual effects after interruption; never blindly rerun Disko.
 
 Handoff is common to every installation: preserve Nixmox node identity, scoped
 enrollment/recovery evidence, and transferable network settings. Copy active Wi-Fi
@@ -387,31 +396,86 @@ network backend; otherwise require a working alternative before entry. Keep valu
 out of Git, JetStream, logs, and traces; SOPS setup is not required. Stage the minimal
 handoff outside erase targets and remove consumed transient copies. Preserve any
 required host/decryption keys explicitly, not the entire old root or credential store.
+The canonical paths, permissions, and preserve/delete rules are in the
+[security state inventory](identity-and-trust.md#generated-and-preserved-state).
 
-For Pi SD boot + NVMe root, preparation separates **erase NVMe** from **preserve
+For the `rpi-uboot-sd` layout, preparation separates **erase NVMe** from **preserve
 SD partitions/update boot files**. Verify observed partition identifiers, mount the
 installed `/boot` and `/boot/firmware` on SD, and leave the SD installer root intact.
 The preserved partition selectors and boot-update authorization are distinct from
 Disko's destructive device set. The installed configuration references stable IDs.
 Do not rewrite the SD partition table or format a live installer filesystem.
 Updates to shared boot files require a profile-tested staging/recovery protocol.
+For `rpi-eeprom`, preserve the independently bootable SD installer and create the
+installed system's firmware boot files on NVMe. Do not reuse the SD-boot/NVMe-root
+disk template unchanged; the chosen adapter determines the required boot layout.
 
 ## Optional SOPS contract
 
-No updater configured: show Skipped and leave secret files unchanged. This must
-not block configurations that need no secrets. If required access is unknown,
-show that prerequisite rather than claiming decryption will work.
+Bundle an anchor-based YAML updater; a custom updater may override it. Configure
+under `services.nixmox`:
 
-Proposed updater interface accepts repository worktree ID, node public recipient,
-allowed file paths, and intended recipient changes. It returns changed encrypted
-files and a structured result; it never returns private keys or plaintext secrets.
-Only a configured credential-capable replica executes it. Requested update failure
-blocks commit of the combined preparation until resolved or explicitly deselected.
+```nix
+{
+  services.nixmox.prepare.sops = {
+    credentialRef = "sops-editor";
+    updateRules = [
+      "^secrets/hosts/{{ .HostName }}/.*$"
+      "secrets/secrets.yaml"
+    ];
+    updaterRef = null; # Bundled anchor updater; set a reference for a custom updater.
+  };
+}
+```
 
-**Decision required:** built-in SOPS writer versus external integration; recipient
-identity choice/preservation; rule editing support; how readiness is verified.
-A configured method enables the feature; it does not make unrestricted file edits
-or automatically grant every host every secret.
+Render `updateRules` with preparation values, then match each result **exactly**
+against `creation_rules[].path_regex` in the repository's `.sops.yaml`. These select
+existing rule expressions, not regexes run against other regexes. Update every
+matching rule; an unmatched selector reports an error rather than creating a rule.
+Escape substituted host names as regex literals. Literal selector text is preserved;
+use an escaped dot and anchors when the SOPS rule itself requires an exact file match.
+
+During prepare, obtain the age recipient from the host's SSH Ed25519 **public** key.
+Create/reuse a stable node-ID-based anchor in the top-level `keys` sequence and add
+its alias to the age list in **every key group** of each selected rule. Treat a
+direct rule-level `age` field as one group. Use SOPS 3.11+ list-form age recipients;
+normalize scalar age lists when necessary. Example for cedar:
+
+```yaml
+keys:
+  - &admin age1ADMIN...
+  - &nixmox_n_cedar age1CEDAR...
+creation_rules:
+  - path_regex: '^secrets/hosts/cedar/.*$'
+    key_groups:
+      - age: [*admin, *nixmox_n_cedar]
+  - path_regex: 'secrets/secrets.yaml'
+    key_groups:
+      - age: [*admin, *nixmox_n_cedar]
+```
+
+Use a YAML syntax-tree editor: preserve unrelated rules, comments, order, recipients,
+and group thresholds; avoid duplicate anchors/aliases on repeated prepare. Detach
+shared group aliases before editing if they also affect unselected rules. Key
+replacement that would change recipients outside the selected scope requires
+explicit scope review; never silently rewrite other hosts' access.
+
+Determine affected encrypted files using SOPS's effective rule selection. With
+the configured age credential, run `sops updatekeys --yes <file>` for each affected
+file; show recipient additions/removals and the combined diff in preparation review.
+Commit `.sops.yaml` and encrypted-file updates together with hardware/disk changes.
+Only the credential-holding executor handles the private updater key; host private
+keys and plaintext secrets never enter Git, task payloads, or logs.
+
+Empty `updateRules` or no credential: show Skipped and leave files unchanged.
+A configured credential that cannot decrypt, or an updater failure, blocks commit
+until resolved or the SOPS step is explicitly deselected. Never claim skipped work
+establishes secret access.
+
+A custom updater receives the worktree, node ID/name, public recipient, rendered
+selectors, and allowed paths. It replaces the YAML-edit step and returns affected
+encrypted paths and a structured result. Nixmox retains credential handling,
+`updatekeys`, review, and commit ownership. Select it with `prepare.sops.updaterRef`.
 
 ## API and acceptance
 
@@ -437,7 +501,7 @@ Also test template auto-selection, disk-layout generation versus binding-only,
 and confirmation of every selected device in a multi-disk form. CLI installation
 accepts one `--confirm-device` per selected device; omission is an error.
 Also test automatic installer TUI startup, wired headless setup, absent/hotplugged
-Wi-Fi adapters, scan/password errors, internet versus LAN-only status, discovery
+Wi-Fi adapters, scan/password errors, link/address readiness, discovery
 timeout/retry/late results, joining from either side, and browser/TUI state parity.
 SSH bootstrap acceptance: supported Linux without Nix, insufficient privilege,
 host-key mismatch, duplicate request, cleanup, agent handoff over NATS, and preserved

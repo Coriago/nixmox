@@ -34,6 +34,9 @@ validates the typed payload. Reads use resource endpoints. No arbitrary shell
 execution endpoint is exposed.
 Secret import has a dedicated protected ingress described below; it dispatches
 only a secret-free reference through this command path.
+Membership-status reads use the narrow authenticated-server exception defined in
+[identity and trust](identity-and-trust.md#authenticated-removal-response), allowing
+revoked nodes to confirm removal without restoring membership access.
 
 ```json
 {
@@ -77,7 +80,7 @@ after submission has an uncertain outcome: query
 ```
 
 Error codes also include `QUORUM_UNAVAILABLE`, `TARGET_UNREACHABLE`,
-`SOURCE_UNAVAILABLE`, `IDENTITY_CONFLICT`, `CONFIRMATION_STALE`,
+`SOURCE_UNAVAILABLE`, `ARTIFACT_UNAVAILABLE`, `IDENTITY_CONFLICT`, `CONFIRMATION_STALE`,
 `CREDENTIAL_UNAVAILABLE`, `REBASE_CONFLICT`, and `UNSUPPORTED_CAPABILITY`.
 `INSTALLATION_UNSUPPORTED` means a running-OS target has no supported path into
 the installer; include method-specific reasons and do not start a fallback task.
@@ -88,9 +91,11 @@ as the authoritative status API.
 
 Read collections: `/hosts`, `/clusters`, `/discoveries`, `/repositories`,
 `/configurations`, `/drafts`, `/artifacts`, `/preparations`, `/media`, `/candidates`,
-`/deployments`, `/diffs`, `/tasks`, `/credentials`, `/observations`, `/publications`.
-Prefix all with `/api/v1`. Singleton reads are `/settings`, `/identity`, and
-`/cluster/status`.
+`/deployments`, `/diffs`, `/tasks`, `/credentials`, `/observations`, `/publications`,
+`/cluster/requests` (cluster-side join approval queue).
+Prefix all with `/api/v1`. Singleton reads are `/settings`, `/identity`,
+`/cluster/status`, and `/cache/status`. Cache location lookup and streaming routes
+are defined in [cache gateway](cache-gateway.md).
 Collections return `{items, next_cursor}`; `next_cursor` is null at the end.
 Detail routes use opaque IDs. Operation-specific nested reads appear in feature docs.
 

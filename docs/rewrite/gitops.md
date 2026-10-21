@@ -77,7 +77,7 @@ versioned projections. Artifact means Git source, not a Nix system output.
 | Accepted refs and manifests | Versioned JetStream metadata |
 | Materialized source | Rebuildable node-local checkout: remote base plus retained increments |
 | Worktrees/drafts | Private owner-local storage; not claimed replicated |
-| Nix closures | Nix stores; dedicated closure transfer, outside Git artifact stream |
+| Nix closures | Nix stores; HTTP(S) pulls through the [cache gateway](cache-gateway.md), outside Git artifact stream |
 
 Bundles preserve commit IDs, modes, binary files, and ancestry. A receiver verifies
 prerequisite commits and imported objects before building. A node fetches missing
