@@ -21,7 +21,7 @@
             pname = "nixmox";
             version = "0.1.0-dev";
             src = self;
-            vendorHash = "sha256-C4ZYCbU7KySdjqT947SY7lcoO4hUeFcilP7kmV+6IOI=";
+            vendorHash = "sha256-ZLY+pkDyvlL40vDdQ0y+C3a0+ji2Mio2HdXNo+NH+ig=";
             subPackages = [ "cmd/nixmox" ];
             env.CGO_ENABLED = 0;
             checkPhase = ''

@@ -132,8 +132,9 @@ func TestThreeBrokerQuorumFailureRecoveryAndRouteAllowlist(t *testing.T) {
 		}
 	}
 	deadline = time.Now().Add(15 * time.Second)
+	var recoveredRevision uint64
 	for time.Now().Before(deadline) {
-		_, err = kv.Update("test", []byte("recovered"), revision)
+		recoveredRevision, err = kv.Update("test", []byte("recovered"), revision)
 		if err == nil {
 			break
 		}
@@ -146,12 +147,20 @@ func TestThreeBrokerQuorumFailureRecoveryAndRouteAllowlist(t *testing.T) {
 		if getErr != nil || string(entry.Value()) != "uncommitted" {
 			t.Fatalf("recovery: %v %v", err, getErr)
 		}
-		if _, err = kv.Update("test", []byte("recovered"), entry.Revision()); err != nil {
+		if recoveredRevision, err = kv.Update("test", []byte("recovered"), entry.Revision()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	entry, err := kv.Get("test")
-	if err != nil || string(entry.Value()) != "recovered" {
-		t.Fatal(entry, err)
+	// KV direct reads may reach a recovering follower. The acknowledged CAS
+	// revision is the fence; wait for that replica to observe it without issuing
+	// another mutation or treating an older value as a lost committed write.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		entry, getErr := kv.Get("test")
+		if getErr == nil && entry.Revision() == recoveredRevision && string(entry.Value()) == "recovered" {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
+	t.Fatalf("replica did not observe committed revision %d", recoveredRevision)
 }

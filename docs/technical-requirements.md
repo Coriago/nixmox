@@ -189,6 +189,18 @@ omit stale/unavailable measurements, and identify hosts by resource `host.id` an
 Each node exports only its own metrics; configure one producer per metric per
 pipeline, including when using a separate hostmetrics receiver.
 
+The Go SDK is pinned to 1.47.0; the system convention mapping is pinned to 1.44.0.
+OTLP uses HTTP/protobuf at the configured base URL plus `/v1/metrics`.
+
+| Cached measurements | Export |
+| --- | --- |
+| CPU count, memory, swap, filesystem, I/O, uptime | `system.*` conventions; cumulative I/O counters |
+| Aggregate busy CPU fraction | `nixmox.host.cpu.utilization`; normalized across cores, excluding idle/I/O wait |
+| Load averages | `nixmox.host.load_average`, `window=1m|5m|15m` |
+
+Omit stale groups independently. Filesystem free space excludes reserved bytes;
+export `used`, `free`, and `reserved` separately. No ambient OTLP headers are used.
+
 ### Host metric delivery and lifecycle
 
 Intervals and defaults live in [runtime settings](runtime-configuration.md#option-reference).

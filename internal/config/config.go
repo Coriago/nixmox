@@ -199,7 +199,7 @@ func (c Config) Validate() error {
 	}
 	if c.Telemetry.OTLP.Endpoint != nil {
 		u, err := url.Parse(*c.Telemetry.OTLP.Endpoint)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return errors.New("invalid telemetry.otlp.endpoint")
 		}
 	}

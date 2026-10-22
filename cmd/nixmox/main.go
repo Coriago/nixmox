@@ -317,6 +317,15 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 	if err := svc.SetTelemetry(sampler); err != nil {
 		return exitError(errOut, err)
 	}
+	if cfg.Telemetry.OTLP.Enable {
+		name, _ := os.Hostname()
+		exporter, err := telemetry.StartOTLP(*cfg.Telemetry.OTLP.Endpoint, svc.Identity().NodeID, name, time.Duration(cfg.Telemetry.OTLP.MetricsIntervalMs)*time.Millisecond, sampler.Snapshot)
+		if err != nil {
+			fmt.Fprintln(errOut, "OTLP export is unavailable; local operations and telemetry remain available.")
+		} else {
+			defer exporter.Close()
+		}
+	}
 	if err := clusters.Attach(svc); err != nil {
 		return exitError(errOut, err)
 	}

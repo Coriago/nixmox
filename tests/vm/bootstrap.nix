@@ -18,6 +18,23 @@ pkgs.testers.runNixOSTest {
             };
             discovery.port = 63204;
             network.managementInterfaces = [ "eth1" ];
+            telemetry.otlp = {
+              enable = true;
+              endpoint = "http://alder:63210";
+              metricsIntervalMs = 1000;
+            };
+          };
+          networking.firewall.interfaces.eth1.allowedTCPPorts = pkgs.lib.optionals (name == "alder") [
+            63210
+          ];
+          systemd.services.nixmox-test-collector = pkgs.lib.mkIf (name == "alder") {
+            wantedBy = [ "multi-user.target" ];
+            serviceConfig = {
+              ExecStart = "${pkgs.python3}/bin/python ${./otlp_collector.py}";
+              RuntimeDirectory = "nixmox-test-collector";
+              RuntimeDirectoryMode = "0700";
+              Restart = "on-failure";
+            };
           };
           virtualisation.memorySize = 1024;
           virtualisation.diskSize = 2048;
@@ -63,6 +80,16 @@ pkgs.testers.runNixOSTest {
         assert retried["id"] == task["id"]
         assert retried["version"] == task["version"]
     assert len(set(v["node_id"] for v in identities.values())) == 3
+    for identity in identities.values():
+        alder.wait_until_succeeds("test -s /run/nixmox-test-collector/" + identity["node_id"] + ".json")
+    alder.succeed("systemctl stop nixmox-test-collector.service")
+    isolated = json.loads(birch.succeed("nixmox hosts telemetry " + identities["birch"]["node_id"] + " --json"))
+    time.sleep(3)
+    after = json.loads(birch.succeed("nixmox hosts telemetry " + identities["birch"]["node_id"] + " --json"))
+    assert after["sequence"] > isolated["sequence"] and after["freshness"] == "live"
+    alder.succeed("systemctl start nixmox-test-collector.service")
+    for identity in identities.values():
+        alder.wait_until_succeeds("test -s /run/nixmox-test-collector/" + identity["node_id"] + ".json")
     remote = json.loads(birch.succeed("nixmox --endpoint http://alder:63200 tasks list --json"))
     assert remote["items"][0]["owner_node_id"] == identities["alder"]["node_id"]
     birch.fail("nc -z -w 1 alder 63201")
