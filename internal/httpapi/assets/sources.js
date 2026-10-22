@@ -7,6 +7,7 @@
   let repository, bundle, draft, files = [], values = {}, busy = false, generation = 0;
   const edited = new Set(), regenerated = new Map(), resolved = new Set();
   const notice = message => { $("source-notice").textContent = message; };
+	$("adopt-host").onsubmit = event => { event.preventDefault(); run(async () => { const h = await selectedHost(); const form = event.target.elements; const result = await command("host.adopt", {host_id:h.id, candidate_id:form.candidate_id.value, confirm_host:form.confirm_host.value}, {["host:"+h.id]:h.version}, h.id); $("candidate-result").textContent = JSON.stringify(result,null,2); }); };
   const error = e => notice(e.message || String(e));
   async function request(path, body) {
     const response = await fetch("/api/v1" + path, {method: body ? "POST" : "GET", headers: body ? {"Content-Type": "application/json"} : {}, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(35000)});

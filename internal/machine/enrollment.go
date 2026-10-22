@@ -17,8 +17,11 @@ type Enrollment interface {
 	Certificates(owner, id string) (any, error)
 }
 
-func New(enrollment Enrollment) http.Handler {
+func New(enrollment Enrollment, extra ...func(*http.ServeMux)) http.Handler {
 	mux := http.NewServeMux()
+	for _, register := range extra {
+		register(mux)
+	}
 	handle := func(action string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")

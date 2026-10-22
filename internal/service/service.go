@@ -38,6 +38,8 @@ type Service struct {
 	configurations       ConfigurationReader
 	hosts                HostReader
 	deployments          DeploymentReader
+	credentials          CredentialService
+	cache                CacheService
 	mu                   sync.Mutex
 	store                *storage.Store
 	inspector            Inspector

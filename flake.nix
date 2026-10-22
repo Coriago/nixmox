@@ -21,10 +21,11 @@
             pname = "nixmox";
             version = "0.1.0-dev";
             src = self;
-            vendorHash = "sha256-ZLY+pkDyvlL40vDdQ0y+C3a0+ji2Mio2HdXNo+NH+ig=";
+            vendorHash = "sha256-fCfmiHH5Hr/ce+vchk6UiMBu+3UoapAcx+X9Ixs+yPM=";
             subPackages = [ "cmd/nixmox" ];
             env.CGO_ENABLED = 0;
             preBuild = "bash scripts/build-assets.sh";
+            overrideModAttrs = _: { preBuild = ""; };
             checkPhase = ''
               runHook preCheck
               go test ./...

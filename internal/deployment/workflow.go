@@ -45,7 +45,7 @@ type approvePayload struct {
 }
 
 func (s *Service) workflowOperations() []service.Operation {
-	ops := []service.Operation{}
+	ops := []service.Operation{s.adoptOperation()}
 	for _, kind := range []string{"deployment.apply", "deployment.rollback"} {
 		ops = append(ops, service.Operation{Kind: kind, Scope: "cluster", RunOnCoordinator: true, Timeout: 2 * time.Hour, SafeRetry: false, Validate: func(c domain.Command) error {
 			var p applyPayload
@@ -430,6 +430,14 @@ func (s *Service) runApply(ctx context.Context, e *service.Execution) (result an
 			}
 			if s.RefreshHost != nil {
 				s.RefreshHost()
+			}
+			if pin.Mode == "switch" && s.VerifyManaged != nil {
+				if err = s.VerifyManaged(ctx, candidate, cp.Deployment.ID); err != nil {
+					var reason *domain.Error
+					if !errors.As(err, &reason) || reason.Code != "VERIFICATION_REQUIRED" {
+						return nil, err
+					}
+				}
 			}
 			if err = e.MarkEffect("activation_finished", true); err != nil {
 				return nil, err

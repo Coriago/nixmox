@@ -104,6 +104,17 @@ func (c *Catalog) Host(ctx context.Context, id string) (domain.Host, error) {
 		h.Reachability = "offline"
 		h.Capabilities = domain.HostCapabilities{}
 	}
+	if member.State != "unjoined" {
+		var evidence domain.ManagedEvidence
+		_, err := c.State.Get(ctx, "managed."+id, &evidence)
+		if err != nil && !missing(err) {
+			return h, err
+		}
+		if err == nil && evidence.Epoch == member.Epoch && h.Environment == "installed" && h.Reachability == "online" && h.RunningOutput != nil && *h.RunningOutput == evidence.OutputPath {
+			h.DeploymentVerified = true
+			h.PendingReasons = []string{}
+		}
+	}
 	return h, nil
 }
 func (c *Catalog) Hosts(ctx context.Context, limit, cursor string) (domain.Page[domain.Host], error) {

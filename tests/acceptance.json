@@ -15,7 +15,7 @@
     "cluster_stress": {"status":"pending","evidence":[]},
     "enrollment": {"status":"partial","evidence":["internal/cluster/join_test.go","internal/cluster/enrollment_test.go","internal/cluster/relay_test.go","tests/vm/bootstrap.nix"],"gates":["discovery_add","full_membership_promotion"]},
     "enrollment_authentication": {"status":"partial","evidence":["internal/machine/enrollment_test.go","internal/cluster/enrollment_test.go","internal/cluster/join_test.go"],"gates":["rotation_and_removal_epoch_fencing"]},
-    "trust_secrets": {"status":"partial","evidence":["internal/storage/files_test.go","internal/broker/broker_test.go","internal/broker/cluster_test.go","internal/broker/leaf_test.go","internal/pki/keys_test.go","internal/cluster/enrollment_test.go"],"gates":["rotation","removal","credential_vault"]},
+    "trust_secrets": {"status":"partial","evidence":["internal/storage/files_test.go","internal/broker/broker_test.go","internal/broker/cluster_test.go","internal/broker/leaf_test.go","internal/pki/keys_test.go","internal/cluster/enrollment_test.go","internal/credentials/integration_test.go","internal/secretio/multipart_test.go","internal/cluster/verification_test.go"],"gates":["rotation","removal","multi_replica_credential_deletion","pending_console_credential_routing","credential_settings_browser_tui_e2e"]},
     "transport": {"status":"partial","evidence":["tests/e2e_test.go","tests/vm/bootstrap.nix","tests/physical/smoke.sh","internal/machine/enrollment_test.go"],"gates":["membership_transport_reconfiguration","multi_node_vm_quorum"]},
     "installer_bootstrap": {"status":"pending","evidence":[]},
     "installation": {"status":"pending","evidence":[],"gates":["physical_recovery_path_before_transition"]},
@@ -25,8 +25,8 @@
     "rollback_health": {"status":"partial","evidence":["internal/deployment/integration_test.go"],"gates":["real_generation_boot_rollback_vm_verification","generation_retention_gc","deployment_health_refresh"]},
     "diff_progress": {"status":"partial","evidence":["internal/nixstore/nix_test.go","internal/deployment/integration_test.go","internal/process/run_test.go","internal/deployment/compare_test.go"],"gates":["source_and_generated_configuration_comparisons","per_build_logs","progress_recovery_and_remote_activities","vm_real_system_build"]},
     "build_candidates": {"status":"partial","evidence":["internal/nixstore/nix_test.go","internal/deployment/integration_test.go"],"gates":["remote_builder_and_cache","vm_real_system_build"]},
-    "cache": {"status":"pending","evidence":[]},
-    "git": {"status":"partial","evidence":["internal/gitstore/git_test.go","internal/configuration/integration_test.go"],"gates":["multi_node_quorum_source_tests","rebase_publication_gc","private_remote_credentials"]},
+    "cache": {"status":"partial","evidence":["internal/nixstore/daemon_test.go","internal/cache/integration_test.go"],"gates":["split_peer_closures_and_transfer_failures_vm","pending_task_closure_grants","task_pins_and_peer_progress","cache_otlp","full_topology_serving","runtime_trust_module_verification"]},
+    "git": {"status":"partial","evidence":["internal/gitstore/git_test.go","internal/configuration/integration_test.go","internal/credentials/integration_test.go"],"gates":["multi_node_quorum_source_tests","rebase_publication_gc","ssh_private_remote_integration","credential_executor_routing"]},
     "configuration_generation": {"status":"partial","evidence":["internal/render/render_test.go","internal/configuration/integration_test.go"],"gates":["editor_end_to_end_verification","descriptor_updates","preparation_templates","cross_console_draft_owner_routing"]}
   }
 }

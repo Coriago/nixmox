@@ -33,6 +33,8 @@ type submitted struct {
 }
 type event struct{ err error }
 type Model struct {
+	settings            *settingsModel
+	settingsFocus       bool
 	sources             *sourceModel
 	sourcesFocus        bool
 	client              *client.Client
@@ -120,6 +122,27 @@ func (m Model) waitEvent() tea.Cmd {
 	}
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(settingsMessage); ok && m.settings != nil {
+		return m, m.settings.update(msg)
+	}
+	if _, ok := msg.(settingsTick); ok {
+		if m.settingsFocus {
+			return m, m.settings.update(msg)
+		}
+		return m, nil
+	}
+	if m.settingsFocus {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			if key.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if key.String() == "esc" && m.settings.mode == "" {
+				m.settingsFocus = false
+				return m, nil
+			}
+			return m, m.settings.update(msg)
+		}
+	}
 	if _, ok := msg.(sourceMessage); ok && m.sources != nil {
 		return m, m.sources.update(msg)
 	}
@@ -349,6 +372,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.sources.fetch()
 			}
 			return m, nil
+		case "o":
+			m.settingsFocus = true
+			if m.settings == nil {
+				m.settings = &settingsModel{ctx: m.ctx, client: m.client}
+			}
+			return m, m.settings.fetch()
 		case "tab", "shift+tab":
 			m.clusterFocus = false
 			m.taskFocus = !m.taskFocus
@@ -531,6 +560,9 @@ func (m *Model) content() {
 	m.viewport.SetYOffset(offset)
 }
 func (m Model) View() string {
+	if m.settingsFocus && m.settings != nil {
+		return m.settings.view()
+	}
 	if m.sourcesFocus && m.sources != nil {
 		return m.sources.view()
 	}
@@ -552,7 +584,7 @@ func (m Model) View() string {
 			input = "\nJoin cluster\nAddress: " + m.addressInput.View() + "\nExpected name: " + m.nameInput.View() + "\nTab: switch field · Enter: request join · Esc: cancel"
 		}
 	}
-	return title + "\n\n" + m.viewport.View() + input + "\n\n" + lipgloss.NewStyle().Width(m.width).Render(m.notice) + "\n" + hint + " · Tab: switch · g: Cluster · s: Sources · h: Telemetry · ?: help · q: close\n"
+	return title + "\n\n" + m.viewport.View() + input + "\n\n" + lipgloss.NewStyle().Width(m.width).Render(m.notice) + "\n" + hint + " · Tab: switch · g: Cluster · s: Sources · o: Settings · h: Telemetry · ?: help · q: close\n"
 }
 func Run(ctx context.Context, c *client.Client) error {
 	ctx, cancel := context.WithCancel(ctx)

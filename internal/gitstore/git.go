@@ -21,9 +21,10 @@ import (
 var CommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 type Git struct {
-	Root  string
-	mu    sync.Mutex
-	locks map[string]chan struct{}
+	Authorize func(context.Context, string, string) ([]string, func(), error)
+	Root      string
+	mu        sync.Mutex
+	locks     map[string]chan struct{}
 }
 
 func New(root string) (*Git, error) {
@@ -62,7 +63,8 @@ func (g *Git) Bare(id string) string { return filepath.Join(g.Root, "repos", id+
 func (g *Git) run(ctx context.Context, dir string, extra []string, args ...string) (process.Result, error) {
 	env := []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=file:http:https:ssh", "GIT_LFS_SKIP_SMUDGE=1", "GIT_SSH_COMMAND=ssh -F /dev/null -oBatchMode=yes -oStrictHostKeyChecking=yes -oIdentityAgent=none -oIdentitiesOnly=yes -oIdentityFile=none -oConnectTimeout=10"}
 	env = append(env, extra...)
-	args = append([]string{"-c", "core.fsync=all", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "protocol.ext.allow=never", "-c", "submodule.recurse=false", "-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true"}, args...)
+	env = append(env, "HOME="+filepath.Join(g.Root, "isolated-home"))
+	args = append([]string{"-c", "core.fsync=all", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "http.followRedirects=false", "-c", "http.sslVerify=true", "-c", "protocol.ext.allow=never", "-c", "submodule.recurse=false", "-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true"}, args...)
 	return process.Run(ctx, process.Options{Directory: dir, Environment: env, Timeout: 2 * time.Minute, MaxOutput: 4 << 20}, "git", args...)
 }
 func (g *Git) ensure(ctx context.Context, id string) error {
@@ -87,7 +89,7 @@ func ValidateBranch(branch string) error {
 	}
 	return nil
 }
-func (g *Git) Fetch(ctx context.Context, id, remote, branch string) (string, error) {
+func (g *Git) Fetch(ctx context.Context, id, remote, branch string, credential *string) (string, error) {
 	if config.ValidateRemote(remote) != nil {
 		return "", domain.Err("INVALID_PAYLOAD", "Invalid Git remote; use a credential reference for secrets.", 422)
 	}
@@ -103,10 +105,37 @@ func (g *Git) Fetch(ctx context.Context, id, remote, branch string) (string, err
 		return "", domain.Err("SOURCE_UNAVAILABLE", "Local Git storage could not be initialized.", 503)
 	}
 	ref := "refs/nixmox/fetched/" + StableID("branch_", branch)
-	if _, err = g.run(ctx, g.Bare(id), nil, "fetch", "--no-tags", "--no-recurse-submodules", remote, "+refs/heads/"+branch+":"+ref); err != nil {
+	if _, err = g.remoteRun(ctx, g.Bare(id), remote, credential, "fetch", "--no-tags", "--no-recurse-submodules", remote, "+refs/heads/"+branch+":"+ref); err != nil {
 		return "", domain.Err("SOURCE_UNAVAILABLE", "Git fetch failed; remote access or the selected branch is unavailable.", 503)
 	}
 	return g.resolve(ctx, id, ref)
+}
+
+func (g *Git) remoteRun(ctx context.Context, dir, remote string, credential *string, args ...string) (process.Result, error) {
+	var env []string
+	if credential != nil {
+		if g.Authorize == nil {
+			return process.Result{}, domain.Err("CREDENTIAL_UNAVAILABLE", "Managed Git credential is unavailable on this node.", 503)
+		}
+		values, cleanup, err := g.Authorize(ctx, *credential, remote)
+		if err != nil {
+			return process.Result{}, err
+		}
+		defer cleanup()
+		env = values
+	}
+	return g.run(ctx, dir, env, args...)
+}
+
+func (g *Git) CheckRemote(ctx context.Context, remote, branch, credential string) error {
+	if config.ValidateRemote(remote) != nil || ValidateBranch(branch) != nil {
+		return domain.Err("INVALID_SOURCE", "Invalid repository remote.", 422)
+	}
+	r, err := g.remoteRun(ctx, "", remote, &credential, "ls-remote", "--exit-code", remote, "refs/heads/"+branch)
+	if err != nil || len(r.Stdout) == 0 {
+		return domain.Err("CREDENTIAL_UNAVAILABLE", "Repository read access could not be verified.", 503)
+	}
+	return nil
 }
 func (g *Git) resolve(ctx context.Context, id, ref string) (string, error) {
 	r, err := g.run(ctx, g.Bare(id), nil, "rev-parse", "--verify", ref+"^{commit}")

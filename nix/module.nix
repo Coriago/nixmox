@@ -262,6 +262,17 @@ in
     environment.systemPackages = [ cfg.package ];
     environment.etc."nixmox/config.yaml".source = runtime;
     environment.etc."nixmox/environment".text = lib.mkDefault "installed\n";
+    nix.settings.extra-substituters = lib.mkIf cfg.cache.enable [
+      "http://127.0.0.1:${toString cfg.http.port}/cache/?priority=10"
+    ];
+    nix.extraOptions = lib.mkAfter ''
+      !include /run/nixmox-public/cache-trust.conf
+    '';
+    systemd.tmpfiles.settings."10-nixmox"."/run/nixmox-public".d = {
+      mode = "0755";
+      user = "root";
+      group = "root";
+    };
     systemd.tmpfiles.settings."10-nixmox".${cfg.dataDir}.d = {
       mode = "0700";
       user = "root";
@@ -272,6 +283,7 @@ in
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
+      environment.NIXMOX_NIX_TRUST_FILE = "/run/nixmox-public/cache-trust.conf";
       path = with pkgs; [
         nix
         git

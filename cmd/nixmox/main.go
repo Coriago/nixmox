@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -19,10 +20,12 @@ import (
 	"syscall"
 	"time"
 
+	"nixmox/internal/cache"
 	"nixmox/internal/client"
 	"nixmox/internal/cluster"
 	"nixmox/internal/config"
 	"nixmox/internal/configuration"
+	"nixmox/internal/credentials"
 	"nixmox/internal/deployment"
 	"nixmox/internal/domain"
 	"nixmox/internal/gitops"
@@ -154,6 +157,15 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	if group == "deploy" {
 		return deployCommand(ctx, c, args[1:], out, errOut)
+	}
+	if group == "credentials" {
+		return credentialCommand(ctx, c, args[1:], out, errOut)
+	}
+	if group == "cache" {
+		return cacheCommand(ctx, c, args[1:], out, errOut)
+	}
+	if group == "hosts" && verb == "adopt" {
+		return adoptCommand(ctx, c, rest, out, errOut)
 	}
 	if group == "tasks" && (verb == "progress" || verb == "watch") && len(rest) >= 1 {
 		if !domain.SafeID.MatchString(rest[0]) {
@@ -394,19 +406,48 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 		return exitError(errOut, err)
 	}
 	sources := &gitops.Service{State: state.Store{Acquire: clusters.DurableStores}, Git: git}
+	vault, err := credentials.New(store.Root+"/credentials", sources.State, cfg.Credentials, clusters.Identity, clusters.FullMember)
+	if err != nil {
+		return exitError(errOut, err)
+	}
+	sources.BindCredential = vault.Bind
+	sources.PruneCredential = vault.PruneBinding
+	git.Authorize = vault.GitEnvironment
+	vault.GitCheck = func(ctx context.Context, credential domain.Credential, repositoryID string) error {
+		r, err := sources.Repository(ctx, repositoryID)
+		if err != nil {
+			return err
+		}
+		return git.CheckRemote(ctx, r.Remote.URL, r.Upstream.Branch, credential.ID)
+	}
+	operations = append(operations, vault.Operations()...)
 	operations = append(operations, sources.Operations()...)
 	configurations, err := configuration.New(sources, store)
 	if err != nil {
 		return exitError(errOut, err)
 	}
 	operations = append(operations, configurations.Operations()...)
-	inventorySampler := host.StartSampler(host.Inspector{Config: cfg, BrokerReady: clusters.BrokerReady}, clusters.Identity, clusters.PublishHost)
+	caches := cache.New(cfg.Cache, cfg.HTTP.Port)
+	caches.TrustFile = os.Getenv("NIXMOX_NIX_TRUST_FILE")
+	caches.Identity, caches.Full, caches.Vault, caches.State = clusters.Identity, clusters.FullMember, vault, sources.State
+	caches.Network, caches.Client = cfg.Network, clusters.MachineClient
+	inventorySampler := host.StartSampler(host.Inspector{Config: cfg, BrokerReady: clusters.BrokerReady, CacheReady: func(ctx context.Context) bool { status, err := caches.Status(ctx); return err == nil && status.Serving }}, clusters.Identity, clusters.PublishHost)
 	defer inventorySampler.Close()
 	hosts := &host.Catalog{State: sources.State, Identity: clusters.Identity, Members: clusters.Members, Configurations: configurations, Sample: inventorySampler.Snapshot}
+	caches.Hosts = hosts
+	operations = append(operations, caches.Operations()...)
 	operations = append(operations, hosts.Operations()...)
 	deployments := &deployment.Service{Sources: sources, Configurations: configurations, Hosts: hosts, Identity: clusters.Identity, Root: store.Root + "/builds"}
+	deployments.Nix.Options = caches.NixOptions
 	deployments.System = deployment.LocalSystem{ManagementReady: clusters.BrokerReady, StateRoot: store.Root + "/builds"}
 	deployments.RefreshHost = inventorySampler.Refresh
+	deployments.VerifyManaged = func(ctx context.Context, candidate domain.Candidate, deploymentID string) error {
+		sample, err := (host.Inspector{Config: cfg, BrokerReady: clusters.BrokerReady}).Inspect(ctx, clusters.Identity().NodeID)
+		if err != nil {
+			return err
+		}
+		return clusters.VerifyLocalDeployment(ctx, candidate, deploymentID, sample)
+	}
 	operations = append(operations, deployments.Operations()...)
 	svc, err := service.Open(store, network.Inspector{Config: cfg}, operations...)
 	if err != nil {
@@ -417,6 +458,37 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 	svc.SetConfigurations(configurations)
 	svc.SetHosts(hosts)
 	svc.SetDeployments(deployments)
+	svc.SetCredentials(vault)
+	svc.SetCache(caches)
+	caches.SetChanged(func() { svc.NotifyChanges(); inventorySampler.Refresh() })
+	vault.Submit = svc.Admit
+	vault.Receipt = svc.Receipt
+	vault.ForwardImport = func(ctx context.Context, request domain.SecretImport, value io.Reader) (domain.Receipt, error) {
+		if !clusters.FullMember(ctx, clusters.Identity().NodeID) {
+			return domain.Receipt{}, domain.Err("FORBIDDEN", "Secret forwarding requires a full member console.", 403)
+		}
+		target, err := hosts.Host(ctx, request.StorageNodeID)
+		if err != nil {
+			return domain.Receipt{}, err
+		}
+		if target.Membership != "full" || target.Reachability != "online" {
+			return domain.Receipt{}, domain.Err("CREDENTIAL_UNAVAILABLE", "Selected credential holder is not an available full member.", 503)
+		}
+		addresses := network.MachineAddresses(target.Endpoints, cfg.Network)
+		if len(addresses) == 0 {
+			return domain.Receipt{}, domain.Err("TARGET_UNREACHABLE", "No eligible machine endpoint is advertised.", 503)
+		}
+		peer, err := clusters.MachineClient(ctx, target.ID)
+		if err != nil {
+			return domain.Receipt{}, err
+		}
+		defer peer.CloseIdleConnections()
+		return client.SendSecret(ctx, peer, "https://"+addresses[0]+"/api/v1/credentials/import", request, value)
+	}
+	stopVault := vault.Start()
+	defer stopVault()
+	stopCache := caches.Start()
+	defer stopCache()
 	sampler := telemetry.Start(svc.Identity, time.Duration(cfg.Telemetry.Host.FastIntervalMs)*time.Millisecond, time.Duration(cfg.Telemetry.Host.FilesystemIntervalMs)*time.Millisecond)
 	defer sampler.Close()
 	if err := svc.SetTelemetry(sampler); err != nil {
@@ -429,6 +501,9 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 			fmt.Fprintln(errOut, "OTLP export is unavailable; local operations and telemetry remain available.")
 		} else {
 			defer exporter.Close()
+			if err := exporter.RegisterCache(caches.Metrics); err != nil {
+				fmt.Fprintln(errOut, "Cache metrics registration is unavailable.")
+			}
 		}
 	}
 	if err := clusters.Attach(svc); err != nil {
@@ -471,7 +546,23 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 			return exitError(errOut, fmt.Errorf("machine listener %s (machine.port): %w", machineAddress, err))
 		}
 		listeners = append(listeners, tls.NewListener(l, clusters.TLS()))
-		handlers = append(handlers, machine.New(clusters))
+		handlers = append(handlers, machine.New(clusters, machine.CredentialRoutes(vault, clusters.Identity().NodeID, func(ctx context.Context, cert *x509.Certificate) error {
+			_, err := clusters.AuthenticateMachine(ctx, cert, true)
+			return err
+		}), func(mux *http.ServeMux) {
+			mux.HandleFunc("/store-cache/", func(w http.ResponseWriter, r *http.Request) {
+				if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+					http.Error(w, "Unauthorized", 401)
+					return
+				}
+				member, err := clusters.AuthenticateMachine(r.Context(), r.TLS.PeerCertificates[0], false)
+				if err != nil {
+					http.Error(w, "Forbidden", 403)
+					return
+				}
+				caches.ServePeer(w, r, member.NodeID, member.State == "full")
+			})
+		}))
 		if host == "127.0.0.1" {
 			continue
 		}

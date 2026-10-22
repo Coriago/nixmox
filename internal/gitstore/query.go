@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func (g *Git) FetchCommit(ctx context.Context, id, remote, commit string) error {
+func (g *Git) FetchCommit(ctx context.Context, id, remote, commit string, credential *string) error {
 	if config.ValidateRemote(remote) != nil {
 		return domain.Err("INVALID_SOURCE", "Invalid remote prerequisite URL.", 422)
 	}
@@ -26,7 +26,7 @@ func (g *Git) FetchCommit(ctx context.Context, id, remote, commit string) error 
 	if err = g.ensure(ctx, id); err != nil {
 		return err
 	}
-	if _, err = g.run(ctx, g.Bare(id), nil, "fetch", "--no-tags", "--no-recurse-submodules", remote, commit); err != nil {
+	if _, err = g.remoteRun(ctx, g.Bare(id), remote, credential, "fetch", "--no-tags", "--no-recurse-submodules", remote, commit); err != nil {
 		return domain.Err("SOURCE_UNAVAILABLE", "The remote no longer supplies the pinned prerequisite.", 503)
 	}
 	if !g.HasCommit(ctx, id, commit) {

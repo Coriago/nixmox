@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -249,11 +250,8 @@ func (m *Manager) member(node string) (Member, error) {
 		m.mu.RUnlock()
 		return Member{}, unavailable()
 	}
-	if node == m.identity.NodeID {
-		member := Member{SchemaVersion: 1, NodeID: node, State: "pending", Epoch: m.membership.Epoch, BrokerRole: "provisional"}
-		m.mu.RUnlock()
-		return member, nil
-	}
+	own := node == m.identity.NodeID
+	self := Member{SchemaVersion: 1, Version: 1, NodeID: node, State: "pending", Epoch: m.membership.Epoch, BrokerRole: "provisional", DaemonKey: pki.Fingerprint(m.keys.Daemon.Leaf.PublicKey), BrokerKey: pki.Fingerprint(m.keys.Broker.Leaf.PublicKey)}
 	kv := m.stores.State
 	m.mu.RUnlock()
 	if !domain.SafeID.MatchString(node) {
@@ -261,6 +259,9 @@ func (m *Manager) member(node string) (Member, error) {
 	}
 	entry, err := kv.Get("member." + node)
 	if errors.Is(err, nats.ErrKeyNotFound) {
+		if own {
+			return self, nil
+		}
 		return Member{}, domain.Err("TARGET_UNREACHABLE", "Target is not an admitted executor.", 503)
 	}
 	if err != nil {
@@ -406,7 +407,35 @@ func (m *Manager) Status() (domain.ClusterStatus, error) {
 	if json.Unmarshal(entry.Value(), &genesis) != nil {
 		return domain.ClusterStatus{}, unavailable()
 	}
-	return domain.ClusterStatus{ClusterID: &genesis.ID, Name: &genesis.Name, Membership: "pending", ObservedAt: now, Freshness: "live", Quorum: domain.Quorum{Available: true, Replicas: genesis.Replicas, Required: genesis.Replicas/2 + 1}, Health: domain.Health{Status: "healthy", ObservedAt: &now, Reasons: []domain.HealthReason{}}, BrokerRole: "provisional", IssuerNodeID: &genesis.IssuerNodeID}, nil
+	status := domain.ClusterStatus{ClusterID: &genesis.ID, Name: &genesis.Name, Membership: "pending", ObservedAt: now, Freshness: "live", Quorum: domain.Quorum{Available: true, Replicas: genesis.Replicas, Required: genesis.Replicas/2 + 1}, Health: domain.Health{Status: "healthy", ObservedAt: &now, Reasons: []domain.HealthReason{}}, BrokerRole: "provisional", IssuerNodeID: &genesis.IssuerNodeID}
+	keys, err := m.stores.State.Keys()
+	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+		return domain.ClusterStatus{}, unavailable()
+	}
+	if len(keys) > domain.MaxRecords {
+		return domain.ClusterStatus{}, unavailable()
+	}
+	for _, key := range keys {
+		if !strings.HasPrefix(key, "member.") {
+			continue
+		}
+		entry, err := m.stores.State.Get(key)
+		if err != nil {
+			return domain.ClusterStatus{}, unavailable()
+		}
+		var member Member
+		if domain.StrictJSON(entry.Value(), &member) != nil {
+			return domain.ClusterStatus{}, unavailable()
+		}
+		if member.State == "full" {
+			status.FullMembers++
+		}
+		if member.NodeID == m.identity.NodeID {
+			status.Membership = member.State
+			status.BrokerRole = member.BrokerRole
+		}
+	}
+	return status, nil
 }
 func unavailable() *domain.Error {
 	return domain.Err("QUORUM_UNAVAILABLE", "Authenticated cluster quorum is unavailable.", 503)

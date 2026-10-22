@@ -35,7 +35,7 @@ func TestIncrementRetryPreservesCommitAndRejectsSymlinkWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	head, err := g.Fetch(ctx, "r_test", remote, "main")
+	head, err := g.Fetch(ctx, "r_test", remote, "main", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

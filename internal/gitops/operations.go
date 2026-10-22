@@ -119,6 +119,11 @@ func (s *Service) runRepository(ctx context.Context, e *service.Execution) (any,
 	rev, err := s.State.Get(ctx, "repository."+v.RepositoryID, &r)
 	if err == nil {
 		if accepted, ok := r.AcceptedCommands[e.Command.ID]; ok {
+			if s.PruneCredential != nil {
+				if err := s.PruneCredential(ctx, r.Remote.CredentialRef, "repository", r.ID); err != nil {
+					return nil, err
+				}
+			}
 			return accepted, nil
 		}
 	}
@@ -141,9 +146,6 @@ func (s *Service) runRepository(ctx context.Context, e *service.Execution) (any,
 	}
 	switch e.Command.Type {
 	case "repository.import", "repository.fetch":
-		if r.Remote.CredentialRef != nil {
-			return nil, service.Block("credentials", "CREDENTIAL_UNAVAILABLE", "App-managed read credential is unavailable on this fetching node.")
-		}
 		task, err := e.Snapshot()
 		if err != nil {
 			return nil, err
@@ -154,7 +156,7 @@ func (s *Service) runRepository(ctx context.Context, e *service.Execution) (any,
 				return nil, domain.Err("INVALID_STATE", "Fetch checkpoint is invalid.", 409)
 			}
 		} else {
-			pin.Commit, err = s.Git.Fetch(ctx, r.ID, r.Remote.URL, r.Upstream.Branch)
+			pin.Commit, err = s.Git.Fetch(ctx, r.ID, r.Remote.URL, r.Upstream.Branch, r.Remote.CredentialRef)
 			if err != nil {
 				return nil, err
 			}
@@ -194,6 +196,11 @@ func (s *Service) runRepository(ctx context.Context, e *service.Execution) (any,
 		r.Remote.CredentialRef = p.CredentialRef
 	}
 	accepted := domain.SourceAcceptance{}
+	if r.Remote.CredentialRef != nil && s.BindCredential != nil {
+		if err = s.BindCredential(ctx, *r.Remote.CredentialRef, "repository", r.ID); err != nil {
+			return nil, err
+		}
+	}
 	if r.Upstream.Commit != nil {
 		accepted.Commit = *r.Upstream.Commit
 	}
@@ -205,6 +212,11 @@ func (s *Service) runRepository(ctx context.Context, e *service.Execution) (any,
 	r.Version++
 	if _, err = s.State.CAS(ctx, "repository."+r.ID, r, rev); err != nil {
 		return nil, err
+	}
+	if s.PruneCredential != nil {
+		if err = s.PruneCredential(ctx, r.Remote.CredentialRef, "repository", r.ID); err != nil {
+			return nil, err
+		}
 	}
 	return struct {
 		RepositoryID string `json:"repository_id"`

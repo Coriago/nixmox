@@ -310,7 +310,10 @@ func (m *sourceModel) update(msg tea.Msg) tea.Cmd {
 			m.notice = v.err.Error()
 			return nil
 		}
-		m.mode = v.mode
+		preserveMode := v.mode == "build-progress" && (m.mode == "package-diff" || m.mode == "diff-search") && m.buildTask != nil && v.task != nil && m.buildTask.ID == v.task.ID
+		if !preserveMode {
+			m.mode = v.mode
+		}
 		m.selection = 0
 		m.notice = ""
 		switch v.mode {
@@ -557,7 +560,7 @@ func (m *sourceModel) view() string {
 	var b strings.Builder
 	b.WriteString("Nixmox · Sources\n\n")
 	switch m.mode {
-	case "hosts", "host", "assign", "build-progress", "deploy-options", "generations", "package-diff", "diff-search":
+	case "hosts", "host", "assign", "build-progress", "deploy-options", "generations", "package-diff", "diff-search", "adopt-confirm":
 		b.WriteString(m.hostView())
 	case "repositories":
 		for i, r := range m.repos {

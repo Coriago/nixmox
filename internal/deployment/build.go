@@ -26,6 +26,7 @@ type Service struct {
 	Nix            nixstore.Nix
 	System         TargetSystem
 	RefreshHost    func()
+	VerifyManaged  func(context.Context, domain.Candidate, string) error
 }
 type Selector struct {
 	RepositoryID  string `json:"repository_id,omitempty"`
@@ -126,10 +127,7 @@ func (s *Service) resolveBuild(ctx context.Context, c domain.Command) (json.RawM
 	if selector.Commit == "" {
 		for _, v := range r.Refs {
 			if v.ID == ref && v.Kind == "upstream" {
-				if r.Remote.CredentialRef != nil {
-					return nil, domain.Err("CREDENTIAL_UNAVAILABLE", "Read credential unavailable on resolving node.", 503)
-				}
-				commit, err = s.Sources.Git.Fetch(ctx, r.ID, r.Remote.URL, r.Upstream.Branch)
+				commit, err = s.Sources.Git.Fetch(ctx, r.ID, r.Remote.URL, r.Upstream.Branch, r.Remote.CredentialRef)
 				if err != nil {
 					return nil, err
 				}

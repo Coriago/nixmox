@@ -21,7 +21,10 @@ import (
 var PathPattern = regexp.MustCompile(`^/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/\x00\r\n]+$`)
 var AttributePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*)*$`)
 
-type Nix struct{ Substituters []string }
+type Nix struct {
+	Substituters []string
+	Options      func(context.Context) []string
+}
 type Evaluation struct {
 	System          string `json:"system"`
 	Derivation      string `json:"derivation"`
@@ -100,6 +103,9 @@ func (n Nix) Build(ctx context.Context, e Evaluation, root string, onEvent func(
 	args := []string{"build", "--json", "--builders", "", "--out-link", root, "--log-format", "internal-json", "--option", "connect-timeout", "5", "--option", "download-attempts", "2", "--option", "stalled-download-timeout", "15", "--fallback"}
 	if n.Substituters != nil {
 		args = append(args, "--option", "substituters", strings.Join(n.Substituters, " "))
+	}
+	if n.Options != nil {
+		args = append(args, n.Options(ctx)...)
 	}
 	args = append(args, e.Derivation+"^out")
 	r, err := process.Run(ctx, process.Options{Timeout: 2 * time.Hour, MaxOutput: 1 << 20, StderrLine: onEvent}, "nix", args...)

@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -41,10 +42,13 @@ func New(s *service.Service, clusters ...ClusterReader) http.Handler {
 		a.cluster = clusters[0]
 	}
 	mux := http.NewServeMux()
+	a.cacheRoutes(mux)
+	a.credentialRoutes(mux)
 	a.sourceRoutes(mux)
 	a.configurationRoutes(mux)
 	a.hostRoutes(mux)
 	a.deploymentRoutes(mux)
+	mux.HandleFunc("GET /ui/settings", func(w http.ResponseWriter, r *http.Request) { a.render(w, r, "settings.html", 200, a.view()) })
 	mux.HandleFunc("GET /ui/sources", func(w http.ResponseWriter, r *http.Request) { a.render(w, r, "sources.html", 200, a.view()) })
 	mux.HandleFunc("GET /api/v1/cluster/status", func(w http.ResponseWriter, r *http.Request) {
 		if a.cluster == nil {
@@ -241,7 +245,7 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 	selected := map[string]bool{}
 	for _, topic := range strings.Split(topics, ",") {
 		switch topic {
-		case "identity", "network.status", "tasks", "cluster.status", "cluster.requests", "hosts.telemetry":
+		case "identity", "network.status", "tasks", "cluster.status", "cluster.requests", "hosts.telemetry", "cache.status":
 			selected[topic] = true
 		default:
 			writeError(w, domain.Err("INVALID_QUERY", "Unsupported event topic.", 400), "")
@@ -297,6 +301,16 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot := func() map[string]any {
 		v := map[string]any{"type": "snapshot", "observed_at": time.Now().UTC()}
+		if selected["cache.status"] {
+			v["cache.status"] = map[string]string{"availability": "unavailable"}
+			if cache, err := a.service.Cache(); err == nil {
+				ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+				if status, err := cache.Status(ctx); err == nil {
+					v["cache.status"] = status
+				}
+				cancel()
+			}
+		}
 		if selected["identity"] {
 			v["identity"] = a.service.Identity()
 		}

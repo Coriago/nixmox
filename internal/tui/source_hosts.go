@@ -59,6 +59,27 @@ func (m *sourceModel) pollBuild(id string) tea.Cmd {
 	}
 }
 func (m *sourceModel) hostKey(key tea.KeyMsg) (bool, tea.Cmd) {
+	if m.mode == "adopt-confirm" {
+		if key.String() == "enter" {
+			task, confirmation, ctx, c := *m.buildTask, m.diffQuery.Value(), m.ctx, m.client
+			m.busy = true
+			return true, func() tea.Msg {
+				var candidate domain.Candidate
+				if err := json.Unmarshal(task.Result, &candidate); err != nil {
+					return sourceMessage{err: err}
+				}
+				var h domain.Host
+				if err := c.Read(ctx, "/api/v1/hosts/"+task.TargetID, &h); err != nil {
+					return sourceMessage{err: err}
+				}
+				result, err := sourceSubmit(ctx, c, h.ID, "host.adopt", map[string]string{"host_id": h.ID, "candidate_id": candidate.ID, "confirm_host": confirmation}, map[string]int64{"host:" + h.ID: h.Version})
+				return sourceMessage{mode: "build-progress", task: &result, err: err}
+			}
+		}
+		var cmd tea.Cmd
+		m.diffQuery, cmd = m.diffQuery.Update(key)
+		return true, cmd
+	}
 	if m.mode == "diff-search" {
 		if key.String() == "enter" {
 			m.mode = "package-diff"
@@ -80,6 +101,14 @@ func (m *sourceModel) hostKey(key tea.KeyMsg) (bool, tea.Cmd) {
 		return false, nil
 	}
 	switch key.String() {
+	case "y":
+		if m.mode == "build-progress" && m.buildTask != nil && m.buildTask.Kind == "deployment.build" && m.buildTask.State == "succeeded" {
+			m.mode = "adopt-confirm"
+			m.diffQuery = textinput.New()
+			m.diffQuery.Placeholder = "Confirm host name or ID"
+			m.diffQuery.CharLimit = 256
+			return true, m.diffQuery.Focus()
+		}
 	case "l":
 		if m.mode == "host" || m.mode == "hosts" {
 			if m.mode == "hosts" {
@@ -341,8 +370,10 @@ func (m *sourceModel) hostView() string {
 			if m.buildTask.Approval != nil && m.buildTask.Approval.State == "pending" {
 				b.WriteString("\nEnter Approve this comparison")
 			}
-			b.WriteString("\nd packages / search · c cancel · h hosts")
+			b.WriteString("\nd packages / search · y verify running candidate · c cancel · h hosts")
 		}
+	case "adopt-confirm":
+		b.WriteString("Verify exact running output without activation. Desired binding remains unchanged.\n" + m.diffQuery.View() + "\nEnter verify · Esc back")
 	}
 	return b.String()
 }

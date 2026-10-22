@@ -15,8 +15,10 @@ import (
 )
 
 type Service struct {
-	State state.Store
-	Git   *gitstore.Git
+	State           state.Store
+	Git             *gitstore.Git
+	BindCredential  func(context.Context, string, string, string) error
+	PruneCredential func(context.Context, *string, string, string) error
 }
 
 func missing(err error) bool { var e *domain.Error; return errors.As(err, &e) && e.Code == "NOT_FOUND" }
@@ -87,7 +89,7 @@ func (s *Service) Materialize(ctx context.Context, r domain.Repository, commit s
 		if a.Storage.State != "stored" {
 			return domain.Err("SOURCE_UNAVAILABLE", "Required source artifact has been deleted.", 503)
 		}
-		if err = s.Git.FetchCommit(ctx, r.ID, r.Remote.URL, a.RemoteBaseCommit); err != nil {
+		if err = s.Git.FetchCommit(ctx, r.ID, r.Remote.URL, a.RemoteBaseCommit, r.Remote.CredentialRef); err != nil {
 			return err
 		}
 		// Every generated increment contains the complete local delta against its
@@ -108,7 +110,7 @@ func (s *Service) Materialize(ctx context.Context, r domain.Repository, commit s
 		}
 		return s.Git.Import(ctx, r.ID, name, commit)
 	}
-	return s.Git.FetchCommit(ctx, r.ID, r.Remote.URL, commit)
+	return s.Git.FetchCommit(ctx, r.ID, r.Remote.URL, commit, r.Remote.CredentialRef)
 }
 func (s *Service) Diff(ctx context.Context, id, from, to string) (any, error) {
 	r, err := s.Repository(ctx, id)
@@ -170,7 +172,7 @@ func (s *Service) Accept(ctx context.Context, c Change) (domain.SourceAcceptance
 	}
 	if c.RefID == "" || c.BaseCommit != base {
 		if !s.Git.HasCommit(ctx, r.ID, base) {
-			if err = s.Git.FetchCommit(ctx, r.ID, r.Remote.URL, base); err != nil {
+			if err = s.Git.FetchCommit(ctx, r.ID, r.Remote.URL, base, r.Remote.CredentialRef); err != nil {
 				return domain.SourceAcceptance{}, err
 			}
 		}
