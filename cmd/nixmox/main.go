@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,14 +18,18 @@ import (
 	"syscall"
 	"time"
 
+	"nixmox/internal/broker"
 	"nixmox/internal/client"
 	"nixmox/internal/config"
 	"nixmox/internal/domain"
 	"nixmox/internal/httpapi"
+	"nixmox/internal/machine"
 	"nixmox/internal/network"
+	"nixmox/internal/pki"
 	"nixmox/internal/presentation"
 	"nixmox/internal/service"
 	"nixmox/internal/storage"
+	"nixmox/internal/transport"
 	"nixmox/internal/tui"
 )
 
@@ -320,6 +325,15 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 		return exitError(errOut, err)
 	}
 	defer svc.Close()
+	keys, err := pki.Open(store)
+	if err != nil {
+		return exitError(errOut, err)
+	}
+	b, err := broker.Start(broker.Config{NodeID: svc.Identity().NodeID, DataDir: cfg.DataDir, Keys: keys, ClientPort: cfg.NATS.ClientPort, RoutePort: cfg.NATS.RoutePort, LeafPort: cfg.NATS.LeafPort})
+	if err != nil {
+		return exitError(errOut, err)
+	}
+	defer b.Close()
 	addresses, err := network.BindAddresses(cfg)
 	if err != nil {
 		return exitError(errOut, err)
@@ -339,9 +353,40 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 	}
 	handler := httpapi.New(svc)
 	servers := []*http.Server{}
+	handlers := make([]http.Handler, len(listeners))
+	for i := range handlers {
+		handlers[i] = handler
+	}
+	forwarders := []*transport.Forward{}
+	defer func() {
+		for _, f := range forwarders {
+			f.Close()
+		}
+	}()
+	for _, address := range addresses {
+		host, _, _ := net.SplitHostPort(address)
+		machineAddress := net.JoinHostPort(host, strconv.Itoa(cfg.Machine.Port))
+		l, err := net.Listen("tcp", machineAddress)
+		if err != nil {
+			return exitError(errOut, fmt.Errorf("machine listener %s (machine.port): %w", machineAddress, err))
+		}
+		listeners = append(listeners, tls.NewListener(l, pki.EnrollmentServer(keys.Daemon)))
+		handlers = append(handlers, machine.New(nil))
+		if host == "127.0.0.1" {
+			continue
+		}
+		for _, port := range []int{cfg.NATS.RoutePort, cfg.NATS.LeafPort} {
+			address := net.JoinHostPort(host, strconv.Itoa(port))
+			f, err := transport.ListenForward(address, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+			if err != nil {
+				return exitError(errOut, fmt.Errorf("broker listener %s (nats ports): %w", address, err))
+			}
+			forwarders = append(forwarders, f)
+		}
+	}
 	failures := make(chan error, len(listeners))
-	for _, l := range listeners {
-		server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
+	for i, l := range listeners {
+		server := &http.Server{Handler: handlers[i], ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
 		servers = append(servers, server)
 		go func() { failures <- server.Serve(l) }()
 	}

@@ -34,9 +34,27 @@ func TestCompiledDaemonRestartAndPortConflict(t *testing.T) {
 	}
 	port := reserve.Addr().(*net.TCPAddr).Port
 	reserve.Close()
+	ports := []int{port}
+	for len(ports) < 5 {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		duplicate := false
+		for _, v := range ports {
+			if v == p {
+				duplicate = true
+			}
+		}
+		if !duplicate {
+			ports = append(ports, p)
+		}
+	}
 	cfg := filepath.Join(root, "config.yaml")
 	data := filepath.Join(root, "state")
-	if err := os.WriteFile(cfg, []byte(fmt.Sprintf("schema_version: 1\ndata_dir: %s\nhttp:\n  port: %d\n", data, port)), 0600); err != nil {
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf("schema_version: 1\ndata_dir: %s\nhttp:\n  port: %d\nmachine:\n  port: %d\nnats:\n  client_port: %d\n  route_port: %d\n  leaf_port: %d\n", data, port, ports[1], ports[2], ports[3], ports[4])), 0600); err != nil {
 		t.Fatal(err)
 	}
 	endpoint := "http://127.0.0.1:" + strconv.Itoa(port)

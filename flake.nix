@@ -21,7 +21,7 @@
             pname = "nixmox";
             version = "0.1.0-dev";
             src = self;
-            vendorHash = "sha256-6WFKhTqS478ZjSeVxEvPLNHq1dVm7E1N5YnNwv2uJVA=";
+            vendorHash = "sha256-vZPhdLVUOQuMDDnc33Vyu3y0KkNML7Y4axExl+uDDMw=";
             subPackages = [ "cmd/nixmox" ];
             env.CGO_ENABLED = 0;
             checkPhase = ''
@@ -69,10 +69,10 @@
             assert c.services.nixmox.http.port == 63200;
             assert
               c.networking.firewall.interfaces.eth0.allowedTCPPorts == [
-                63200
-                63175
                 63172
                 63173
+                63175
+                63200
               ];
             assert c.networking.firewall.allowedTCPPorts == [ ];
             assert builtins.elem "63200" (
