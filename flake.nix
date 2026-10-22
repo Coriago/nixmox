@@ -106,6 +106,7 @@
               qemu
               iproute2
               util-linux
+              systemd
               nix
             ];
           };

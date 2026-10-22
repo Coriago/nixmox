@@ -22,6 +22,7 @@ import (
 	"nixmox/internal/cluster"
 	"nixmox/internal/config"
 	"nixmox/internal/domain"
+	"nixmox/internal/host"
 	"nixmox/internal/httpapi"
 	"nixmox/internal/machine"
 	"nixmox/internal/network"
@@ -75,7 +76,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	args = root.Args()
 	if len(args) == 0 {
-		fmt.Fprintln(out, "Usage: nixmox [--endpoint URL] {serve|identity show|network status|network check|tasks list|tasks show|tasks cancel|tasks retry|commands show|tui}")
+		fmt.Fprintln(out, "Usage: nixmox [--endpoint URL] {serve|identity show|network status|network check|cluster|hosts refresh ID|tasks|commands show|tui}")
 		return 2
 	}
 	if args[0] == "serve" {
@@ -120,7 +121,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return clusterCommand(ctx, c, args[1:], out, errOut)
 	}
 	id := ""
-	if (group == "tasks" && verb != "list") || group == "commands" {
+	if (group == "tasks" && verb != "list") || group == "commands" || (group == "hosts" && verb == "refresh") {
 		if len(rest) == 0 {
 			fmt.Fprintln(errOut, "An ID is required.")
 			return 2
@@ -134,7 +135,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	f := flags(group+" "+verb, errOut)
 	asJSON := f.Bool("json", false, "JSON output")
-	mutation := (group == "network" && verb == "check") || (group == "tasks" && (verb == "cancel" || verb == "retry"))
+	mutation := (group == "network" && verb == "check") || (group == "tasks" && (verb == "cancel" || verb == "retry")) || (group == "hosts" && verb == "refresh")
 	var wait bool
 	var commandID string
 	var version int64
@@ -171,6 +172,11 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 			commandID = domain.NewID("cmd_")
 		}
 		cmd := domain.Command{ID: commandID, Type: group + "." + verb, TargetID: identity.NodeID, ExpectedVersions: map[string]int64{}, Payload: json.RawMessage(`{}`)}
+		if group == "hosts" {
+			cmd.Type = "host.refresh"
+			cmd.TargetID = id
+			cmd.Payload, _ = json.Marshal(map[string]string{"host_id": id})
+		}
 		if group == "tasks" {
 			if version <= 0 {
 				fmt.Fprintln(errOut, "--version must be the reviewed task version.")
@@ -296,7 +302,8 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 		return exitError(errOut, err)
 	}
 	defer clusters.Close()
-	svc, err := service.Open(store, network.Inspector{Config: cfg}, clusters.Operations()...)
+	operations := append(clusters.Operations(), host.Operations(host.Inspector{Config: cfg, BrokerReady: clusters.BrokerReady})...)
+	svc, err := service.Open(store, network.Inspector{Config: cfg}, operations...)
 	if err != nil {
 		return exitError(errOut, err)
 	}

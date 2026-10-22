@@ -1,11 +1,17 @@
 package service
 
 import (
+	"context"
 	"encoding/base64"
 
 	"nixmox/internal/domain"
 	"nixmox/internal/storage"
 )
+
+type RemoteLogReader interface {
+	RemoteLogs(context.Context, string, int, int) (LogChunk, error)
+	RemoteLogSnapshot(context.Context, string) (storage.Log, bool, error)
+}
 
 type LogChunk struct {
 	Offset       int    `json:"offset"`
@@ -15,6 +21,8 @@ type LogChunk struct {
 	Complete     bool   `json:"complete"`
 	Truncated    bool   `json:"truncated"`
 }
+
+func (c LogChunk) Bytes() ([]byte, error) { return base64.StdEncoding.DecodeString(c.Data) }
 
 // Log accepts sanitized executor diagnostics. Credential adapters must redact
 // secrets before calling it; command payloads and raw process environments are
@@ -45,8 +53,20 @@ func (e *Execution) Log(data []byte) error {
 }
 
 func (s *Service) Logs(id string, offset, limit int) (LogChunk, error) {
+	return s.LogsContext(context.Background(), id, offset, limit)
+}
+func (s *Service) LogsContext(ctx context.Context, id string, offset, limit int) (LogChunk, error) {
 	if offset < 0 || limit < 1 || limit > 1<<20 {
 		return LogChunk{}, domain.Err("INVALID_QUERY", "Invalid log offset or limit.", 400)
+	}
+	s.mu.Lock()
+	_, local := s.tasks[id]
+	transport := s.clusterTransport
+	s.mu.Unlock()
+	if !local {
+		if remote, ok := transport.(RemoteLogReader); ok {
+			return remote.RemoteLogs(ctx, id, offset, limit)
+		}
 	}
 	l, complete, err := s.LogSnapshot(id)
 	if err != nil {
@@ -66,12 +86,20 @@ func (s *Service) Logs(id string, offset, limit int) (LogChunk, error) {
 }
 
 func (s *Service) LogSnapshot(id string) (storage.Log, bool, error) {
+	return s.LogSnapshotContext(context.Background(), id)
+}
+func (s *Service) LogSnapshotContext(ctx context.Context, id string) (storage.Log, bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
 	if !ok {
+		transport := s.clusterTransport
+		s.mu.Unlock()
+		if remote, ok := transport.(RemoteLogReader); ok {
+			return remote.RemoteLogSnapshot(ctx, id)
+		}
 		return storage.Log{}, false, domain.Err("NOT_FOUND", "Task not found.", 404)
 	}
+	defer s.mu.Unlock()
 	if s.fatal {
 		return storage.Log{}, false, unknown()
 	}

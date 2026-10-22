@@ -139,25 +139,26 @@ type Cancellation struct {
 	Requested bool `json:"requested"`
 }
 type Task struct {
-	SchemaVersion int             `json:"schema_version"`
-	ID            string          `json:"id"`
-	Version       int64           `json:"version"`
-	CommandID     string          `json:"command_id"`
-	Kind          string          `json:"kind"`
-	State         string          `json:"state"`
-	Phase         string          `json:"phase"`
-	Scope         string          `json:"scope"`
-	OwnerNodeID   string          `json:"owner_node_id"`
-	ClusterID     *string         `json:"cluster_id"`
-	CoordinatorID string          `json:"coordinator_id"`
-	BuilderID     *string         `json:"builder_id"`
-	TargetID      string          `json:"target_id"`
-	ParentID      *string         `json:"parent_id"`
-	Source        any             `json:"source"`
-	Progress      any             `json:"progress"`
-	Cancellation  Cancellation    `json:"cancellation"`
-	Effects       map[string]bool `json:"effects"`
-	Log           struct {
+	SchemaVersion   int             `json:"schema_version"`
+	ID              string          `json:"id"`
+	Version         int64           `json:"version"`
+	CommandID       string          `json:"command_id"`
+	Kind            string          `json:"kind"`
+	State           string          `json:"state"`
+	Phase           string          `json:"phase"`
+	Scope           string          `json:"scope"`
+	OwnerNodeID     string          `json:"owner_node_id"`
+	ClusterID       *string         `json:"cluster_id"`
+	MembershipEpoch int             `json:"membership_epoch,omitempty"`
+	CoordinatorID   string          `json:"coordinator_id"`
+	BuilderID       *string         `json:"builder_id"`
+	TargetID        string          `json:"target_id"`
+	ParentID        *string         `json:"parent_id"`
+	Source          any             `json:"source"`
+	Progress        any             `json:"progress"`
+	Cancellation    Cancellation    `json:"cancellation"`
+	Effects         map[string]bool `json:"effects"`
+	Log             struct {
 		NodeID     string `json:"node_id"`
 		NextOffset int    `json:"next_offset"`
 	} `json:"log"`
@@ -185,7 +186,7 @@ func (t Task) Terminal() bool {
 	return t.State == "succeeded" || t.State == "failed" || t.State == "cancelled"
 }
 func (t *Task) Transition(state, phase string) error {
-	allowed := map[string][]string{"queued": {"running", "cancelling"}, "running": {"succeeded", "failed", "cancelling", "reconciling", "blocked"}, "blocked": {"running", "cancelling", "reconciling"}, "reconciling": {"running", "succeeded", "failed", "cancelling", "blocked"}, "cancelling": {"cancelled", "reconciling"}}
+	allowed := map[string][]string{"queued": {"running", "cancelling", "blocked"}, "running": {"succeeded", "failed", "cancelling", "reconciling", "blocked"}, "blocked": {"running", "cancelling", "reconciling"}, "reconciling": {"running", "succeeded", "failed", "cancelling", "blocked"}, "cancelling": {"cancelled", "reconciling"}}
 	for _, next := range allowed[t.State] {
 		if state == next {
 			t.State = state

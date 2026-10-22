@@ -36,7 +36,7 @@ type ClusterReader interface {
 }
 
 func New(s *service.Service, clusters ...ClusterReader) http.Handler {
-	a := &Server{service: s, templates: template.Must(template.New("network.html").Funcs(template.FuncMap{"networkText": presentation.Network, "taskText": presentation.Task}).ParseFS(assets, "assets/*.html"))}
+	a := &Server{service: s, templates: template.Must(template.New("network.html").Funcs(template.FuncMap{"networkText": presentation.Network, "taskText": presentation.Task, "taskResult": presentation.TaskResult}).ParseFS(assets, "assets/*.html"))}
 	if len(clusters) > 0 {
 		a.cluster = clusters[0]
 	}
@@ -201,11 +201,11 @@ func (a *Server) logs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	chunk, err := a.service.Logs(r.PathValue("id"), offset, limit)
+	chunk, err := a.service.LogsContext(r.Context(), r.PathValue("id"), offset, limit)
 	respond(w, chunk, err)
 }
 func (a *Server) downloadLogs(w http.ResponseWriter, r *http.Request) {
-	log, _, err := a.service.LogSnapshot(r.PathValue("id"))
+	log, _, err := a.service.LogSnapshotContext(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err, "")
 		return
@@ -270,8 +270,12 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 			v["network.status"] = a.service.Network()
 		}
 		if selected["tasks"] {
-			p, _ := a.service.ListTasks(service.TaskFilter{}, "100", "")
-			v["tasks"] = map[string]any{"items": p.Items, "next_cursor": p.NextCursor, "href": "/api/v1/tasks"}
+			p, err := a.service.ListTasks(service.TaskFilter{}, "100", "")
+			if err != nil {
+				v["tasks"] = map[string]any{"availability": "unavailable", "href": "/api/v1/tasks"}
+			} else {
+				v["tasks"] = map[string]any{"items": p.Items, "next_cursor": p.NextCursor, "href": "/api/v1/tasks"}
+			}
 		}
 		if a.cluster != nil && selected["cluster.status"] {
 			status, err := a.cluster.Status()

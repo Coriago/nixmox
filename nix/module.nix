@@ -261,6 +261,7 @@ in
     ];
     environment.systemPackages = [ cfg.package ];
     environment.etc."nixmox/config.yaml".source = runtime;
+    environment.etc."nixmox/environment".text = lib.mkDefault "installed\n";
     systemd.tmpfiles.settings."10-nixmox".${cfg.dataDir}.d = {
       mode = "0700";
       user = "root";

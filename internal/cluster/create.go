@@ -82,6 +82,20 @@ func (m *Manager) create(ctx context.Context, commandID string, pinned resolvedC
 	if m.identity.ClusterID != nil && (*m.identity.ClusterID != pinned.ClusterID || m.membership.GenesisCommandID != commandID) {
 		return nil, domain.Err("INVALID_STATE", "This node already belongs to a cluster.", 409)
 	}
+	if m.identity.ClusterID != nil {
+		if m.stores == nil {
+			return nil, unavailable()
+		}
+		entry, err := m.stores.State.Get("cluster")
+		if err != nil {
+			return nil, unavailable()
+		}
+		var genesis Genesis
+		if domain.StrictJSON(entry.Value(), &genesis) != nil || genesis.ID != pinned.ClusterID || genesis.CommandID != commandID {
+			return nil, domain.Err("IDENTITY_CONFLICT", "Cluster genesis differs from the original command.", 409)
+		}
+		return map[string]any{"cluster_id": pinned.ClusterID, "membership": "pending", "broker_role": "provisional", "genesis_committed": true}, nil
+	}
 	if err := m.prepareTrustDirectory(); err != nil {
 		return nil, err
 	}

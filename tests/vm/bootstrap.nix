@@ -34,7 +34,7 @@ pkgs.testers.runNixOSTest {
       ]
   );
   testScript = ''
-    import json, time
+    import hashlib, json, time
     start_all()
     identities = {}
     for node in (alder, birch, cedar):
@@ -71,7 +71,7 @@ pkgs.testers.runNixOSTest {
     genesis = json.loads(alder.succeed("nixmox cluster create homelab --command-id cmd_vm_genesis --wait --json"))
     assert genesis["state"] == "succeeded", genesis
     cluster = json.loads(alder.succeed("nixmox cluster status --json"))
-    assert cluster["membership"] == "pending" and cluster["full_members"] == 0 and cluster["quorum"]
+    assert cluster["membership"] == "pending" and cluster["full_members"] == 0 and cluster["quorum"] == {"available": True, "replicas": 1, "required": 1}
     alder.succeed("systemctl kill --signal=KILL nixmox.service")
     alder.wait_for_unit("nixmox.service")
     alder.wait_until_succeeds("nixmox cluster status --json")
@@ -114,8 +114,23 @@ pkgs.testers.runNixOSTest {
         current = json.loads(node.succeed("nixmox identity show --json"))
         assert current["node_id"] == identities[node.name]["node_id"] and current["key_id"] == identities[node.name]["key_id"]
         assert json.loads(node.succeed(command + " --wait"))["id"] == joined_task["id"]
+        refresh = json.loads(alder.succeed("nixmox hosts refresh " + current["node_id"] + " --command-id cmd_refresh_" + node.name + " --wait --json"))
+        assert refresh["state"] == "succeeded", refresh
+        assert refresh["owner_node_id"] == current["node_id"] and refresh["coordinator_id"] == identities["alder"]["node_id"]
+        assert refresh["result"]["name"] == node.name and refresh["result"]["environment"] == "installed"
+        assert refresh["result"]["system"] == "x86_64-linux" and refresh["result"]["health"]["status"] == "healthy", refresh
+        local_task = json.loads(node.succeed("nixmox tasks show " + refresh["id"] + " --json"))
+        assert local_task["result"] == refresh["result"]
+        assert alder.succeed("curl --fail --silent http://127.0.0.1:63200/api/v1/tasks/" + refresh["id"] + "/logs/download") == ""
+        pending_command = "cmd_pending_refresh_" + node.name
+        pending_refresh = json.loads(node.succeed("nixmox hosts refresh " + current["node_id"] + " --command-id " + pending_command + " --wait --json"))
+        assert pending_refresh["state"] == "succeeded" and pending_refresh["coordinator_id"] == identities["alder"]["node_id"]
+        assert json.loads(node.succeed("nixmox commands show " + pending_command + " --json"))["task_id"] == pending_refresh["id"]
     alder.succeed("systemctl stop nixmox.service")
     birch.fail("nixmox cluster status --json")
+    birch.fail("nixmox hosts refresh " + identities["birch"]["node_id"] + " --command-id cmd_no_quorum --wait --json")
+    missing_task = "task_" + hashlib.sha256(b"cmd_no_quorum").hexdigest()
+    birch.fail("nixmox tasks show " + missing_task + " --json")
     assert json.loads(birch.succeed("nixmox network check --wait --json"))["state"] == "succeeded"
     alder.succeed("systemctl start nixmox.service")
     birch.wait_until_succeeds("nixmox cluster status --json")

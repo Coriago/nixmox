@@ -177,7 +177,7 @@ func TestJoinResumesExactRequestAndConnectsAsPendingLeaf(t *testing.T) {
 		t.Fatal("pending leaf topology is incorrect")
 	}
 	status, err := m.Status()
-	if err != nil || status.Membership != "pending" || status.BrokerRole != "leaf" || !status.Quorum || status.FullMembers != 0 {
+	if err != nil || status.Membership != "pending" || status.BrokerRole != "leaf" || !status.Quorum.Available || status.FullMembers != 0 {
 		t.Fatal("pending status query", status, err)
 	}
 	if _, err = m.broker.Stores(1); err == nil {

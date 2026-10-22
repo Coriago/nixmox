@@ -10,14 +10,21 @@ import (
 
 // PreparedCommand is internal transport data, never a console request schema.
 type PreparedCommand struct {
-	Command     Command         `json:"command"`
-	ClusterID   string          `json:"cluster_id"`
-	Fingerprint string          `json:"fingerprint"`
-	Kind        string          `json:"kind"`
-	Resolved    json.RawMessage `json:"resolved"`
-	Exclusions  []string        `json:"exclusions,omitempty"`
-	AdmittedAt  time.Time       `json:"admitted_at"`
-	ExpiresAt   time.Time       `json:"expires_at"`
+	Command       Command         `json:"command"`
+	ClusterID     string          `json:"cluster_id"`
+	CoordinatorID string          `json:"coordinator_id"`
+	TargetEpoch   int             `json:"target_epoch"`
+	Fingerprint   string          `json:"fingerprint"`
+	Kind          string          `json:"kind"`
+	Resolved      json.RawMessage `json:"resolved"`
+	Exclusions    []string        `json:"exclusions,omitempty"`
+	AdmittedAt    time.Time       `json:"admitted_at"`
+	ExpiresAt     time.Time       `json:"expires_at"`
+}
+
+func CommandTaskID(id string) string {
+	h := sha256.Sum256([]byte(id))
+	return "task_" + hex.EncodeToString(h[:])
 }
 
 // CanonicalCommand recursively sorts object keys without rounding JSON numbers.

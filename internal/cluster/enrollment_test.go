@@ -23,7 +23,7 @@ import (
 	"nixmox/internal/storage"
 )
 
-func issuerFixture(t *testing.T) (*Manager, *service.Service) {
+func nodeFixture(t *testing.T, extra ...service.Operation) (*Manager, *service.Service) {
 	t.Helper()
 	st, err := storage.Open(filepath.Join(t.TempDir(), "state"))
 	if err != nil {
@@ -39,7 +39,7 @@ func issuerFixture(t *testing.T) (*Manager, *service.Service) {
 		st.Close()
 		t.Fatal(err)
 	}
-	s, err := service.Open(st, network.Inspector{Config: c}, m.Operations()...)
+	s, err := service.Open(st, network.Inspector{Config: c}, append(m.Operations(), extra...)...)
 	if err != nil {
 		m.Close()
 		st.Close()
@@ -49,6 +49,11 @@ func issuerFixture(t *testing.T) (*Manager, *service.Service) {
 	if err = m.Attach(s); err != nil {
 		t.Fatal(err)
 	}
+	return m, s
+}
+func issuerFixture(t *testing.T, extra ...service.Operation) (*Manager, *service.Service) {
+	t.Helper()
+	m, s := nodeFixture(t, extra...)
 	r, err := s.Admit(domain.Command{ID: "cmd_genesis", Type: "cluster.create", TargetID: s.Identity().NodeID, Payload: json.RawMessage(`{"name":"homelab"}`)})
 	if err != nil {
 		t.Fatal(err)

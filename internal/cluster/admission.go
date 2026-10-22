@@ -34,11 +34,13 @@ type dispatcher struct {
 	repairOffset  int
 	capacity      chan struct{}
 	sub           *nats.Subscription
+	target        func(string) (Member, error)
 }
 
-func newDispatcher(stores *broker.Stores, s *service.Service, cluster, node string) (*dispatcher, error) {
+func newDispatcher(stores *broker.Stores, s *service.Service, cluster, node string, target func(string) (Member, error)) (*dispatcher, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &dispatcher{stores: stores, service: s, cluster: cluster, node: node, ctx: ctx, cancel: cancel, done: make(chan struct{}), capacity: make(chan struct{}, domain.QueueCapacity), serial: make(chan struct{}, 1)}
+	d.target = target
 	durable := "executor_" + node
 	subject := "nx." + cluster + ".command." + node
 	_, err := stores.JS.AddConsumer(stores.Commands, &nats.ConsumerConfig{Durable: durable, FilterSubject: subject, AckPolicy: nats.AckExplicitPolicy, AckWait: 30 * time.Second, MaxDeliver: 10, MaxAckPending: 32, MaxWaiting: 32, MaxRequestBatch: 32, MaxRequestExpires: 5 * time.Second})
@@ -130,6 +132,10 @@ func (d *dispatcher) Submit(c domain.Command) (domain.Receipt, error) {
 		if err := d.service.ValidateCluster(c); err != nil {
 			return domain.Receipt{}, err
 		}
+		member, targetErr := d.target(c.TargetID)
+		if targetErr != nil {
+			return domain.Receipt{}, targetErr
+		}
 		status, statusErr := d.stores.State.Status()
 		if statusErr != nil {
 			return domain.Receipt{}, unavailable()
@@ -139,6 +145,8 @@ func (d *dispatcher) Submit(c domain.Command) (domain.Receipt, error) {
 		}
 		now := time.Now().UTC()
 		record = commandRecord{SchemaVersion: 1, OwnerNodeID: d.node, State: "resolving", Prepared: domain.PreparedCommand{Command: c, ClusterID: d.cluster, Fingerprint: fingerprint, Kind: c.Type, AdmittedAt: now, ExpiresAt: now.Add(120 * time.Second)}}
+		record.Prepared.TargetEpoch = member.Epoch
+		record.Prepared.CoordinatorID = d.node
 		b, _ := json.Marshal(record)
 		if len(b) > domain.MaxCommandBytes {
 			return domain.Receipt{}, domain.Err("INVALID_PAYLOAD", "Command exceeds the durable record limit.", 422)
@@ -189,6 +197,8 @@ func (d *dispatcher) Submit(c domain.Command) (domain.Receipt, error) {
 			return domain.Receipt{}, err
 		}
 		prepared.AdmittedAt = record.Prepared.AdmittedAt
+		prepared.TargetEpoch = record.Prepared.TargetEpoch
+		prepared.CoordinatorID = record.OwnerNodeID
 		prepared.ExpiresAt = record.Prepared.ExpiresAt
 		record.Prepared = prepared
 		record.State = "queued"
@@ -292,6 +302,13 @@ func (d *dispatcher) ack(msg *nats.Msg) {
 func (d *dispatcher) admitRecord(record commandRecord, revision uint64) error {
 	receipt, err := d.service.AdmitDelivered(record.Prepared)
 	if err == nil {
+		task, taskErr := d.service.Task(receipt.TaskID)
+		if taskErr != nil {
+			return taskErr
+		}
+		if err = d.projectTask(task, time.Now().UTC()); err != nil {
+			return err
+		}
 		record.State = "accepted"
 		record.Receipt = &receipt
 	} else {

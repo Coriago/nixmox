@@ -17,7 +17,7 @@
 {{define "cluster-status"}}<section id="cluster-status" data-membership="{{if .Cluster}}{{.Cluster.Membership}}{{end}}" hx-get="/ui/cluster/status" hx-trigger="refresh" hx-swap="outerHTML" hx-sync="this:replace">
 {{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
 {{if .Cluster}}<p>Membership: {{.Cluster.Membership}}</p>{{if .Cluster.Name}}<h2>{{.Cluster.Name}}</h2>{{end}}
-{{if .Cluster.ClusterID}}<p>Cluster ID: {{.Cluster.ClusterID}}</p><p>Broker: {{.Cluster.BrokerRole}}</p><p>Quorum: {{if .Cluster.Quorum}}available{{else}}unavailable{{end}}</p><p>{{if eq .Cluster.FullMembers 0}}No full members. Deploy or adopt a verified configuration to become a full member.{{else}}Full members: {{.Cluster.FullMembers}}{{end}}</p>{{end}}
+{{if .Cluster.ClusterID}}<p>Cluster ID: {{.Cluster.ClusterID}}</p><p>Broker: {{.Cluster.BrokerRole}}</p><p>Quorum: {{if .Cluster.Quorum.Available}}available{{else}}unavailable{{end}} · {{.Cluster.Quorum.Required}} of {{.Cluster.Quorum.Replicas}} required</p><p>Health: {{.Cluster.Health.Status}}</p><p>{{if eq .Cluster.FullMembers 0}}No full members. Deploy or adopt a verified configuration to become a full member.{{else}}Full members: {{.Cluster.FullMembers}}{{end}}</p>{{end}}
 <p>Freshness: {{.Cluster.Freshness}}</p>{{end}}
 {{if .JoinRequests}}<h2>Join requests</h2><ul>{{range .JoinRequests}}<li><a href="/ui/cluster/requests/{{.ID}}">{{.Name}} · {{.NodeID}}</a> · {{.State}}</li>{{end}}</ul>{{end}}</section>{{end}}
 {{define "join-request"}}<h1>Review join request</h1><p id="stream-state" role="status">Connecting to live updates…</p>

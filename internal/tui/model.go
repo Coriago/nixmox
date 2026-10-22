@@ -373,7 +373,7 @@ func (m *Model) content() {
 			lines = append(lines, "Name: "+*m.cluster.Name)
 		}
 		if m.cluster.ClusterID != nil {
-			lines = append(lines, "ID: "+*m.cluster.ClusterID, "Broker: "+m.cluster.BrokerRole, fmt.Sprintf("Quorum available: %t", m.cluster.Quorum), fmt.Sprintf("Full members: %d", m.cluster.FullMembers))
+			lines = append(lines, "ID: "+*m.cluster.ClusterID, "Broker: "+m.cluster.BrokerRole, fmt.Sprintf("Quorum available: %t (%d of %d required)", m.cluster.Quorum.Available, m.cluster.Quorum.Required, m.cluster.Quorum.Replicas), "Health: "+m.cluster.Health.Status, fmt.Sprintf("Full members: %d", m.cluster.FullMembers))
 		}
 		if m.cluster.Membership == "unjoined" && m.clusterError == "" {
 			lines = append(lines, "c: Create cluster · j: Join cluster")
@@ -398,6 +398,9 @@ func (m *Model) content() {
 	if m.taskFocus && len(m.tasks) > 0 {
 		task := m.tasks[m.selected]
 		lines = []string{"Selected task", presentation.Task(task), fmt.Sprintf("Reviewed version: %d", task.Version)}
+		if result := presentation.TaskResult(task); result != "" {
+			lines = append(lines, "Result", result)
+		}
 		for _, action := range presentation.TaskActions(task) {
 			line := action.Label
 			if !action.Enabled {

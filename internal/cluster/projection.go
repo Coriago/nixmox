@@ -10,52 +10,58 @@ import (
 )
 
 type queryRequest struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+	ID       string          `json:"id"`
+	Kind     string          `json:"kind"`
+	Epoch    int             `json:"membership_epoch"`
+	Payload  json.RawMessage `json:"payload,omitempty"`
+	Deadline time.Time       `json:"deadline"`
 }
 type statusReply struct {
-	Status *domain.ClusterStatus `json:"status,omitempty"`
-	Error  *domain.Error         `json:"error,omitempty"`
+	Status      *domain.ClusterStatus `json:"status,omitempty"`
+	Error       *domain.Error         `json:"error,omitempty"`
+	Receipt     *domain.Receipt       `json:"receipt,omitempty"`
+	ErrorStatus int                   `json:"error_status,omitempty"`
 }
 
-// Queries never mutate state and are carried only on the node's allowed query
-// and reply subjects. A pending leaf cannot subscribe to arbitrary inboxes.
+// Pending gateway mutations enter the normal command service and JetStream;
+// receipt of a Core request never authorizes execution by itself.
 func (m *Manager) startQueries() error {
 	if m.querySubscription != nil || m.stores == nil {
 		return nil
 	}
-	nc, kv, cluster := m.broker.Client, m.stores.State, m.membership.ClusterID
+	nc, cluster := m.broker.Client, m.membership.ClusterID
 	prefix := "nx." + cluster + ".query."
 	sub, err := nc.Subscribe(prefix+"*", func(msg *nats.Msg) {
-		if len(msg.Data) > 4096 {
+		if len(msg.Data) > 64<<10 {
 			return
 		}
 		node := strings.TrimPrefix(msg.Subject, prefix)
 		var request queryRequest
-		if !domain.SafeID.MatchString(node) || domain.StrictJSON(msg.Data, &request) != nil || !domain.SafeID.MatchString(request.ID) || msg.Reply != "nx."+cluster+".reply."+node+"."+request.ID {
+		if !domain.SafeID.MatchString(node) || domain.StrictJSON(msg.Data, &request) != nil || !domain.SafeID.MatchString(request.ID) || time.Now().After(request.Deadline) || msg.Reply != "nx."+cluster+".reply."+node+"."+request.ID {
 			return
 		}
-		entry, err := kv.Get("member." + node)
-		if err != nil {
+		m.mu.RLock()
+		if m.closed {
+			m.mu.RUnlock()
 			return
 		}
-		var member Member
-		if json.Unmarshal(entry.Value(), &member) != nil || member.NodeID != node || (member.State != "pending" && member.State != "full") {
+		select {
+		case m.queryIngress <- struct{}{}:
+		default:
+			m.mu.RUnlock()
 			return
 		}
-		response := statusReply{}
-		if request.Kind == "cluster.status" {
-			status, err := m.Status()
-			if err != nil {
-				response.Error = unavailable()
-			} else {
-				response.Status = &status
+		m.queryWorkers.Add(1)
+		m.mu.RUnlock()
+		go func() {
+			defer m.queryWorkers.Done()
+			defer func() { <-m.queryIngress }()
+			response := m.peerRequest(node, request)
+			data, _ := json.Marshal(response)
+			if len(data) <= 64<<10 {
+				_ = nc.Publish(msg.Reply, data)
 			}
-		} else {
-			response.Error = domain.Err("UNSUPPORTED_QUERY", "This query is not available to the node.", 422)
-		}
-		data, _ := json.Marshal(response)
-		_ = nc.Publish(msg.Reply, data)
+		}()
 	})
 	if err != nil {
 		return err
@@ -68,30 +74,49 @@ func (m *Manager) startQueries() error {
 	return nc.FlushTimeout(time.Second)
 }
 func pendingStatus(nc *nats.Conn, membership Membership) (domain.ClusterStatus, error) {
-	request := queryRequest{ID: domain.NewID("q_"), Kind: "cluster.status"}
-	reply := "nx." + membership.ClusterID + ".reply." + membership.NodeID + "." + request.ID
-	sub, err := nc.SubscribeSync(reply)
-	if err != nil {
-		return domain.ClusterStatus{}, unavailable()
-	}
-	defer sub.Unsubscribe()
-	if err = sub.SetPendingLimits(1, 16<<10); err != nil {
-		return domain.ClusterStatus{}, unavailable()
-	}
-	data, _ := json.Marshal(request)
-	if err = nc.PublishRequest("nx."+membership.ClusterID+".query."+membership.NodeID, reply, data); err != nil {
-		return domain.ClusterStatus{}, unavailable()
-	}
-	msg, err := sub.NextMsg(4 * time.Second)
-	if err != nil {
-		return domain.ClusterStatus{}, unavailable()
-	}
-	var response statusReply
-	if len(msg.Data) > 16<<10 || domain.StrictJSON(msg.Data, &response) != nil || response.Error != nil || response.Status == nil || response.Status.ClusterID == nil || *response.Status.ClusterID != membership.ClusterID {
+	response, err := pendingQuery(nc, membership, queryRequest{Kind: "cluster.status"}, 4*time.Second)
+	if err != nil || response.Status == nil || response.Status.ClusterID == nil || *response.Status.ClusterID != membership.ClusterID {
 		return domain.ClusterStatus{}, unavailable()
 	}
 	status := *response.Status
 	status.Membership = "pending"
 	status.BrokerRole = "leaf"
 	return status, nil
+}
+func pendingQuery(nc *nats.Conn, membership Membership, request queryRequest, timeout time.Duration) (statusReply, error) {
+	request.ID = domain.NewID("q_")
+	request.Epoch = membership.Epoch
+	request.Deadline = time.Now().Add(timeout)
+	reply := "nx." + membership.ClusterID + ".reply." + membership.NodeID + "." + request.ID
+	sub, err := nc.SubscribeSync(reply)
+	if err != nil {
+		return statusReply{}, unavailable()
+	}
+	defer sub.Unsubscribe()
+	if err = sub.SetPendingLimits(1, 64<<10); err != nil {
+		return statusReply{}, unavailable()
+	}
+	data, _ := json.Marshal(request)
+	if len(data) > 64<<10 {
+		return statusReply{}, domain.Err("INVALID_PAYLOAD", "Scoped gateway request exceeds 64 KiB.", 422)
+	}
+	if err = nc.PublishRequest("nx."+membership.ClusterID+".query."+membership.NodeID, reply, data); err != nil {
+		return statusReply{}, unavailable()
+	}
+	msg, err := sub.NextMsg(timeout)
+	if err != nil {
+		return statusReply{}, domain.Err("OUTCOME_UNKNOWN", "Gateway response is unavailable; query the original command ID before retrying.", 503)
+	}
+	var response statusReply
+	if len(msg.Data) > 64<<10 || domain.StrictJSON(msg.Data, &response) != nil {
+		return statusReply{}, unavailable()
+	}
+	if response.Error != nil {
+		if response.ErrorStatus < 400 || response.ErrorStatus > 599 {
+			return statusReply{}, unavailable()
+		}
+		response.Error.Status = response.ErrorStatus
+		return response, response.Error
+	}
+	return response, nil
 }

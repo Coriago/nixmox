@@ -2,6 +2,7 @@ package service
 
 import (
 	"nixmox/internal/domain"
+	"sort"
 	"time"
 )
 
@@ -50,7 +51,24 @@ func (s *Service) ListTasks(f TaskFilter, rawLimit, rawCursor string) (domain.Pa
 		return page, bad
 	}
 	filtered := []domain.Task{}
-	for _, task := range s.Tasks() {
+	tasks := s.Tasks()
+	s.mu.Lock()
+	transport, own := s.clusterTransport, s.identity.NodeID
+	s.mu.Unlock()
+	if reader, ok := transport.(RemoteTaskReader); ok && f.HostID != own {
+		remote, err := reader.RemoteTasks()
+		if err != nil {
+			return page, err
+		}
+		tasks = append(tasks, remote...)
+		sort.Slice(tasks, func(i, j int) bool {
+			if tasks[i].CreatedAt.Equal(tasks[j].CreatedAt) {
+				return tasks[i].ID > tasks[j].ID
+			}
+			return tasks[i].CreatedAt.After(tasks[j].CreatedAt)
+		})
+	}
+	for _, task := range tasks {
 		if (f.HostID != "" && task.TargetID != f.HostID) || (f.Kind != "" && task.Kind != f.Kind) || (f.State != "" && task.State != f.State) || (!since.IsZero() && task.CreatedAt.Before(since)) || (!until.IsZero() && !task.CreatedAt.Before(until)) {
 			continue
 		}

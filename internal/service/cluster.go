@@ -13,6 +13,33 @@ type ClusterTransport interface {
 	Receipt(string) (domain.Receipt, error)
 }
 
+type RemoteTaskReader interface {
+	RemoteTask(string) (domain.Task, error)
+	RemoteTasks() ([]domain.Task, error)
+}
+type RemoteControlPreparer interface {
+	PrepareRemoteControl(domain.Command, string, string) (domain.PreparedCommand, error)
+}
+
+type ExecutionReceipt struct {
+	Receipt     domain.Receipt
+	Fingerprint string
+	ClusterID   string
+	Epoch       int
+}
+
+func (s *Service) ExecutionReceipts() []ExecutionReceipt {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []ExecutionReceipt{}
+	for _, a := range s.admissions {
+		if a.Complete && a.Scope == "cluster" && a.ClusterID != nil {
+			out = append(out, ExecutionReceipt{Receipt: a.Receipt, Fingerprint: a.Fingerprint, ClusterID: *a.ClusterID, Epoch: a.MembershipEpoch})
+		}
+	}
+	return out
+}
+
 func (s *Service) Receipt(id string) (domain.Receipt, error) {
 	s.mu.Lock()
 	a, ok := s.admissions[id]
@@ -48,6 +75,8 @@ func (s *Service) Admit(c domain.Command) (domain.Receipt, error) {
 		if domain.StrictJSON(c.Payload, &p) == nil {
 			if task, ok := s.tasks[p.TaskID]; ok {
 				cluster = task.Scope == "cluster"
+			} else if c.TargetID != s.identity.NodeID {
+				cluster = true
 			}
 		}
 	}
@@ -66,12 +95,11 @@ func (s *Service) AdmitDelivered(prepared domain.PreparedCommand) (domain.Receip
 }
 func (s *Service) ValidateCluster(c domain.Command) error {
 	if c.Type == "task.cancel" || c.Type == "task.retry" {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.identity.ClusterID == nil {
+		identity := s.Identity()
+		if identity.ClusterID == nil {
 			return domain.Err("QUORUM_UNAVAILABLE", "Cluster admission is unavailable.", 503)
 		}
-		_, err := s.prepareClusterControl(c, "", *s.identity.ClusterID)
+		_, err := s.prepareClusterControl(c, "", *identity.ClusterID)
 		return err
 	}
 	op, ok := s.operations[c.Type]
@@ -89,8 +117,6 @@ func (s *Service) PrepareCluster(ctx context.Context, c domain.Command, cluster 
 		return domain.PreparedCommand{}, err
 	}
 	if c.Type == "task.cancel" || c.Type == "task.retry" {
-		s.mu.Lock()
-		defer s.mu.Unlock()
 		return s.prepareClusterControl(c, fingerprint, cluster)
 	}
 	op, ok := s.operations[c.Type]
@@ -102,6 +128,9 @@ func (s *Service) PrepareCluster(ctx context.Context, c domain.Command, cluster 
 	}
 	now := time.Now().UTC()
 	p := domain.PreparedCommand{Command: c, ClusterID: cluster, Fingerprint: fingerprint, Kind: c.Type, Resolved: c.Payload, AdmittedAt: now, ExpiresAt: now.Add(120 * time.Second)}
+	identity := s.Identity()
+	p.CoordinatorID = identity.NodeID
+	p.TargetEpoch = identity.MembershipEpoch
 	if op.Resolve != nil {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -131,12 +160,31 @@ func (s *Service) prepareClusterControl(c domain.Command, fingerprint, cluster s
 	if domain.StrictJSON(c.Payload, &payload) != nil || !domain.SafeID.MatchString(payload.TaskID) {
 		return domain.PreparedCommand{}, domain.Err("INVALID_PAYLOAD", "A task_id is required.", 422)
 	}
+	s.mu.Lock()
 	t, ok := s.tasks[payload.TaskID]
 	if !ok {
+		transport := s.clusterTransport
+		s.mu.Unlock()
+		if remote, ok := transport.(RemoteControlPreparer); ok {
+			return remote.PrepareRemoteControl(c, fingerprint, cluster)
+		}
 		return domain.PreparedCommand{}, domain.Err("NOT_FOUND", "Task not found.", 404)
 	}
+	identity, a, safeRetry := s.identity, s.admissions[t.CommandID], s.operations[t.Kind].SafeRetry
+	s.mu.Unlock()
+	if t.MembershipEpoch != identity.MembershipEpoch {
+		return domain.PreparedCommand{}, domain.Err("MEMBERSHIP_CHANGED", "Task belongs to an inactive membership epoch.", 409)
+	}
+	original := domain.PreparedCommand{Resolved: a.Resolved, Exclusions: a.Exclusions, TargetEpoch: a.MembershipEpoch}
+	return PrepareTaskControl(c, fingerprint, cluster, identity.NodeID, t, original, safeRetry)
+}
+
+func PrepareTaskControl(c domain.Command, fingerprint, cluster, coordinator string, t domain.Task, original domain.PreparedCommand, safeRetry bool) (domain.PreparedCommand, error) {
 	if t.Scope != "cluster" || c.TargetID != t.TargetID || t.ClusterID == nil || *t.ClusterID != cluster {
 		return domain.PreparedCommand{}, domain.Err("INVALID_COMMAND", "Task control scope or target differs from its owner.", 422)
+	}
+	if t.MembershipEpoch != original.TargetEpoch {
+		return domain.PreparedCommand{}, domain.Err("MEMBERSHIP_CHANGED", "Task belongs to an inactive membership epoch.", 409)
 	}
 	if len(c.ExpectedVersions) != 1 || c.ExpectedVersions["task:"+t.ID] != t.Version {
 		return domain.PreparedCommand{}, domain.Err("VERSION_CONFLICT", "Task changed after review.", 409)
@@ -148,11 +196,10 @@ func (s *Service) prepareClusterControl(c domain.Command, fingerprint, cluster s
 		if !t.Terminal() {
 			return domain.PreparedCommand{}, domain.Err("INVALID_STATE", "Only terminal tasks can be retried.", 409)
 		}
-		if !s.operations[t.Kind].SafeRetry {
+		if !safeRetry {
 			return domain.PreparedCommand{}, domain.Err("CONFIRMATION_REQUIRED", "This operation requires a fresh review.", 409)
 		}
 	}
-	a := s.admissions[t.CommandID]
 	now := time.Now().UTC()
-	return domain.PreparedCommand{Command: c, ClusterID: cluster, Fingerprint: fingerprint, Kind: t.Kind, Resolved: a.Resolved, Exclusions: append([]string(nil), a.Exclusions...), AdmittedAt: now, ExpiresAt: now.Add(120 * time.Second)}, nil
+	return domain.PreparedCommand{Command: c, ClusterID: cluster, CoordinatorID: coordinator, TargetEpoch: t.MembershipEpoch, Fingerprint: fingerprint, Kind: t.Kind, Resolved: original.Resolved, Exclusions: append([]string(nil), original.Exclusions...), AdmittedAt: now, ExpiresAt: now.Add(120 * time.Second)}, nil
 }

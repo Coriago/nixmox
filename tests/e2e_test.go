@@ -162,7 +162,7 @@ func TestCompiledDaemonRestartAndPortConflict(t *testing.T) {
 	stop(true)
 	start()
 	status, err := c.Cluster(ctx)
-	if err != nil || status.ClusterID == nil || *status.ClusterID != *clusterIdentity.ClusterID || status.Membership != "pending" || !status.Quorum {
+	if err != nil || status.ClusterID == nil || *status.ClusterID != *clusterIdentity.ClusterID || status.Membership != "pending" || !status.Quorum.Available {
 		t.Fatal("cluster restart", status, err)
 	}
 	cli = exec.CommandContext(ctx, binary, "--endpoint", endpoint, "cluster", "create", "homelab", "--wait", "--json", "--command-id", "cmd_genesis_e2e")

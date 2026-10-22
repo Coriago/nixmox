@@ -3,8 +3,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -19,19 +17,21 @@ type Inspector interface {
 	Inspect(context.Context, string) (domain.NetworkStatus, error)
 }
 type admission struct {
-	SchemaVersion int             `json:"schema_version"`
-	Fingerprint   string          `json:"fingerprint"`
-	Command       domain.Command  `json:"command"`
-	Receipt       domain.Receipt  `json:"receipt"`
-	CreatedAt     time.Time       `json:"created_at"`
-	Complete      bool            `json:"complete"`
-	ParentID      *string         `json:"parent_id,omitempty"`
-	Kind          string          `json:"kind"`
-	Scope         string          `json:"scope"`
-	Resolved      json.RawMessage `json:"resolved"`
-	Reconcile     bool            `json:"-"`
-	Exclusions    []string        `json:"exclusions,omitempty"`
-	ClusterID     *string         `json:"cluster_id,omitempty"`
+	SchemaVersion   int             `json:"schema_version"`
+	Fingerprint     string          `json:"fingerprint"`
+	Command         domain.Command  `json:"command"`
+	Receipt         domain.Receipt  `json:"receipt"`
+	CreatedAt       time.Time       `json:"created_at"`
+	Complete        bool            `json:"complete"`
+	ParentID        *string         `json:"parent_id,omitempty"`
+	Kind            string          `json:"kind"`
+	Scope           string          `json:"scope"`
+	Resolved        json.RawMessage `json:"resolved"`
+	Reconcile       bool            `json:"-"`
+	Exclusions      []string        `json:"exclusions,omitempty"`
+	ClusterID       *string         `json:"cluster_id,omitempty"`
+	MembershipEpoch int             `json:"membership_epoch,omitempty"`
+	CoordinatorID   string          `json:"coordinator_id,omitempty"`
 }
 type Service struct {
 	mu               sync.Mutex
@@ -82,8 +82,7 @@ func Open(store *storage.Store, inspector Inspector, operations ...Operation) (*
 func (s *Service) Close()                    { s.cancel(); <-s.done }
 func (s *Service) Identity() domain.Identity { s.mu.Lock(); defer s.mu.Unlock(); return s.identity }
 func taskID(commandID string) string {
-	h := sha256.Sum256([]byte(commandID))
-	return "task_" + hex.EncodeToString(h[:])
+	return domain.CommandTaskID(commandID)
 }
 func (s *Service) persistTask(t domain.Task) error {
 	if err := s.store.Write("jobs/"+t.ID+".json", t); err != nil {
@@ -171,6 +170,21 @@ func (s *Service) recover() error {
 		if _, ok := s.admissions[t.CommandID]; !ok {
 			return errors.New("task has no admission record")
 		}
+		if !t.Terminal() && t.Scope == "cluster" && (s.identity.ClusterID == nil || *t.ClusterID != *s.identity.ClusterID || t.MembershipEpoch != s.identity.MembershipEpoch) && (t.State != "blocked" || t.Phase != "membership_fenced") {
+			if t.State == "cancelling" || t.State == "blocked" {
+				if err := t.Transition("reconciling", "membership_fenced"); err != nil {
+					return err
+				}
+			}
+			if err := t.Transition("blocked", "membership_fenced"); err != nil {
+				return err
+			}
+			t.Cancellation.Allowed = false
+			t.Error = domain.Err("MEMBERSHIP_CHANGED", "This task belongs to an inactive membership; its effects require reconciliation.", 409)
+			if err := s.persistTask(t); err != nil {
+				return err
+			}
+		}
 		if t.State == "running" {
 			if err := t.Transition("reconciling", t.Phase); err != nil {
 				return err
@@ -225,6 +239,9 @@ func (s *Service) admit(c domain.Command, delivered *domain.PreparedCommand) (do
 		if delivered.Fingerprint != fingerprint || s.identity.ClusterID == nil || *s.identity.ClusterID != delivered.ClusterID {
 			return domain.Receipt{}, domain.Err("INVALID_COMMAND", "Invalid authenticated cluster command context.", 422)
 		}
+		if delivered.TargetEpoch != s.identity.MembershipEpoch || !domain.SafeID.MatchString(delivered.CoordinatorID) {
+			return domain.Receipt{}, domain.Err("MEMBERSHIP_CHANGED", "Delivery belongs to another membership epoch.", 409)
+		}
 		if time.Now().After(delivered.ExpiresAt) {
 			return domain.Receipt{}, domain.Err("COMMAND_EXPIRED", "Command expired before admission.", 409)
 		}
@@ -232,6 +249,8 @@ func (s *Service) admit(c domain.Command, delivered *domain.PreparedCommand) (do
 	a := admission{SchemaVersion: 1, Kind: c.Type, Scope: "node_local", Resolved: c.Payload, Fingerprint: fingerprint, Command: c, CreatedAt: time.Now().UTC(), Receipt: domain.Receipt{CommandID: c.ID, Admission: "accepted", TaskID: taskID(c.ID)}}
 	if delivered != nil {
 		a.ClusterID = &delivered.ClusterID
+		a.MembershipEpoch = delivered.TargetEpoch
+		a.CoordinatorID = delivered.CoordinatorID
 	}
 	switch c.Type {
 	case "task.cancel", "task.retry":
@@ -247,6 +266,9 @@ func (s *Service) admit(c domain.Command, delivered *domain.PreparedCommand) (do
 		}
 		if (delivered != nil && (t.Scope != "cluster" || delivered.Kind != t.Kind)) || (delivered == nil && t.Scope == "cluster") {
 			return domain.Receipt{}, domain.Err("QUORUM_UNAVAILABLE", "Task controls must use their recorded admission scope.", 503)
+		}
+		if delivered != nil && t.MembershipEpoch != s.identity.MembershipEpoch {
+			return domain.Receipt{}, domain.Err("MEMBERSHIP_CHANGED", "Task belongs to an inactive membership epoch.", 409)
 		}
 		if len(c.ExpectedVersions) != 1 || c.ExpectedVersions["task:"+t.ID] != t.Version {
 			return domain.Receipt{}, domain.Err("VERSION_CONFLICT", "Task changed after this review.", 409)
@@ -369,6 +391,10 @@ func (s *Service) finishAdmission(a admission) error {
 	} else if _, ok := s.tasks[a.Receipt.TaskID]; !ok {
 		t := domain.Task{SchemaVersion: 1, ID: a.Receipt.TaskID, Version: 1, CommandID: a.Command.ID, Kind: a.Kind, State: "queued", Phase: "queued", Scope: a.Scope, ClusterID: a.ClusterID, OwnerNodeID: s.identity.NodeID, CoordinatorID: s.identity.NodeID, TargetID: a.Command.TargetID, ParentID: a.ParentID, CreatedAt: a.CreatedAt, UpdatedAt: a.CreatedAt, Cancellation: domain.Cancellation{Allowed: true}, Effects: map[string]bool{}}
 		t.Log.NodeID = s.identity.NodeID
+		if a.Scope == "cluster" {
+			t.CoordinatorID = a.CoordinatorID
+			t.MembershipEpoch = a.MembershipEpoch
+		}
 		if err := s.persistTask(t); err != nil {
 			return err
 		}
@@ -512,9 +538,22 @@ func (s *Service) LocalReceipt(id string) (domain.Receipt, error) {
 	return a.Receipt, nil
 }
 func (s *Service) Task(id string) (domain.Task, error) {
+	t, err := s.LocalTask(id)
+	if err == nil {
+		return t, nil
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	transport := s.clusterTransport
+	s.mu.Unlock()
+	if reader, ok := transport.(RemoteTaskReader); ok {
+		return reader.RemoteTask(id)
+	}
+	return t, err
+}
+func (s *Service) LocalTask(id string) (domain.Task, error) {
+	s.mu.Lock()
 	t, ok := s.tasks[id]
+	s.mu.Unlock()
 	if !ok {
 		return t, domain.Err("NOT_FOUND", "Task not found.", 404)
 	}

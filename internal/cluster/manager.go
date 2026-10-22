@@ -39,6 +39,7 @@ type Membership struct {
 	JoinRequestID           string `json:"join_request_id,omitempty"`
 	JoinCommandID           string `json:"join_command_id,omitempty"`
 	IssuerBrokerCertificate string `json:"issuer_broker_certificate,omitempty"`
+	IssuerEpoch             int    `json:"issuer_epoch,omitempty"`
 	LeafURL                 string `json:"leaf_url,omitempty"`
 }
 type Genesis struct {
@@ -72,6 +73,11 @@ type Manager struct {
 	querySubscription *nats.Subscription
 	querySlots        chan struct{}
 	closed            bool
+	transportMu       sync.Mutex
+	agent             *executorAgent
+	hub               *deliveryHub
+	queryWorkers      sync.WaitGroup
+	queryIngress      chan struct{}
 }
 
 func Open(st *storage.Store, c config.Config) (*Manager, error) {
@@ -83,10 +89,10 @@ func Open(st *storage.Store, c config.Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manager{store: st, config: c, identity: id, keys: keys, querySlots: make(chan struct{}, 8)}
+	m := &Manager{store: st, config: c, identity: id, keys: keys, querySlots: make(chan struct{}, 8), queryIngress: make(chan struct{}, 8)}
 	if id.ClusterID != nil {
 		var membership Membership
-		if st.Read("trust/membership.json", &membership) != nil || membership.ClusterID != *id.ClusterID || membership.NodeID != id.NodeID {
+		if st.Read("trust/membership.json", &membership) != nil || membership.ClusterID != *id.ClusterID || membership.NodeID != id.NodeID || membership.Epoch != id.MembershipEpoch || id.ClusterFingerprint == nil {
 			return nil, errors.New("cluster trust unavailable or inconsistent")
 		}
 		m.membership = &membership
@@ -97,17 +103,29 @@ func Open(st *storage.Store, c config.Config) (*Manager, error) {
 	return m, nil
 }
 func (m *Manager) Close() {
+	m.transportMu.Lock()
+	defer m.transportMu.Unlock()
 	m.mu.Lock()
 	d, b, q := m.dispatcher, m.broker, m.querySubscription
+	agent, hub := m.agent, m.hub
+	m.agent = nil
+	m.hub = nil
 	m.dispatcher = nil
 	m.broker = nil
 	m.stores = nil
 	m.querySubscription = nil
 	m.closed = true
 	m.mu.Unlock()
+	if agent != nil {
+		agent.Close()
+	}
+	if hub != nil {
+		hub.Close()
+	}
 	if d != nil {
 		d.Close()
 	}
+	m.queryWorkers.Wait()
 	if q != nil {
 		q.Unsubscribe()
 	}
@@ -123,33 +141,96 @@ func (m *Manager) Attach(s *service.Service) error {
 	return m.activateDispatcher()
 }
 func (m *Manager) activateDispatcher() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.transportMu.Lock()
+	defer m.transportMu.Unlock()
+	m.mu.RLock()
 	if m.closed {
+		m.mu.RUnlock()
 		return unavailable()
 	}
-	if m.service == nil || m.stores == nil || m.identity.ClusterID == nil || m.dispatcher != nil {
+	if m.service == nil || m.membership == nil || m.identity.ClusterID == nil || m.agent != nil {
+		m.mu.RUnlock()
 		return nil
 	}
-	d, err := newDispatcher(m.stores, m.service, *m.identity.ClusterID, m.identity.NodeID)
+	s, stores, b, membership := m.service, m.stores, m.broker, *m.membership
+	m.mu.RUnlock()
+	var d *dispatcher
+	var hub *deliveryHub
+	var err error
+	if stores != nil {
+		d, err = newDispatcher(stores, s, membership.ClusterID, membership.NodeID, m.member)
+		if err != nil {
+			return err
+		}
+		hub, err = newDeliveryHub(d, b.Client)
+		if err != nil {
+			d.Close()
+			return err
+		}
+	}
+	agent, err := newExecutorAgent(b.Client, s, membership)
 	if err != nil {
+		if hub != nil {
+			hub.Close()
+		}
+		if d != nil {
+			d.Close()
+		}
 		return err
 	}
+	m.mu.Lock()
 	m.dispatcher = d
-	return m.startQueries()
+	m.hub = hub
+	m.agent = agent
+	err = m.startQueries()
+	m.mu.Unlock()
+	return err
 }
 func (m *Manager) Submit(c domain.Command) (domain.Receipt, error) {
 	m.mu.RLock()
 	d := m.dispatcher
-	own := m.identity.NodeID
+	own, joined := m.identity.NodeID, m.identity.ClusterID != nil
 	m.mu.RUnlock()
 	if d == nil {
-		return domain.Receipt{}, unavailable()
-	}
-	if c.TargetID != own {
-		return domain.Receipt{}, domain.Err("TARGET_UNREACHABLE", "Target is not an admitted executor.", 503)
+		if !joined {
+			return domain.Receipt{}, unavailable()
+		}
+		if !pendingCommandAllowed(c, own) {
+			return domain.Receipt{}, domain.Err("FORBIDDEN", "This mutation requires a full cluster gateway.", 403)
+		}
+		return m.pendingRequest("command.submit", c)
 	}
 	return d.Submit(c)
+}
+
+func (m *Manager) member(node string) (Member, error) {
+	m.mu.RLock()
+	if m.closed || m.stores == nil || m.membership == nil {
+		m.mu.RUnlock()
+		return Member{}, unavailable()
+	}
+	if node == m.identity.NodeID {
+		member := Member{SchemaVersion: 1, NodeID: node, State: "pending", Epoch: m.membership.Epoch, BrokerRole: "provisional"}
+		m.mu.RUnlock()
+		return member, nil
+	}
+	kv := m.stores.State
+	m.mu.RUnlock()
+	if !domain.SafeID.MatchString(node) {
+		return Member{}, domain.Err("INVALID_COMMAND", "Invalid target identity.", 422)
+	}
+	entry, err := kv.Get("member." + node)
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return Member{}, domain.Err("TARGET_UNREACHABLE", "Target is not an admitted executor.", 503)
+	}
+	if err != nil {
+		return Member{}, unavailable()
+	}
+	var member Member
+	if domain.StrictJSON(entry.Value(), &member) != nil || member.NodeID != node || (member.State != "pending" && member.State != "full") {
+		return Member{}, domain.Err("MEMBERSHIP_CHANGED", "Target has no active execution membership.", 409)
+	}
+	return member, nil
 }
 func (m *Manager) Receipt(id string) (domain.Receipt, error) {
 	m.mu.RLock()
@@ -160,7 +241,7 @@ func (m *Manager) Receipt(id string) (domain.Receipt, error) {
 		if !joined {
 			return domain.Receipt{}, domain.Err("NOT_FOUND", "Command not found.", 404)
 		}
-		return domain.Receipt{}, unavailable()
+		return m.pendingRequest("command.receipt", map[string]string{"command_id": id})
 	}
 	return d.Receipt(id)
 }
@@ -169,6 +250,11 @@ func (m *Manager) Certificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	defer m.mu.RUnlock()
 	pair := m.keys.Daemon
 	return &pair, nil
+}
+func (m *Manager) BrokerReady() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return !m.closed && m.broker != nil && m.broker.Server.Running() && m.broker.Client.IsConnected()
 }
 func (m *Manager) TLS() *tls.Config {
 	m.mu.RLock()
@@ -200,6 +286,14 @@ func (m *Manager) startBroker() error {
 		}
 		c.ClusterID = membership.ClusterID
 		c.Roots = pki.Pool(ca)
+		for role, certificate := range map[string]*x509.Certificate{"daemon": m.keys.Daemon.Leaf, "broker": m.keys.Broker.Leaf} {
+			if !pki.Bound(certificate, membership.ClusterID, m.identity.NodeID, role, membership.Epoch) {
+				return errors.New("membership certificate binding mismatch")
+			}
+			if _, err := certificate.Verify(x509.VerifyOptions{Roots: c.Roots, DNSName: role + ".nixmox"}); err != nil {
+				return errors.New("membership certificate is unavailable or expired")
+			}
+		}
 		if membership.Provisional && membership.IssuerNodeID == m.identity.NodeID {
 			c.ControlPlane = true
 			c.Provisional = true
@@ -209,6 +303,12 @@ func (m *Manager) startBroker() error {
 			remote, urlErr := url.Parse(membership.LeafURL)
 			if membership.Provisional || !domain.SafeID.MatchString(membership.JoinRequestID) || err != nil || urlErr != nil || remote.Scheme != "tls" || !validAddress(remote.Host) || remote.User != nil || remote.Path != "" || remote.RawQuery != "" || remote.Fragment != "" {
 				return errors.New("invalid pending membership")
+			}
+			if !pki.Bound(peer, membership.ClusterID, membership.IssuerNodeID, "broker", membership.IssuerEpoch) {
+				return errors.New("issuer broker binding mismatch")
+			}
+			if _, err := peer.Verify(x509.VerifyOptions{Roots: c.Roots, DNSName: "broker.nixmox"}); err != nil {
+				return errors.New("issuer broker certificate unavailable")
 			}
 			c.FullBrokers = map[string]bool{pki.Fingerprint(peer.PublicKey): true}
 			c.RemoteLeaf = remote
@@ -250,7 +350,7 @@ func (m *Manager) Status() (domain.ClusterStatus, error) {
 	defer m.mu.RUnlock()
 	now := time.Now().UTC()
 	if m.membership == nil {
-		return domain.ClusterStatus{Membership: "unjoined", ObservedAt: now, Freshness: "live", BrokerRole: "standalone"}, nil
+		return domain.ClusterStatus{Membership: "unjoined", ObservedAt: now, Freshness: "live", BrokerRole: "standalone", Health: domain.Health{Status: "unknown", Reasons: []domain.HealthReason{}}}, nil
 	}
 	if m.stores == nil {
 		return domain.ClusterStatus{}, unavailable()
@@ -266,7 +366,7 @@ func (m *Manager) Status() (domain.ClusterStatus, error) {
 	if json.Unmarshal(entry.Value(), &genesis) != nil {
 		return domain.ClusterStatus{}, unavailable()
 	}
-	return domain.ClusterStatus{ClusterID: &genesis.ID, Name: &genesis.Name, Membership: "pending", ObservedAt: now, Freshness: "live", Quorum: true, BrokerRole: "provisional", IssuerNodeID: &genesis.IssuerNodeID}, nil
+	return domain.ClusterStatus{ClusterID: &genesis.ID, Name: &genesis.Name, Membership: "pending", ObservedAt: now, Freshness: "live", Quorum: domain.Quorum{Available: true, Replicas: genesis.Replicas, Required: genesis.Replicas/2 + 1}, Health: domain.Health{Status: "healthy", ObservedAt: &now, Reasons: []domain.HealthReason{}}, BrokerRole: "provisional", IssuerNodeID: &genesis.IssuerNodeID}, nil
 }
 func unavailable() *domain.Error {
 	return domain.Err("QUORUM_UNAVAILABLE", "Authenticated cluster quorum is unavailable.", 503)

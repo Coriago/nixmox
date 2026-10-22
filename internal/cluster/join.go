@@ -188,6 +188,9 @@ func (m *Manager) join(ctx context.Context, e *service.Execution) (any, error) {
 	if err = e.RefreshIdentity(); err != nil {
 		return nil, err
 	}
+	if err = m.activateDispatcher(); err != nil {
+		return nil, err
+	}
 	return map[string]any{"cluster_id": cp.Issued.ClusterID, "request_id": pinned.Request.ID, "membership": "pending", "broker_role": "leaf"}, nil
 }
 
@@ -268,6 +271,9 @@ func (m *Manager) installMembership(i domain.Issuance, pinned resolvedJoin, comm
 	if m.identity.ClusterID != nil && (*m.identity.ClusterID != i.ClusterID || m.identity.MembershipEpoch != i.Epoch) {
 		return domain.Err("IDENTITY_CONFLICT", "Membership epoch changed during enrollment.", 409)
 	}
+	if m.identity.ClusterID != nil {
+		return nil
+	}
 	// Prefer the issuer's reachable machine address when it advertises a leaf
 	// endpoint on that host. Loopback endpoints are only suitable for local peers.
 	host, _, _ := net.SplitHostPort(pinned.Address)
@@ -284,7 +290,7 @@ func (m *Manager) installMembership(i domain.Issuance, pinned resolvedJoin, comm
 		}
 	}
 	leafURL := (&url.URL{Scheme: "tls", Host: endpoint}).String()
-	membership := Membership{SchemaVersion: 1, ClusterID: i.ClusterID, Name: i.ClusterName, NodeID: i.NodeID, IssuerNodeID: i.IssuerNodeID, Epoch: i.Epoch, Replicas: 1, JoinRequestID: i.RequestID, JoinCommandID: commandID, CA: i.CA, DaemonCertificate: i.DaemonCertificate, BrokerCertificate: i.BrokerCertificate, IssuerBrokerCertificate: i.IssuerBrokerCertificate, LeafURL: leafURL}
+	membership := Membership{SchemaVersion: 1, ClusterID: i.ClusterID, Name: i.ClusterName, NodeID: i.NodeID, IssuerNodeID: i.IssuerNodeID, IssuerEpoch: i.IssuerEpoch, Epoch: i.Epoch, Replicas: 1, JoinRequestID: i.RequestID, JoinCommandID: commandID, CA: i.CA, DaemonCertificate: i.DaemonCertificate, BrokerCertificate: i.BrokerCertificate, IssuerBrokerCertificate: i.IssuerBrokerCertificate, LeafURL: leafURL}
 	if err = m.prepareTrustDirectory(); err != nil {
 		return err
 	}

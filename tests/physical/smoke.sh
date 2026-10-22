@@ -92,6 +92,13 @@ grep -q '"state": "succeeded"' "$work/joined.json"
 grep -q '"broker_role": "leaf"' "$work/cluster.json"
 grep -q '"membership": "pending"' "$work/cluster.json"
 test ! -e "$work/joiner/pki/issuer/key.pem"
+"$binary" --endpoint http://127.0.0.1:64320 identity show --json > "$work/joiner-identity.json"
+node_id=$(sed -n 's/^ *"node_id": "\(n_[a-z0-9]*\)",$/\1/p' "$work/joiner-identity.json")
+[[ $node_id =~ ^n_[a-f0-9]+$ ]]
+timeout 45 "$binary" --endpoint http://127.0.0.1:64310 hosts refresh "$node_id" --command-id cmd_physical_refresh --wait --json > "$work/refreshed.json"
+grep -q '"state": "succeeded"' "$work/refreshed.json"
+grep -q '"name": "heliosmac"' "$work/refreshed.json"
+grep -q '"environment": "bootstrap"' "$work/refreshed.json"
 systemctl is-active --quiet NetworkManager sshd
-printf '%s\n' 'PASS: physical Wi-Fi inspection, private keys, crash recovery, deduplication, approval and pending-leaf enrollment'
+printf '%s\n' 'PASS: Wi-Fi inspection, private keys, crash recovery, deduplication, enrollment and durable remote host refresh'
 REMOTE
