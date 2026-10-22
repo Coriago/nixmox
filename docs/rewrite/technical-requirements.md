@@ -281,6 +281,7 @@ Physical boot/media claims require disposable-device evidence; VMs alone are ins
 | Reads | Pagination/filter bounds, revision-pinned catalogs/files, log gaps/per-build logs, download expiry and unavailable owners |
 | Admission/recovery | Interrupt every admission boundary; retry resolves the same task; restart queued/running/cancelling work; uncertain effects reconcile without destructive replay |
 | Local scope/quorum | Network/discovery/join intent survive restart without quorum; cluster mutations block; stale reads stay labeled; no fallback or lease-only takeover |
+| Cluster stress | Three-node concurrent command/artifact load with repeated broker restarts, leader loss, and network partition/heal; majority continues, minority rejects durable mutations; recovery preserves acknowledged data and receipt identity without duplicate effects; bounded queues/memory; record workload, duration, and results |
 | Enrollment | Create with no full members; approve/reject/expire and cluster Add; conflicting keys/clusters; promotion, removal, fresh rejoin, authenticated removal notices |
 | Trust/secrets | Deny anonymous broker access, unapproved nodes, pending route peers, and unauthorized leaf subjects; rotation/removal reconcile grants; preserve issuer; no secrets in Git, commands, logs, or diagnostics |
 | Transport | HTTP console/secret submission without certificates; machine-only routes absent there; managed backend TLS; custom ports, firewall, reservations, occupied listeners |
