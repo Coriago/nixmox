@@ -110,6 +110,17 @@ describe how to find a configuration; they do not make Nixmox depend on flake-pa
 `nixmox configurations list --repository lab` and the browser/TUI configuration
 picker use the same catalog, with the inspected commit displayed.
 
+`configurations list` lists across repositories; `--repository` filters it.
+Each configuration defaults to its tracked ref; names found only in the upstream
+catalog use the repository's accepted upstream head. Reads never fetch implicitly.
+`--ref` or `--commit` selects another revision and requires `--repository`; they
+are mutually exclusive. HTTP uses `repository_id`, `ref_id`, and `commit` with the
+same rule. Return `inspected_commit` per item and bind pagination to those revisions.
+Templates use `/repositories/{id}/templates` with optional `ref_id` or `commit`,
+defaulting to the accepted upstream head. CLI `configurations templates <repository>`
+accepts the corresponding `--ref`/`--commit`. Missing cached source is an explicit
+error, not a substituted revision.
+
 ## Draft and configuration objects
 
 ```json
@@ -156,8 +167,9 @@ nixmox repositories import lab --url https://github.com/example/nixos-config.git
 nixmox configurations templates lab
 nixmox configurations generate lab --set Name=cedar --set Username=admin --wait
 nixmox configurations draft show draft_01 --diff
+nixmox configurations draft edit draft_01 --set Username=operator --expected-version 2 --wait
 nixmox configurations draft validate draft_01 --wait
-nixmox configurations draft commit draft_01 --expected-version 2 --wait
+nixmox configurations draft commit draft_01 --expected-version 3 --wait
 ```
 
 Generation returns `draft_01`; commit returns configuration, branch, commit, and
@@ -165,17 +177,35 @@ artifact IDs. Edits to an already tracked upstream configuration create a change
 branch only when committed changes exist. Never create one branch for every host.
 The example automatically selects the sole configuration template, `server`.
 With multiple choices, add `--template server` for noninteractive use.
+Generation accepts `--ref` or `--commit` (mutually exclusive); default to the
+repository's accepted upstream head. Resolve and persist `base_commit` before
+rendering. API callers may supply `ref_id` or `base_commit`; omission uses that
+same default. No implicit fetch occurs. Form values use defaults, then explicit
+`--set` overrides; interactive clients prompt for missing required values,
+noninteractive clients return field validation errors.
 
 | Operation | Command type / payload |
 | --- | --- |
-| Generate | `configuration.generate` / repository_id, optional template_id, base_commit, values |
-| Edit draft | `configuration.draft.edit` / draft_id, values; expected draft version |
+| Generate | `configuration.generate` / repository_id, values; optional template_id and mutually exclusive ref_id/base_commit |
+| Edit draft | `configuration.draft.edit` / draft_id, values (typed field patch); expected draft version |
 | Validate | `configuration.validate` / draft_id or pinned source |
 | Commit | `configuration.commit` / draft_id; expected draft and repository versions |
 
 Reads: `/repositories/{id}/templates`, `/drafts/{id}`, `/drafts/{id}/diff`,
 `/configurations/{id}`. Committing hands file changes to GitOps; it does not build,
 install, update secrets, or publish.
+
+Draft detail/diff return the reviewed `expected_versions` for draft and repository;
+commit copies that map and checks `--expected-version` against its draft entry.
+An intervening repository edit requires explicit re-render/review, never automatic
+substitution of its new version. Browser/TUI form edits use the same field-patch
+operation and invalidate validation. Rebase drafts share these read routes:
+`GET /api/v1/drafts/{id}/files` lists `{path, bytes, sha256}` and
+`GET /api/v1/drafts/{id}/files/content?path=<relative-path>` streams one file at the
+optional `version` (defaults to current). Reject unsafe paths; file-list pages and
+file responses report the exact draft version so clients can pin subsequent reads.
+File entries are manifest rows, ordered by path instead of resource ID; use common
+cursor/limit bounds with the requested draft version pinned for the whole listing.
 
 ## Browser and TUI
 

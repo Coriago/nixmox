@@ -115,8 +115,9 @@ show that revision throughout execution. A failed fetch is an error, not permiss
 to silently deploy a cached upstream revision. Later Git changes do not retarget
 the task. Missing configuration bindings direct the user to configuration selection.
 
-Omitting `candidate_id` selects the host's latest binding. Supplying it uses that
-exact built candidate and skips building; combining it with `builder_id` is invalid.
+Omitting both `candidate_id` and `source` selects the host's latest binding. Supplying a candidate uses that
+exact built candidate and skips building; combining it with `builder_id` or a
+source override is invalid.
 `auto_approve` defaults to false; `--yes`
 sets it to true for this invocation only. It approves deployment of the pinned
 candidate to this target in the selected mode, not future Git changes, conflict
@@ -169,13 +170,26 @@ the candidate or observed target generation changes.
 
 | Command type | Payload |
 | --- | --- |
-| deployment.preview | host_id, source selector |
-| deployment.build | host_id, source selector, builder_id |
+| deployment.preview | host_id, optional source selector; expected host version |
+| deployment.build | host_id, optional source selector, optional builder_id; expected host version |
 | deployment.diff | host_id, candidate_id, optional baseline_generation_id |
-| deployment.apply | optional candidate_id (otherwise latest binding), optional builder_id for builds, mode (default switch), auto_approve (default false); target_id on envelope, expected host version |
+| deployment.apply | optional source selector or candidate_id, optional builder_id for builds, mode (default switch), auto_approve (default false); target_id on envelope, expected host version |
 | deployment.approve | task_id, diff_id, diff_version; resumes the original task after checking its approval evidence |
-| deployment.rollback | generation_id, mode; target_id, expected host version |
+| deployment.rollback | generation_id, mode (default switch); target_id, expected host version |
 | host.reboot | host_id, confirm_host |
+
+Preview/build/apply share `source: {repository_id?, configuration?, ref_id?, commit?}`.
+CLI `--repository`, `--configuration`, `--ref`, and `--commit` populate those fields;
+ref and commit are mutually exclusive. Omitted fields use the host binding only
+within the same repository/configuration. Switching repository requires an explicit
+configuration; switching configuration defaults to that configuration's tracked
+ref, never the old host ref. No usable binding means required selection, not a
+guess. Resolve the selector once using Apply's latest/fetch rules; explicit commits
+remain pinned. Overrides do not reassign the host.
+`deploy preview <host>` and `deploy build <host>` therefore need no source flags
+when the host is bound. Build uses Apply's automatic builder rule unless overridden.
+Preview performs no build and has no builder flag. Rollback defaults to `switch`;
+`--mode boot` explicitly stages it for reboot.
 
 Read `/candidates/{id}`, `/deployments/{id}`, `/hosts/{id}/generations`.
 The service resolves a selector to a commit before task admission. Unknown source,
@@ -284,6 +298,9 @@ nixmox deploy diff show diff_01 --json
 
 `GET /api/v1/diffs/{id}` returns the summary and first page;
 `GET /api/v1/diffs/{id}/changes?kind=version_changed&cursor=...` reads further rows.
+Use common `cursor`/`limit` pagination, optional `kind`, and `q` for case-insensitive
+literal matching against package name, version, or store path. Filters affect rows,
+not the complete summary. Order by stable change ID within the immutable comparison.
 Candidate builds compute the default comparison once target/candidate metadata is
 available; `deployment.diff` refreshes or selects a different baseline without
 rebuilding an already available candidate.
@@ -300,8 +317,9 @@ Recheck the target output before activation. If it differs from the reviewed
 baseline, mark the diff stale and recompute under target exclusion. Manual approval
 must release target exclusion and return to review; auto-approval may continue
 with the new recorded diff only
-for the same pinned candidate, target, and mode. Explicit version preconditions
-still fail on conflict. An unavailable comparison blocks activation in either mode.
+for the same pinned candidate, target, and mode. Admission checks the expected host
+version; execution rechecks the reviewed binding and baseline, not unrelated host
+health/inventory versions. An unavailable comparison blocks activation in either mode.
 Changes in outputs/versions invalidate
 evidence even when a source branch has the same name. Package equality does not
 prove identical generated configuration, service behavior, or activation effects.
@@ -496,24 +514,39 @@ user through separate tools. `apply --yes` cannot approve a fresh installation.
 
 ```sh
 # Enter the retained/prepared installer through a normal reboot; stop there.
-nixmox hosts reboot cedar --into installer --confirm-host cedar --wait
+nixmox hosts reboot cedar --into installer --wait
 # Guided fresh installation; defaults to the assigned configuration's latest ref.
 nixmox deploy install cedar --wait
 # With an already reviewed/committed preparation, use its exact source revision.
-nixmox deploy install cedar --preparation prep_01 --builder birch --confirm-device /dev/disk/by-id/nvme-EXAMPLE --wait
+nixmox deploy install cedar --preparation prep_01 --builder birch --wait
 ```
 
 The first command submits `host.enter_installer` with method `reboot`. Install
 submits `deployment.install` with `host_id`, `method` (default `auto`), and optional
-`installer_id`, `configuration_id`, `preparation_id`, `builder_id`, and the bound
-`confirmation`. A preparation must belong to this host, match any explicit
-configuration, and reference a committed source; revalidate observations before
+`installer_id`, `configuration_id`, `preparation_id`, `builder_id`, and review
+acknowledgements on resumption. A preparation must belong to this host, match any
+explicit configuration, and reference a committed source; revalidate observations before
 effects. Without a preparation, guide the user through the shared onboarding forms.
 With no assigned configuration, require selection/creation before target preparation
 and installation; entering the installer and preparing its media need no assignment.
 `--task task_01` supplies optional `task_id` to resume that same installation with
-new review input rather than create another task. Validate task version and current
-review binding; changing the target or pinned source requires a new reviewed plan.
+new review input rather than create another task. Check that the task awaits the
+submitted review and its bindings still hold; changed effects require a new review.
+Submission without confirmation is valid and cannot enter a destructive phase.
+Task detail contains the current review. Interactive waiting displays it and
+submits its ID with the prompted acknowledgement. Scripts resume with:
+
+```sh
+nixmox deploy install cedar --task task_01 --review review_01 --confirm-device /dev/disk/by-id/nvme-EXAMPLE --wait
+```
+
+`--review` supplies the ID of the review embedded in that task. Resume succeeds
+only while the task awaits that review and its relevant bindings hold; unrelated
+host/progress versions do not require new approval. Boot reviews instead
+require `--confirm-host`; the two review kinds cannot authorize each other.
+Device/host flags without a current matching review do not grant advance approval.
+Resuming with `--task` and no acknowledgement regenerates a stale review of the
+same pinned intent and pauses again; it never changes source or repeats effects.
 Use `--confirm-host` for entry approval and the bound preparation/device confirmation
 for erasure. Browser/TUI submit these same resumptions with unique command IDs.
 `--method reboot|kexec|auto`
@@ -522,6 +555,23 @@ pauses for disruptive boot approval and, later, fresh disk confirmation using th
 onboarding contract. Interactive `--wait` guides these reviews; noninteractive
 waiting returns `APPROVAL_REQUIRED`/exit 4 with the pending review and task IDs.
 Configuration defaults are suggestions; pin the chosen revision before building.
+`--configuration <configuration-id>` overrides configuration selection; it must
+match any supplied preparation. Install payload fields are `host_id`, optional
+`task_id`, `method`, `installer_id`, `configuration_id`, `preparation_id`, `builder_id`,
+`review_id`, and `acknowledgements: {confirm_host?, typed_device_paths?}`.
+The server records verified acknowledgements as the bound `confirmation` evidence.
+`host.enter_installer` takes `host_id`, `method` (CLI reboot uses `reboot`), optional
+`installer_id`, `task_id`, `review_id`, and `acknowledgements: {confirm_host}` at entry
+review. Standalone `hosts reboot --into installer` follows the same pause/resume
+contract, accepting `--installer`, `--task`, and `--review`; initial submission does
+not need `--confirm-host`. Scripts resume the exact entry review, for example:
+
+```sh
+nixmox hosts reboot cedar --into installer --task task_entry_01 --review review_entry_01 --confirm-host cedar --wait
+```
+
+Media-write reviews remain separate child tasks. Changed entry plans need renewed
+approval; the ordinary `host.reboot` operation still requires direct host confirmation.
 When already in a verified installer, skip entry and its boot approval. Otherwise
 inspect entry compatibility, including media that can be prepared, before disruptive
 actions. Compatible but unwritten media is a preparation step, not an unsupported host.

@@ -115,6 +115,9 @@ Download/Write without requiring an ARM builder to bootstrap the first Pi. Build
 customizations still requires a compatible builder. Image bytes are downloaded or
 transferred directly, not stored as Git changes in JetStream.
 CLI: `nixmox media fetch --profile raspberry-pi-5 --release latest --wait`.
+`--release` is optional and defaults to `latest`; `--profile` uses the same
+single-profile/interactive-selection rule as Build. Custom profiles without release
+manifests return `RELEASE_UNAVAILABLE` and offer Build, never a different profile.
 `media.fetch` resolves the release selector once, records its immutable manifest
 and verified digests, and returns the same media resource used by Plan/Write.
 
@@ -146,6 +149,36 @@ Sizes/digests are fixtures. Record both compressed and expanded content digests;
 device capacity uses expanded size. Verify the downloaded artifact, decompress
 while writing, and verify readback against expanded bytes. Resolve a recipe's
 exact output file, never pick the first file in a build directory.
+
+## Media API
+
+| Command type | Payload |
+| --- | --- |
+| media.build | `profile_id`; optional `writer_id`, `builder_id` |
+| media.fetch | `profile_id`; optional `release` (default `latest`); record immutable release manifest before download |
+| media.profile.register | `profile` using the custom-profile schema below; unique profile ID |
+| media.plan | `image_id`, `writer_id`, `device_path`; service observes device identity and eligibility |
+| media.write | `plan_id`, `typed_device_path`; expected plan version; recheck image/device binding |
+
+HTTP callers supply a resolved profile ID; the CLI performs sole-profile selection
+or prompts before submission. Device listing reads `/hosts/{id}/disks` using the
+writer ID. CLI `media devices` and `media plan` require `--host` at remote consoles;
+otherwise resolve the local daemon's ID, as for media build.
+
+`GET /api/v1/media/plans/{id}` returns
+`{id, version, image_id, writer_id, image_digest, device_id, device_path,
+device_size_bytes, observation_id, review}`. The embedded review binds the device,
+expanded image digest, and writing effect. `media write --plan` supplies the plan
+version; `--confirm-device` provides the typed acknowledgement. Refresh device
+observations and recheck eligibility before writing. Changed identity, image, or
+write effects require Plan again; matching refreshed facts do not expire approval.
+Device facts always come from the writer, not the submitted path alone.
+
+`GET /api/v1/media/{id}/download` streams the verified image file with its recorded
+compression and digest, filename, and Content-Length. Media/task records expose
+`download_url` and content/expanded digests; bytes come from the owner or a verified
+holder through direct HTTP streaming, never JetStream. Unavailable holders return
+503; an intentionally deleted image returns 410. Hold output pins for the stream.
 
 ## Custom profiles
 

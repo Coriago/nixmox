@@ -8,12 +8,20 @@ and no automatic replication of every output.
 
 ## Routes and transport
 
-Both routes share the configured API listener, default TCP **63170**:
+Local Nix uses HTTP; daemon-to-daemon transfers use automated TLS:
 
-| Route | Access | Responsibility |
+| Route | Listener | Access / responsibility |
 | --- | --- | --- |
-| `/cache/` | Local machine only | Aggregate peer lookup and stream a selected peer's response to local Nix |
-| `/store-cache/` | Authorized cluster machines | Serve only valid outputs present in this node's Nix store |
+| `/cache/` | `http.port` / 63170 | Local machine only; aggregate peer lookup and stream a selected peer's response to local Nix |
+| `/store-cache/` | `machine.port` / 63175 | Authorized cluster machines over mTLS; serve only valid outputs present in this node's Nix store |
+
+Both namespaces implement `GET` and `HEAD` for `nix-cache-info`,
+`{store-hash}.narinfo`, and `nar/{store-hash}/{nar-hash}.nar`. Gateway narinfo URLs
+use that gateway-relative archive path, never an unconstrained upstream URL.
+The archive identity binds the same uncompressed NAR hash/size across peer retries.
+HEAD performs bounded lookup/metadata validation without exporting archive bytes.
+`/cache/` remains local-only; `/store-cache/` exists only on the machine listener.
+Neither namespace accepts uploads or arbitrary proxy destinations.
 
 Enforce local access from the connection/listener, not the Host header or forwarded
 headers. Apply machine trust to peer access. Pending installers may pull their
@@ -22,7 +30,7 @@ Peer serving never fetches from another cache, invokes a build, or redirects bac
 to a gateway. This prevents recursive proxy loops.
 
 NATS carries peer capabilities, endpoint updates, availability hints, and progress.
-Artifact bytes travel directly over HTTP(S), never through NATS/JetStream. No
+Peer artifact bytes travel directly over managed HTTPS, never through NATS/JetStream. No
 HTTP-over-NATS or generic SSH-over-NATS fallback is provided. SSH remains available
 for agent bootstrap. Deployment commands reach targets through NATS; targets pull
 outputs locally, so remote activation does not require an SSH push.
@@ -32,8 +40,8 @@ LAN/virtual-interface preference policy. Never assume peers use the local port.
 An unreachable peer is not a reason to change the approved output or interface policy.
 
 ```text
-Nix on cedar → cedar:63170/cache/ → alder:63170/store-cache/ → alder's Nix store
-                                → birch:63170/store-cache/ → birch's Nix store
+Nix on cedar → http://127.0.0.1:63170/cache/ → https://alder:63175/store-cache/ → alder's Nix store
+                                           → https://birch:63175/store-cache/ → birch's Nix store
                   NATS: discovery, status and task progress only
 ```
 

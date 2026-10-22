@@ -146,9 +146,9 @@ connection failures when needed.
 ```
 
 Wi-Fi passwords stay in the installer's local network credential store, never in
-Git, task payloads, JetStream, logs, or telemetry. Use protected secret ingress
-for browser submission and local ingress for TUI/CLI, without requiring Git/SOPS
-setup. Network handoff preparation must explicitly arrange installed-system
+Git, task payloads, JetStream, logs, or telemetry. All three interfaces submit them
+through the installer's HTTP secret ingress, without requiring certificates or
+Git/SOPS setup. Network handoff preparation must explicitly arrange installed-system
 connectivity; a working live-media Wi-Fi connection is not proof of that handoff.
 
 ```sh
@@ -163,10 +163,23 @@ nixmox tui --installer
 Reads: `/network/status`, `/network/wifi/networks`. Commands: `network.check`,
 `network.wifi.scan`, `network.wifi.connect` (network ID and optional local
 credential reference). `POST /api/v1/network/wifi/credentials` stages a password
-using the same redaction/protected-transport rules as credential import and returns
+using the same HTTP submission and redaction rules as credential import and returns
 an opaque, short-lived reference. No cluster membership or quorum is required for
 these node-local bootstrap operations. All interfaces use the same status/events.
 `network.check` refreshes local link/address state; it sends no internet probe.
+
+| Command type | Payload / result |
+| --- | --- |
+| network.check | `{}`; refreshed local network status |
+| network.wifi.scan | `{}`; network list at `/network/wifi/networks` |
+| network.wifi.connect | `network_id`, optional `credential_ref`; local connection result |
+| discovery.search | `{}`; bounded search result with discovery IDs |
+
+All four use [node-local admission](api-and-interfaces.md#operation-registry-and-scope).
+The Wi-Fi ingress accepts `{network_id, password}` over the installer's HTTP console,
+redacts it before middleware, and returns `{credential_ref, expires_at}`
+with a five-minute staging lifetime. Connect binds the reference to that network;
+open networks omit it. Credentials never enter the ordinary command payload.
 
 ## Clusters, joining, and headless setup
 
@@ -277,7 +290,7 @@ nixmox onboarding inspect cedar --wait
 nixmox onboarding prepare cedar --configuration cfg_cedar --observation obs_01 --disk-template existing-layout --set disk.SystemDisk=disk_01 --wait
 nixmox onboarding show prep_01 --diff
 nixmox onboarding commit prep_01 --expected-version 3 --wait
-nixmox deploy install cedar --preparation prep_01 --builder birch --confirm-device /dev/disk/by-id/nvme-EXAMPLE --wait
+nixmox deploy install cedar --preparation prep_01 --builder birch --wait
 ```
 
 Preparation collects hardware, disk choices, and optional SOPS updates together.
@@ -319,26 +332,27 @@ standalone generation flow; do not duplicate its forms or validation logic.
 
 ## Confirmation and checkpoints
 
-Confirmation binds preparation version, node ID, observation digest, selected disk
-identities, candidate/source, and expiry. Typing a path is an acknowledgement,
-not sufficient evidence by itself. Any changed binding invalidates confirmation.
+Confirmation binds preparation version, node ID, relevant observed device facts,
+selected disk identities, and candidate/source. Typing a path is an acknowledgement,
+not sufficient evidence by itself. Changed bindings invalidate confirmation;
+unrelated observations and health updates do not.
 
 ```json
 {
-  "preparation_id": "prep_01",
-  "preparation_version": 4,
   "host_id": "n_cedar",
-  "source_commit": "1111111111111111111111111111111111111111",
-  "observation_id": "obs_01",
-  "disk_ids": ["disk_01"],
-  "typed_device_paths": ["/dev/disk/by-id/nvme-EXAMPLE"],
-  "expires_at": "2026-10-20T12:05:00Z"
+  "task_id": "task_01",
+  "review_id": "review_01",
+  "acknowledgements": {"typed_device_paths": ["/dev/disk/by-id/nvme-EXAMPLE"]}
 }
 ```
 
-The service issues the review binding/expiry and the client supplies typed
-acknowledgement; the target verifies both against its recorded preparation and
-fresh observations. The client cannot extend expiry by editing JSON.
+This resumption refers to the [review embedded in the task](api-and-interfaces.md#reviews-and-concurrency).
+The target checks the recorded preparation and fresh device observations. Observation
+expiry requires recollection, not automatic loss of approval when relevant facts
+still match. A changed erase plan or destructive retry requires fresh confirmation.
+Initial Install submission may omit confirmation and pause. Every erase target
+must be acknowledged at destructive review; missing acknowledgements at that step
+are an error. Interactive waiting prompts; noninteractive waiting returns exit 4.
 
 ```text
 Set up cedar                      Pending • installer
@@ -483,8 +497,21 @@ Commands: `host.bootstrap`, `media.build`, `media.plan`, `media.write`,
 `onboarding.inspect`, `onboarding.prepare`, `onboarding.commit`. Installation uses
 the single `deployment.install` command defined in the deployment spec. Payloads
 match the CLI selections above; commit uses expected preparation/repository versions,
-and installation includes the bound confirmation. Reads: `/media/{id}`,
+and installation resumes with the bound review acknowledgement. Reads: `/media/{id}`,
 `/hosts/{id}/disks`, `/observations/{id}`, `/preparations/{id}` and its `/diff`.
+
+| Command type | Required payload / optional fields |
+| --- | --- |
+| host.bootstrap | `ssh_target`, `credential_ref`, `host_key_fingerprint` |
+| onboarding.inspect | `host_id`; returns `observation_id` |
+| onboarding.prepare | `host_id`, `configuration_id`, `observation_id`, `template_values`; optional hardware/disk template IDs |
+| onboarding.commit | `preparation_id`; expected preparation/repository versions; returns pinned source and artifact IDs |
+
+Media payloads are defined in [installer images](installer-images.md#media-api).
+Preparation detail/diff include the expected preparation/repository versions captured
+with the rendered diff. `onboarding commit --expected-version` checks its preparation
+entry and copies the same repository entry; conflicts require renewed preparation
+and review. `onboarding show --diff` displays these versions with the combined diff.
 
 `onboarding.prepare` accepts optional `hardware_template_id` and `disk_template_id`,
 typed `template_values` grouped by `hardware` and `disk`, plus observation ID. Disk
@@ -499,7 +526,8 @@ commit; reboot on a different interface with the same ID; interruption after dis
 effects; fresh preparation after hardware changes without accidental installation.
 Also test template auto-selection, disk-layout generation versus binding-only,
 and confirmation of every selected device in a multi-disk form. CLI installation
-accepts one `--confirm-device` per selected device; omission is an error.
+accepts one `--confirm-device` per selected device at erase review; initial submission
+without those flags pauses safely. Neither boot approval nor `apply --yes` authorizes erasure.
 Also test automatic installer TUI startup, wired headless setup, absent/hotplugged
 Wi-Fi adapters, scan/password errors, link/address readiness, discovery
 timeout/retry/late results, joining from either side, and browser/TUI state parity.

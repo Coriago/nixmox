@@ -2,13 +2,15 @@
 
 All examples define the proposed rewrite API. The CLI, browser, and TUI submit
 the same command objects; no interface may bypass validation or task admission.
+All three connect to the console over HTTP, including secret submission. Automated
+TLS is reserved for backend daemon/NATS links; see [listeners](runtime-configuration.md#service-ports).
 
 ## Values and references
 
 - JSON uses snake_case; timestamps are UTC RFC3339; sizes and log offsets are bytes.
 - IDs are opaque generated strings. Names are labels, never transport identities.
-- Mutable records carry `version`, an increasing concurrency token. Reads include
-  freshness metadata; a cached record is not proof that a target is reachable.
+- Mutable records carry `version`, an increasing concurrency token. Observed state
+  includes freshness metadata; a cached record is not proof that a target is reachable.
 - A configuration is repository plus named configuration. Repository metadata maps
   that name to a flake directory and attribute. Execution always pins a commit.
 
@@ -23,17 +25,23 @@ the same command objects; no interface may bypass validation or task admission.
 }
 ```
 
-`ref_id` identifies an upstream or local-change reference. `commit` is null in an
-unresolved editable binding, but never null in an admitted build/install task.
+`ref_id` identifies an upstream or local-change reference. `commit` may be null in
+an unresolved editable binding or guided installation before preparation. Builds
+are admitted with pinned source; installation pins it before build/erase phases.
 Changing the binding does not change tasks or the reported running system.
+
+Object examples are partial; each feature defines its required fields.
 
 ## Command API
 
 `POST /api/v1/commands` is the normal mutation entry point. The operation registry
 validates the typed payload. Reads use resource endpoints. No arbitrary shell
 execution endpoint is exposed.
-Secret import has a dedicated protected ingress described below; it dispatches
+Secret import has a dedicated redacted ingress described below; it dispatches
 only a secret-free reference through this command path.
+Rebase uploads stage bytes through the draft resolution ingress; accepting those
+files still requires a typed command. Enrollment has its own limited machine
+exchange. These exceptions do not expose arbitrary resource mutations.
 Membership-status reads use the narrow authenticated-server exception defined in
 [identity and trust](identity-and-trust.md#authenticated-removal-response), allowing
 revoked nodes to confirm removal without restoring membership access.
@@ -52,6 +60,9 @@ Client-generated command IDs are stable across transport retries. The service
 adds authenticated cluster context, admission time, expiry, and a canonical
 request hash; the caller cannot override these. Same ID/same request returns the
 same receipt. Same ID/different request returns `IDEMPOTENCY_CONFLICT`.
+Persist resolved selectors under that receipt before acceptance; a retry must not
+resolve a newer commit, release, or builder. Context is node-local for bootstrap
+operations, cluster-scoped otherwise.
 
 ```json
 {
@@ -87,21 +98,134 @@ the installer; include method-specific reasons and do not start a fallback task.
 The UI uses codes for actions and messages for explanation; it never parses logs
 as the authoritative status API.
 
+### Operation registry and scope
+
+Feature operation tables define typed payloads. IDs are strings, versions are
+positive integers, flags are booleans, and timestamps are RFC3339. Reject unknown
+fields. Every entry declares payload validation, scope, target/capabilities,
+version preconditions, result resource, and task/reconciliation handlers.
+Payload `host_id`, when present, must equal envelope `target_id`; it cannot retarget
+a command. `serve`, `tui`, and reads do not submit mutation commands.
+
+| Scope | Operations | Admission |
+| --- | --- | --- |
+| `node_local` | `network.check`, `network.wifi.scan`, `network.wifi.connect`, `discovery.search`, `identity.reset`, `cluster.join`, `cluster.create` | Persist receipts/tasks on the addressed node using the existing task engine; no cluster quorum required |
+| `cluster` | All other feature mutations | Admit through the cluster's durable command stream with quorum |
+| Inherited | `task.cancel`, `task.retry` | Use the referenced task's recorded scope and owner |
+
+Scope is selected by the registry, never by caller preference or transport failure.
+Reuse the existing receipt/task stores and embedded broker where applicable;
+local scope does not require a second journal or queue implementation.
+Local operations cannot mutate another node's cluster state. Join approval remains
+cluster-scoped; `cluster.join` only coordinates the local request/credential handoff.
+`cluster.create` is unjoined-only: persist its new cluster ID once, initialize the
+standalone broker, and report success only after durable genesis is committed.
+Never use it to replace an unavailable existing cluster. Local receipts remain
+queryable on their owner after joining; no automatic replay into cluster commands.
+
+### Reviews and concurrency
+
+`expected_versions` uses `<resource-kind>:<id>` keys, for example `host:n_cedar`,
+`repository:r_lab`, `draft:draft_01`, `preparation:prep_01`, or `task:task_01`.
+CLI `--version` and `--expected-version` populate the operation's primary key;
+they are not duplicate payload fields. Clients copy other required versions from
+the displayed draft/plan/review, never silently fetch newer versions to force success.
+
+```json
+{
+  "review": {
+    "id": "review_01", "kind": "installation_erase", "state": "pending",
+    "binding": {"host_id": "n_cedar", "preparation_id": "prep_01", "preparation_version": 4,
+      "source_commit": "1111111111111111111111111111111111111111", "disk_ids": ["disk_01"]},
+    "required_acknowledgements": {"typed_device_paths": ["/dev/disk/by-id/nvme-EXAMPLE"]}
+  }
+}
+```
+
+Reviews live inside the owning task or plan; there is no separate review resource
+or collection. Task resumptions submit the task ID, current `review_id`, and
+acknowledgements. Plan approvals use the plan ID/version and required acknowledgements.
+Atomically check that approval is still applicable, then record it; duplicate
+submissions cannot resume effects twice. Replace the task review ID or plan ID
+when relevant source, devices, configuration, or intended effects change.
+Plan IDs identify immutable reviewed effects; status versions cannot silently
+change what a saved `--plan` approves.
+Health updates, log/progress updates, and unrelated host metadata
+do not invalidate it. Recheck relevant facts before effects; a new observation ID
+alone is not a change in those facts. Stale bindings return `CONFIRMATION_STALE`.
+There is no universal review timeout: device observations use onboarding's freshness
+rules; other reviews remain valid while their bindings hold. Deployment diff
+approval retains its existing `diff_id`/`diff_version` contract.
+
+Draft and preparation reads include `expected_versions` for themselves and the
+repository version captured with their diff. Commit checks both. Editing/rebasing
+invalidates the prior review. A conflict requires a newly rendered review, not a
+version-only retry. `expected_versions` protects the records a mutation changes;
+do not copy unrelated host/task versions into a confirmation. Reads never renew
+or approve reviews; the owning operation handles re-review when bindings change.
+
 ## Reads and events
 
 Read collections: `/hosts`, `/clusters`, `/discoveries`, `/repositories`,
 `/configurations`, `/drafts`, `/artifacts`, `/preparations`, `/media`, `/candidates`,
 `/deployments`, `/diffs`, `/tasks`, `/credentials`, `/observations`, `/publications`,
 `/cluster/requests` (cluster-side join approval queue).
+Additional collections are `/gc-plans`, `/media/plans`, and `/diagnostics`.
 Prefix all with `/api/v1`. Singleton reads are `/settings`, `/identity`,
 `/cluster/status`, and `/cache/status`. Cache location lookup and streaming routes
 are defined in [cache gateway](cache-gateway.md).
 Collections return `{items, next_cursor}`; `next_cursor` is null at the end.
-Detail routes use opaque IDs. Operation-specific nested reads appear in feature docs.
+Use `cursor` and `limit` (default 100, range 1–500). Cursors bind filters, ordering,
+and position; they do not require retained database snapshots or a fixed lifetime.
+Tasks, deployments, publications, and diagnostics sort newest first by `(created_at, id)`;
+named catalogs sort by display name then ID; other collections default to ID order
+unless their feature specifies otherwise. Live lists may change between pages:
+clients deduplicate by ID and refresh for current state. Revision-based catalogs,
+draft files, and diffs pin their source/version across pages; changed/unavailable
+versions fail explicitly rather than mixing revisions. Invalid cursors/filters or
+bounds return 400; an unavailable cursor position returns 410 `CURSOR_EXPIRED`.
+Detail routes use opaque IDs. Static routes such as `/media/profiles` take precedence.
+Resource details have stable IDs; mutable records have versions. Observations and
+live status include `observed_at` and `freshness` (`live`, `stale`, `unknown`);
+immutable source/output records use their commit/digest instead. Owner-local
+resources identify `owner_node_id`. Unavailable owner data is 503,
+missing IDs are 404, and known expired/deleted download payloads are 410.
+
+| Collection | Supported filters / projection |
+| --- | --- |
+| `/hosts` | Filters `membership`, `reachability`; host record includes health and configuration |
+| `/clusters` | `name`, `gateway_endpoints`, `membership`, `health` |
+| `/discoveries` | Filter `kind=node\|cluster`; `kind`, `node_id`/`cluster_id`, `name`, `endpoints`, `key_fingerprint`, `expires_at`; inapplicable fields are null |
+| `/repositories` | Repository remote/upstream record |
+| `/configurations` | Filters `repository_id`, `ref_id`, `commit`; revision selection follows the configuration catalog contract |
+| `/drafts`, `/artifacts`, `/gc-plans`, `/publications` | Filter `repository_id`; publications include `repository_id`, `ref_id`, `commit`, `remote_branch`, nullable `pull_request_url`, `remote_head`, `integration_base`, `state` |
+| `/preparations`, `/observations`, `/deployments`, `/diffs`, `/diagnostics` | Filter `host_id`; corresponding feature record |
+| `/candidates` | Filters `repository_id`, `configuration`; pinned candidate record |
+| `/media` | Filter `profile_id`; verified image record |
+| `/media/plans` | Filter `writer_id`; image/device/review binding |
+| `/tasks` | Filters `host_id` (target), `kind`, `state`, `since`, `until`; UTC creation-time interval `[since, until)` |
+| `/credentials` | Filter `kind`; metadata only |
+| `/cluster/requests` | Filter `state`; request identity, key fingerprint, expiry, and decision |
+
+Nested collections use the same pagination bounds unless explicitly overridden.
+Settings return `{version, values, ownership}` with secret values redacted;
+identity and network/cache status use their feature schemas. Cluster status includes
+`observed_at`, `freshness`, `cluster_id`, `membership`,
+`health`, and `quorum: {available, replicas, required}`; unjoined cluster_id is null.
 
 `GET /api/v1/events?topics=hosts,tasks,repositories` opens one SSE stream per client.
 Send a snapshot first, then versioned invalidations/updates. On reconnect send a
 fresh snapshot; do not promise durable replay of every UI event.
+`topics` is a comma-separated optional selector; omission subscribes to all
+resource topics available in this scope. Topics are collection paths with the
+leading slash removed and remaining `/` replaced by `.`, plus `settings`, `identity`,
+`cluster.status`, `cache.status`, `media.profiles`, `network.status`, and
+`network.wifi.networks`. `tasks` includes progress/activity
+updates; log bytes require explicit `task.logs` plus `task_id=<id>`. Unknown topics
+and log selectors without `task.logs` return 400. Optional `activity_id` restricts
+logs to that task's activity; log events then include `activity_id` and offsets
+within that activity's log. Bootstrap clients receive local snapshots only. Snapshot contents use
+bounded first pages plus collection links; never embed unbounded histories.
 
 ```json
 {
@@ -192,11 +316,15 @@ not cancel work. Selection state is local; task state belongs to the service.
 Every feature's interaction table is a parity checklist. Additional CLI verbs
 must declare their command type and payload schema in the operation registry.
 
-## Protected secret ingress
+## Secret ingress
 
 `POST /api/v1/credentials/import` accepts credential metadata, storage node ID,
-and a sensitive value stream over local/protected transport. It durably stages
-the value in the selected replica's private credential store and submits
+and a sensitive value stream over the same HTTP connection as other console calls.
+For another storage node, the receiving daemon forwards this request to that node's
+machine listener over mTLS. That listener accepts imports only from authorized full
+members, only for its own storage node, and never forwards them again. Both ingress
+paths apply the same redaction and retry rules. The storage node durably stages
+the value in its private credential store and submits
 `credential.import` containing only that staging reference. Return the normal
 command receipt; retain the same request ID across uncertain retries. Expire and
 erase unclaimed staged values. Redact request bodies at this endpoint before any

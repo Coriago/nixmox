@@ -33,7 +33,7 @@ supported.
     enable = true;
     cluster = {
       name = "homelab";
-      joinAddress = "alder.example:63170";
+      joinAddress = "alder.example:63175";
     };
     network = {
       managementInterfaces = [ "enp1s0" "tailscale0" ];
@@ -97,7 +97,8 @@ credential-dependent operations. Git remote configuration never triggers a push.
 | --- | --- | --- |
 | enable | bool / false | Install CLI and daemon service |
 | dataDir | string / /var/lib/nixmox | Persistent identity, tasks, repositories, receipts |
-| http.port | integer / 63170 | Browser, API, and cache gateway |
+| http.port | integer / 63170 | HTTP console API for CLI/TUI/browser and local cache gateway |
+| machine.port | integer / 63175 | Automated TLS listener for daemon enrollment, peer transfers, and membership status |
 | nats.clientPort | integer / 63171 | Embedded broker client listener, loopback only |
 | nats.routePort | integer / 63172 | Permanent broker routes on management interfaces |
 | nats.leafPort | integer / 63173 | Pending-node leaf connections on management interfaces |
@@ -107,7 +108,7 @@ credential-dependent operations. Git remote configuration never triggers a push.
 | openFirewall | bool / true | Open required ports only on management interfaces |
 | discovery.enable | bool / false | Advertise unjoined node or cluster on allowed LAN interfaces |
 | discovery.port | integer / 63174 | UDP discovery; discovering peers must use the same port |
-| cluster.name, cluster.joinAddress | nullable strings / null | Both set submits a join request awaiting cluster approval; one set alone is invalid |
+| cluster.name, cluster.joinAddress | nullable strings / null | Both set submits a join request to the peer's machine address (`host:port`) awaiting cluster approval; one set alone is invalid |
 | configuration | nullable {repository, name} / null | Intended configuration association |
 | repositories | attribute set / {} | Named repository declarations; remoteUrl required for each |
 | credentials | attribute set / {} | Named kind and runtime secretFile references |
@@ -154,17 +155,29 @@ do not inherit the broker's conventional ports.
 
 | Port | Transport | Listener |
 | --- | --- | --- |
-| 63170 | TCP | Browser, API, CLI, enrollment, and cache gateway |
-| 63171 | TCP | NATS clients; loopback only |
-| 63172 | TCP | Permanent NATS routes |
-| 63173 | TCP | Pending-node NATS leaf connections |
+| 63170 | TCP / HTTP | Browser, CLI/TUI API, and local cache gateway |
+| 63171 | TCP / TLS | NATS clients; loopback only |
+| 63172 | TCP / TLS | Permanent NATS routes |
+| 63173 | TCP / TLS | Pending-node NATS leaf connections |
 | 63174 | UDP | Discovery |
+| 63175 | TCP / TLS | Daemon enrollment, peer cache/credential transfers, and membership status |
 
-`/cache/` is local-only; `/store-cache/` serves authorized cluster peers. Both share
-`http.port`; no additional public cache port is opened. Derive the local Nix
-substituter URL from this port and advertise actual peer endpoints. Store serving
-is embedded in Nixmox using the Go NAR library; no companion service is required. See
+`/cache/` is local-only on `http.port`; `/store-cache/` serves authorized cluster
+peers on `machine.port`. Derive the local Nix substituter URL from `http.port` and
+advertise actual machine endpoints. Store serving is embedded in Nixmox using the
+Go NAR library; no companion service is required. See
 [cache gateway](cache-gateway.md) for configuration and streaming semantics.
+
+CLI, TUI, and browser use HTTP for all console operations, including credential
+and Wi-Fi submission. No console HTTPS listener, certificate setup, or TLS redirect
+is required or provided in v1. Console requests and submitted secrets are unencrypted
+on that connection; access is limited to the configured management network.
+
+TLS is automatic and backend-only: daemon-to-daemon links and NATS clients/routes/
+leaves. The separate machine listener uses HTTP over managed TLS; it exposes only
+machine routes, never the console or general administrative API. Machine-only routes
+are absent from the HTTP console listener. Advertisements identify each service,
+transport, and actual port; listeners never multiplex plaintext HTTP and TLS.
 
 This block is in IANA's private-use range (49152–65535), which has no assigned
 standard services. It is a Nixmox default, not an exclusive registered allocation;
@@ -191,7 +204,7 @@ password. Configure each client/route/leaf TLS block independently. See
 [generated/preserved paths](identity-and-trust.md#generated-and-preserved-state).
 
 Firewall rules use configured ports and management interfaces, never the loopback
-client port. Advertise actual gateway/route/leaf endpoints; peers must not assume
+client port. Advertise actual console/machine/route/leaf endpoints; peers must not assume
 the remote node uses their own port settings. A custom discovery port must match
 across discovering peers; explicit address enrollment remains available.
 
@@ -201,6 +214,7 @@ Override example:
 {
   services.nixmox = {
     http.port = 63270;
+    machine.port = 63275;
     nats = {
       clientPort = 63271;
       routePort = 63272;
@@ -234,6 +248,8 @@ schema_version: 1
 data_dir: /var/lib/nixmox
 http:
   port: 63170
+machine:
+  port: 63175
 nats:
   client_port: 63171
   route_port: 63172
@@ -247,7 +263,7 @@ network:
   allow_fallback: true
 cluster:
   name: homelab
-  join_address: alder.example:63170
+  join_address: alder.example:63175
 repositories:
   lab:
     remote_url: https://github.com/example/nixos-config.git
@@ -283,7 +299,7 @@ credential-capable full member, never echoed back.
 | `nixmox repositories credential set lab github-writer` | Repositories → lab → Credentials | lab → Settings → Credentials |
 
 Credential import reads the local file without logging its contents and sends it
-over a protected connection to the chosen replica. Reject import over a plaintext
-remote gateway; use local access or a protected endpoint/tunnel. Never put tokens
-in command arguments. Application-secret replicas are provisioned independently;
-machine certificate issuance follows the managed TLS contract.
+to the selected console over HTTP. If the storage replica is another node, the
+daemon forwards the value over the managed machine TLS connection before admitting
+the secret-free command. Never put tokens in command arguments. Application-secret
+replicas are provisioned independently; machine certificates are issued automatically.

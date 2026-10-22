@@ -106,11 +106,16 @@ an operation reaches a non-interruptible phase; show that reason in every UI.
 
 Operations register typed payload validation, required capabilities, resource keys,
 phase handlers, effect checkpoints, cancellation rules, and reconciliation handlers.
+Registry scope determines where admission is durable and whether quorum is needed.
+Reuse the existing receipt/task stores and embedded broker; no separate local
+journal or task engine is required. Node-local tasks record `scope: "node_local"`,
+`owner_node_id`, and null cluster context; they are not taken over remotely.
+Cluster tasks record `scope: "cluster"` and require cluster admission.
 Subprocesses receive argv arrays; no interpolated shell commands from API payloads.
 
 ## Admission and execution
 
-1. Consume durable command, validate expected versions, persist an admission intent.
+1. Validate expected versions and persist an admission intent in the operation's scope; cluster commands arrive through JetStream.
 2. Allocate a deterministic task ID from the command ID and persist queued state.
 3. Complete command receipt with task ID, then acknowledge command delivery.
 4. Acquire resource exclusions and start eligible work. Persist phase intent before
@@ -142,23 +147,45 @@ nixmox hosts diagnostics cedar --wait
 nixmox hosts shutdown cedar --confirm-host cedar --wait
 ```
 
-Types: `task.cancel`, `task.retry`, `host.refresh`, `host.diagnostics`, `host.shutdown`.
+| Command type | Payload |
+| --- | --- |
+| task.cancel | `task_id`; expected task lifecycle version |
+| task.retry | `task_id`; expected terminal task version; creates a new linked task |
+| host.refresh | `host_id` |
+| host.diagnostics | `host_id`; optional `since`, `until` (diagnostics contract) |
+| host.shutdown | `host_id`, `confirm_host`; expected host version |
+
+Task controls use the displayed task version. `host.reboot` follows the same host
+confirmation/version rule. Review pauses change lifecycle versions; progress
+samples have separate versions and do not invalidate a review.
 Retry may return `CONFIRMATION_REQUIRED`; destructive operations must reopen their
 review flow. Shutdown success reports scheduled/observed state separately.
 
 Browser: Tasks → select task → Overview / Logs / Result → Cancel or Retry.
 TUI: Tasks → Enter → same tabs; actions in the task menu. Host pages link to the
-same task record, including remote work. Filters are host, kind, state, and time.
+same task record, including remote work. CLI filters are `--host`, `--kind`,
+`--state`, `--since`, and `--until`, mapped to the common HTTP task filters.
 
-`GET /tasks/{id}/logs?offset=0&limit=65536` returns offset, bytes as base64, and next
-offset. Persist log bytes before broadcasting chunks. Gaps are fetched from the
-owner; unreachability is shown as unavailable, not EOF. Downloads may stream the
-full retained log. Retention status and truncation are explicit.
+`GET /api/v1/tasks/{id}/logs` accepts `offset` (default 0) and `limit` (default
+65536, range 1–1048576 bytes), returning
+`{offset, data_base64, next_offset, retained_from, complete, truncated}`.
+An offset before retention starts returns 410 with `retained_from`; after the
+current end returns 416. At the current end, return empty bytes; `complete` is true
+only after the log is closed. Persist bytes before broadcasting chunks. Unreachable
+owners return 503, not EOF. `GET /api/v1/tasks/{id}/logs/download` streams a fixed
+snapshot of the full retained log as text, with retained start/end offsets and
+truncation in headers. It does not follow future output.
 
 Read `/tasks/{id}/progress` and paginated `/tasks/{id}/activities`; activity detail
 is `/tasks/{id}/activities/{activity_id}`. Watch is read-only and follows the common
 event stream. Include counters and a progress link in task details, not an unbounded
 activity list in every host snapshot.
+Activities support `kind` and `state` filters with common pagination. A build's
+`log_ref` is null when unavailable, otherwise the concrete URL
+`/api/v1/tasks/{id}/activities/{activity_id}/logs`; that route has the same chunk
+contract, and its `/download` streams the retained build log. CLI `tasks logs`
+accepts optional `--activity <id>`, `--offset <bytes>`, and `--limit <bytes>`;
+`--follow` recovers gaps through these reads and follows explicitly selected logs.
 
 Acceptance: interrupt each admission boundary; redeliver identical commands;
 restart while queued/running/cancelling; cancel remote work; lose a log chunk;

@@ -16,7 +16,7 @@ Do not replace an undecided mechanism with an undocumented assumption.
 Read the API contract and runtime configuration first. Feature documents define
 objects, transitions, operations, user flows, and acceptance cases. Examples use
 JSON stubs: fields shown are required unless described as optional or nullable.
-Additional persisted fields require a schema-version decision.
+Feature documents define required fields; persisted changes follow their schema version.
 
 | Document | Implementation responsibility |
 | --- | --- |
@@ -39,8 +39,8 @@ Prefix every command below with `nixmox`. Signatures include required arguments
 and required named flags only; `<value>` is a placeholder. Optional arguments,
 global flags, and inputs required only in particular flows are listed separately.
 Names resolve to opaque IDs only when unambiguous. These tables index the proposed
-interfaces in the feature docs; unresolved contracts are listed under
-[Inconsistencies and gaps](#inconsistencies-and-gaps).
+interfaces in the feature docs; shared rules and remaining validation gates are
+linked under [Interface decisions](#interface-decisions).
 
 ### Console, identity, and networking
 
@@ -53,7 +53,7 @@ Sources: [runtime](runtime-configuration.md), [identity](identity-and-trust.md),
 | `tui` | Open the terminal interface. |
 | `settings show` | Show effective runtime settings and ownership. |
 | `identity show` | Show this node's identity and membership. |
-| `identity reset --confirm-host <host>` | Reset local identity after review; requires an unjoined node. |
+| `identity reset --confirm-host <host>` | Reset the addressed daemon's own identity while unjoined. |
 | `network status` | Show local link/address readiness. |
 | `network check` | Refresh local network readiness without an internet probe. |
 | `network wifi scan` | Refresh available Wi-Fi networks. |
@@ -75,16 +75,18 @@ Sources: [host lifecycle](host-inventory-and-lifecycle.md),
 | `cluster status` | Show membership, quorum, and cluster health. |
 | `cluster requests list` | List cluster-side join requests. |
 | `cluster requests approve <request> --version <version>` | Approve the exact request and stored node key. |
+| `cluster requests reject <request> --version <version>` | Reject the exact pending join request. |
 | `cluster add --discovery <discovery>` | Admit a discovered node after reviewing its identity. |
 | `hosts list` | List hosts and their current state. |
 | `hosts show <host>` | Show membership, configuration, reachability, and health. |
 | `hosts endpoints <host>` | Show verified endpoints and peer connectivity. |
 | `hosts assign <host> --repository <repository> --configuration <name>` | Bind a host to a named configuration. |
+| `hosts adopt <host> --candidate <candidate> --confirm-host <host>` | Verify the running system against a pinned candidate and grant full membership. |
 | `hosts bootstrap --ssh <user@address> --credential <credential>` | Start a temporary agent over verified SSH and enroll it. |
 | `hosts refresh <host>` | Refresh inventory and health observations. |
 | `hosts diagnostics <host>` | Collect host diagnostics. |
 | `hosts reboot <host> --confirm-host <host>` | Reboot the host after identity confirmation. |
-| `hosts reboot <host> --into installer --confirm-host <host>` | Enter a verified installer through normal reboot. |
+| `hosts reboot <host> --into installer` | Prepare and review entry into a verified installer through normal reboot. |
 | `hosts shutdown <host> --confirm-host <host>` | Schedule shutdown and report observed state. |
 | `hosts leave <host>` | Leave gracefully and revoke cluster membership. |
 | `hosts remove <host> --force --confirm-host <host>` | Commit forced removal using surviving quorum. |
@@ -100,20 +102,22 @@ Sources: [GitOps](gitops.md), [configuration generation](configuration-generatio
 | `repositories list` | List repositories, upstream freshness, and pending changes. |
 | `repositories refs <repository>` | List upstream and local-change references. |
 | `repositories fetch <repository>` | Fetch and verify the remote base. |
-| `repositories remote set <repository> --url <url>` | Change an editable remote URL; upstream handling is unresolved. |
+| `repositories remote set <repository> --url <url>` | Change an editable remote URL, preserving its upstream branch. |
 | `repositories credential set <repository> <credential>` | Select the repository's access credential. |
 | `repositories rebase <repository> --ref <ref> --onto <ref>` | Rebase a change onto a pinned upstream revision. |
-| `repositories rebase-resolve <task> --files <directory>` | Submit files resolving a retained rebase conflict. |
+| `repositories rebase-resolve <task> --files <directory> --expected-version <version>` | Submit files resolving the reviewed draft version. |
 | `repositories rebase-abort <task>` | Abandon a conflicted rebase without changing the accepted head. |
 | `repositories publish <repository> --ref <ref>` | Push the selected local change to a remote branch. |
+| `publications merge <publication> --expected-head <commit>` | Merge the reviewed remote head after integration-base checks. |
 | `repositories gc <repository> --dry-run` | Produce a reviewable artifact cleanup plan. |
 | `repositories gc <repository> --plan <plan>` | Execute a reviewed cleanup plan after revalidation. |
 | `artifacts show <artifact>` | Show exact Git source, retention, and linked evidence. |
-| `artifacts delete <artifact>` | Request reviewed deletion with dependency checks. |
-| `configurations list --repository <repository>` | List named configurations at an inspected revision. |
+| `artifacts delete <artifact>` | Plan and review deletion; interactive waiting guides confirmation. |
+| `configurations list` | List named configurations across repositories with inspected revisions. |
 | `configurations templates <repository>` | List repository configuration templates. |
 | `configurations generate <repository>` | Render a draft from a selected template and form values. |
 | `configurations draft show <draft>` | Show draft files and validation state. |
+| `configurations draft edit <draft> --set <field=value> --expected-version <version>` | Patch typed form values and invalidate old validation. |
 | `configurations draft validate <draft>` | Validate without a full system build. |
 | `configurations draft commit <draft> --expected-version <version>` | Commit the reviewed draft as replicated local changes. |
 
@@ -131,7 +135,7 @@ Sources: [onboarding](host-onboarding.md), [installer images](installer-images.m
 | `media profiles` | List built-in and custom installer profiles. |
 | `media profiles add --file <file>` | Register a Git-backed image recipe from JSON. |
 | `media build` | Build a selected installer profile, preferring the writing node. |
-| `media fetch --release <release>` | Fetch and verify a release image for a selected profile. |
+| `media fetch` | Fetch and verify the latest release image for a selected profile. |
 | `media devices` | List devices attached to the writing node. |
 | `media plan --image <image> --device <device>` | Bind an image to an observed, eligible destination device. |
 | `media write --plan <plan> --confirm-device <device>` | Write the reviewed image and verify readback. |
@@ -144,14 +148,14 @@ Sources: [deployment](deployment-and-rollback.md), [task engine](task-engine.md)
 | --- | --- |
 | `apply` | Build, review, and apply the local node's latest assigned configuration. |
 | `deploy apply` | Alias of `apply`, with identical defaults. |
-| `deploy preview <host> --repository <repository> --configuration <name> --ref <ref>` | Evaluate and preview source changes without a full build. |
-| `deploy build <host> --repository <repository> --configuration <name> --ref <ref> --builder <host>` | Build an explicit candidate without activation. |
+| `deploy preview <host>` | Evaluate and preview the bound source without a full build. |
+| `deploy build <host>` | Build a candidate using the bound source and automatic builder selection. |
 | `deploy candidate show <candidate>` | Show pinned source, output, and comparison evidence. |
 | `deploy diff <host> --candidate <candidate>` | Compare a built candidate with the target's observed system. |
 | `deploy diff show <diff>` | Show the structured package diff and complete summary. |
 | `deploy approve <task> --diff <diff> --diff-version <version>` | Approve the exact deployment review and resume its task. |
 | `deploy generations <host>` | List recorded system generations and output availability. |
-| `deploy rollback <host> --generation <generation> --mode <mode>` | Activate or boot-stage a retained generation. |
+| `deploy rollback <host> --generation <generation>` | Switch to a retained generation after review. |
 | `deploy install <host>` | Guide first/fresh installation through entry, preparation, and disk review. |
 | `tasks list` | List tasks and their states. |
 | `tasks show <task>` | Show task state, result, and eligible actions. |
@@ -169,7 +173,8 @@ Sources: [identity](identity-and-trust.md), [cache gateway](cache-gateway.md).
 | --- | --- |
 | `credentials import <name> --kind <kind> --node <host> --file <file>` | Import a local secret file into a selected node's protected store. |
 | `credentials list` | List credential metadata and available replicas, never values. |
-| `credentials check <credential> --repository <repository>` | Test credential access to a repository. |
+| `credentials check <credential>` | Run kind-specific access or local key validation. |
+| `credentials remove <credential>` | Remove an unreferenced, app-managed credential and its replicas. |
 | `cache credential set <credential>` | Select the cache signing credential. |
 | `cache status` | Show local gateway and peer availability. |
 | `cache locate <store-path>` | Look up verified holders of a Nix store output. |
@@ -193,17 +198,27 @@ exit codes: 0 succeeded, 1 failed/cancelled, 2 invalid input, 3 unavailable/unkn
 | --- | --- |
 | `serve` | `--config <file>` selects runtime YAML. |
 | `tui` | `--installer` starts in installer network/onboarding screens. |
+| `hosts assign` | `--ref <ref>` overrides the selected configuration's tracked ref. |
+| `repositories remote set` | `--upstream <branch>` explicitly changes the preserved upstream branch. |
 | `repositories publish` | `--pull-request` requests a PR after pushing. |
+| `artifacts delete` | `--dry-run` produces a plan only; `--plan <plan>` approves a reviewed plan; `--task <task>` resumes a paused deletion. |
+| `configurations list` | `--repository <repository>` filters results; `--ref <ref>` or `--commit <commit>` requires that filter. |
+| `configurations templates`, `configurations generate` | `--ref <ref>` or `--commit <commit>` overrides the accepted upstream revision; mutually exclusive. |
 | `configurations draft show`, `onboarding show` | `--diff` includes the proposed file changes. |
 | `apply`, `deploy apply` | Positional `<host>` overrides the local target; required with a remote console or no local daemon. |
-| `apply`, `deploy apply` | `--repository <repository>`, `--configuration <name>`, `--ref <ref>` override the binding; payload mapping needs clarification. |
+| `apply`, `deploy apply`, `deploy preview`, `deploy build` | `--repository <repository>`, `--configuration <name>`, `--ref <ref>` or `--commit <commit>` populate the shared source selector; ref and commit are mutually exclusive. |
 | `apply`, `deploy apply` | `--candidate <candidate>` uses an exact built output; `--builder <host>` overrides automatic building; these are mutually exclusive. |
 | `apply`, `deploy apply` | `--mode <switch\|boot>` defaults to `switch`; `--yes` auto-approves only the deployment diff; `--detach` returns on acceptance and conflicts with `--wait`. |
-| `deploy install` | `--preparation <preparation>`, `--builder <host>`, `--installer <installer>`, `--method <auto\|reboot\|kexec>`; default method is `auto`. |
+| `deploy build` | `--builder <host>` overrides automatic builder selection. |
+| `deploy rollback` | `--mode <switch\|boot>` defaults to `switch`. |
+| `deploy install` | `--configuration <configuration>`, `--preparation <preparation>`, `--builder <host>`, `--installer <installer>`, `--method <auto\|reboot\|kexec>`; default method is `auto`. |
 | `deploy install` | `--task <task>` resumes the existing installation with new review input. |
+| `hosts reboot --into installer` | `--installer <installer>` selects recovery media; `--task <task>` resumes entry preparation/review. |
 | `media build` | `--builder <host>` overrides writer-preferred builder selection. |
-| `tasks list` | `--host <host>` filters by target. |
-| `tasks logs` | `--follow` follows new log bytes. |
+| `media fetch` | `--release <release>` overrides `latest`; the resolved manifest is pinned. |
+| `tasks list` | `--host <host>`, `--kind <kind>`, `--state <state>`, `--since <timestamp>`, `--until <timestamp>` filter tasks. |
+| `tasks logs` | `--follow`, `--activity <activity>`, `--offset <bytes>`, `--limit <bytes>` select/follow retained log bytes. |
+| `hosts diagnostics`, `diagnostics collect` | `--since <timestamp>`, `--until <timestamp>` select a range; default last hour, maximum 24 hours. |
 
 ### Conditional inputs and confirmations
 
@@ -218,36 +233,56 @@ them. They are never permission to skip validation or destructive confirmation.
 | `onboarding prepare` | `--hardware-template <template>`, `--disk-template <template>` select among multiple compatible templates; repeat `--set <stage.field=value>` for required form fields. Disk selections are always explicit. |
 | `media build`, `media fetch` | `--profile <profile>` is required for noninteractive selection when multiple profiles exist; a sole profile is selected automatically. |
 | `media build`, `media devices`, `media plan` | `--host <host>` selects the writer; it may be omitted with that node's local daemon, but remote-console use requires it. |
-| `deploy install` | `--confirm-host <host>` approves installer entry; repeat `--confirm-device <path>` for every erase target at destructive review. See the confirmation inconsistency below. |
+| `credentials check` | `--repository <repository>` is required for Git kinds and rejected for non-Git kinds. |
+| `deploy install` | Scripted approval requires `--task <task> --review <review>` plus `--confirm-host <host>` for entry or repeated `--confirm-device <path>` for every erase target. Interactive waiting submits the displayed review. |
+| `hosts reboot --into installer` | Scripted entry approval requires `--task <task> --review <review> --confirm-host <host>`; interactive waiting prompts at the bound review. |
 
 ## HTTP endpoint reference
 
 All management routes below are prefixed with `/api/v1`. Required path/query
 parameters are shown; optional query controls are separate. Resource IDs are
 opaque. Feature docs sometimes omit the prefix; this index normalizes it.
+CLI, TUI, and browser use HTTP on `http.port` (default 63170), including secret
+submission. Backend-only routes use automated TLS on `machine.port` (default
+63175); users do not configure certificates. See [service ports](runtime-configuration.md#service-ports).
 
-### Commands, secrets, and events
+### Commands, staging, and events
 
 | Endpoint | Description |
 | --- | --- |
 | `POST /api/v1/commands` | Submit a typed mutation envelope; return a command/task receipt (202). |
 | `GET /api/v1/commands/{command_id}` | Recover admission/result status after an uncertain submission. |
-| `POST /api/v1/credentials/import` | Stage credential metadata, storage node, and secret bytes through protected ingress; dispatch a secret-free command. |
+| `POST /api/v1/credentials/import` | Stage credential metadata, storage node, and secret bytes through redacted HTTP ingress; dispatch a secret-free command. |
 | `POST /api/v1/network/wifi/credentials` | Stage a local Wi-Fi password and return a short-lived reference. |
+| `POST /api/v1/drafts/{id}/resolutions?version=<version>` | Stage reviewed rebase files and return a version-bound reference. |
 | `GET /api/v1/events` | Open SSE with a snapshot, versioned updates, task progress, and log events. |
-| `GET /api/v1/membership-status?node_id=<node_id>&membership_epoch=<epoch>` | Read authenticated membership/removal status, including for revoked nodes. |
 
 Mutation bodies follow the [command contract](api-and-interfaces.md#command-api)
 and feature operation tables; they are not separate resource POST/DELETE routes.
-Ordinary envelopes reject raw secrets. Secret ingress requires local/protected
-transport; membership-status requires the previously pinned server trust.
+Ordinary envelopes reject raw secrets. Secret submission uses the HTTP console;
+values stay out of logs, receipts, and task payloads.
+
+### Backend enrollment, status, and credential forwarding
+
+These backend calls use the machine TLS listener. Enrollment and membership status
+are machine-only; credential import also has the HTTP console entry above. No
+browser/CLI/TUI connects to the machine listener.
+
+| Endpoint | Description |
+| --- | --- |
+| `POST /api/v1/enrollment/requests` | Submit a deduplicated enrollment request with node identity and CSRs. |
+| `GET /api/v1/enrollment/requests/{id}` | Read the authenticated request owner's enrollment status. |
+| `POST /api/v1/enrollment/requests/{id}/certificates` | Retrieve certificates for the approved node keys and membership. |
+| `GET /api/v1/membership-status?node_id=<node_id>&membership_epoch=<epoch>` | Read membership/removal status using pinned server trust, including for revoked nodes. |
+| `POST /api/v1/credentials/import` | Accept a credential forwarded by an authorized full-member daemon for storage on this node; apply the same staging/receipt contract. |
+
+Enrollment authentication details are subject to the [TLS prototype gate](identity-and-trust.md#enrollment-http-exchange).
 
 ### Collections and details
 
 Each row lists two GET endpoints: collection and detail, following the
 [common detail-route convention](api-and-interfaces.md#reads-and-events).
-Collections return `{items, next_cursor}`. Detail schemas not supplied in feature
-docs remain a specification gap, not an invented object contract.
+Collections return `{items, next_cursor}`; feature docs define their object schemas.
 
 | Collection endpoint | Detail endpoint | Description |
 | --- | --- | --- |
@@ -268,6 +303,9 @@ docs remain a specification gap, not an invented object contract.
 | `GET /api/v1/observations` | `GET /api/v1/observations/{id}` | Service-collected hardware and device facts. |
 | `GET /api/v1/publications` | `GET /api/v1/publications/{id}` | Remote branch/PR publication evidence. |
 | `GET /api/v1/cluster/requests` | `GET /api/v1/cluster/requests/{id}` | Join approval queue and request identity/version. |
+| `GET /api/v1/gc-plans` | `GET /api/v1/gc-plans/{id}` | Reviewed artifact deletion sets and protected dependencies. |
+| `GET /api/v1/media/plans` | `GET /api/v1/media/plans/{id}` | Image/device bindings and media-write reviews. |
+| `GET /api/v1/diagnostics` | `GET /api/v1/diagnostics/{id}` | Sanitized diagnostic bundle metadata, retention, and download link. |
 
 ### Singleton and nested reads
 
@@ -284,35 +322,52 @@ docs remain a specification gap, not an invented object contract.
 | `GET /api/v1/repositories/{id}/diff?from=<revision>&to=<revision>` | Source diff between selected revisions. |
 | `GET /api/v1/repositories/{id}/templates` | Repository-defined form/template catalog. |
 | `GET /api/v1/drafts/{id}/diff` | Proposed draft file changes. |
+| `GET /api/v1/drafts/{id}/files` | Versioned draft/rebase file manifest. |
+| `GET /api/v1/drafts/{id}/files/content?path=<relative-path>` | Stream one safe relative draft path. |
 | `GET /api/v1/preparations/{id}/diff` | Combined hardware, disk, and optional SOPS changes. |
 | `GET /api/v1/media/profiles` | Built-in and registered installer profiles. |
+| `GET /api/v1/media/{id}/download` | Stream a verified installer image with digest and length. |
+| `GET /api/v1/diagnostics/{id}/download` | Stream a retained sanitized diagnostic bundle. |
 | `GET /api/v1/hosts/{id}/disks` | Observed host disks and eligibility. |
 | `GET /api/v1/hosts/{id}/generations` | Retained system generations and output availability. |
 | `GET /api/v1/hosts/{id}/installer` | Installer-entry capabilities, recovery image, and protected devices. |
 | `GET /api/v1/diffs/{id}/changes` | Further pages of structured package changes. |
 | `GET /api/v1/tasks/{id}/logs` | Retained log bytes with absolute and next offsets. |
+| `GET /api/v1/tasks/{id}/logs/download` | Download a fixed snapshot of the retained task log. |
 | `GET /api/v1/tasks/{id}/progress` | Versioned progress snapshot and bounded active preview. |
 | `GET /api/v1/tasks/{id}/activities` | Paginated build/download/transfer activities. |
 | `GET /api/v1/tasks/{id}/activities/{activity_id}` | One activity's state, attempt, counters, and timing. |
+| `GET /api/v1/tasks/{id}/activities/{activity_id}/logs` | Read one build activity's retained log chunks. |
+| `GET /api/v1/tasks/{id}/activities/{activity_id}/logs/download` | Download a fixed snapshot of one build log. |
 
 ### Query controls
 
 | Reads | Controls described in the specs |
 | --- | --- |
-| Collections and activity lists | Pagination is required; a common request parameter/default/limit contract is not yet defined. |
-| Events | `topics=hosts,tasks,repositories` is the documented selector example; omission behavior and the complete topic list are unspecified. |
-| Diff changes | `kind=<category>`, `cursor=<cursor>` filter and paginate rows. Search is required, but its parameter is unspecified. |
-| Task logs | `offset=<byte-offset>`, `limit=<bytes>` select a chunk; the example uses 0 and 65536, without defining omission defaults. |
-| Task list | Host, kind, state, and time filters are required; exact HTTP parameter names are unspecified. |
+| Collections and activity lists | `cursor`, `limit`; ordering, consistency, and filters follow the [read contract](api-and-interfaces.md#reads-and-events). |
+| Events | `topics`; `task_id` is required when subscribing to `task.logs`; optional `activity_id` selects a build log. |
+| Configuration catalog | `repository_id`; mutually exclusive `ref_id` or `commit` requires it. |
+| Template catalog | Mutually exclusive `ref_id` or `commit`. |
+| Draft files/content | `version` pins file reads. |
+| Diff changes | `kind`, `q`, `cursor`, `limit`. |
+| Task/activity log chunks | `offset`, byte `limit`; bounds and retention follow the [log contract](task-engine.md#logs-and-interaction). |
+| Task list | `host_id`, `kind`, `state`, `since`, `until`. |
+| Activity list | `kind`, `state`, plus common pagination. |
 
 ### Nix cache transport
 
-These routes share the API listener but have **no `/api/v1` prefix**.
+These routes have **no `/api/v1` prefix**. `/cache/` is local-only HTTP on
+`http.port`; `/store-cache/` uses backend mTLS on `machine.port`.
 See [cache gateway](cache-gateway.md).
 
-| Endpoint or namespace | Description |
+| Endpoint | Description |
 | --- | --- |
-| `/cache/` | Local-only Nix substituter namespace; look up peers and stream exact outputs. Child URL syntax is not fully specified. |
+| `GET /cache/nix-cache-info` | Serve local gateway cache protocol metadata. |
+| `GET /cache/{store-hash}.narinfo` | Look up peers and return verified output metadata. |
+| `GET /cache/nar/{store-hash}/{nar-hash}.nar` | Stream the exact verified archive from an eligible peer. |
+| `HEAD /cache/nix-cache-info` | Return gateway metadata headers without a body. |
+| `HEAD /cache/{store-hash}.narinfo` | Look up output metadata without a response body. |
+| `HEAD /cache/nar/{store-hash}/{nar-hash}.nar` | Validate archive availability without exporting its bytes. |
 | `GET /store-cache/nix-cache-info` | Serve cache protocol metadata. |
 | `GET /store-cache/{store-hash}.narinfo` | Serve valid local output metadata, signatures, and archive URL. |
 | `GET /store-cache/nar/{store-hash}/{nar-hash}.nar` | Stream the exact local output after validating both hashes. |
@@ -323,24 +378,15 @@ See [cache gateway](cache-gateway.md).
 Peer store routes require machine authorization; uploads are unsupported. The
 gateway rewrites archive URLs without changing output integrity metadata.
 
-## Inconsistencies and gaps
+## Interface decisions
 
-These are unresolved findings from the rewrite docs, not new CLI/API decisions.
-
-| Area | Finding / required clarification |
-| --- | --- |
-| Installation confirmation | [Deployment](deployment-and-rollback.md#reboot-into-installer-and-fresh-install) allows `deploy install <host>` to pause for later disk review; [onboarding acceptance](host-onboarding.md#api-and-acceptance) says omitting any `--confirm-device` is an error. Specify submission versus erase/resume requirements. |
-| Missing CLI parity | Document syntax for `cluster.request.reject`, `host.adopt`, `configuration.draft.edit`, `publication.merge`, and `credential.remove`, all defined as operations in their feature docs. Do not infer public verbs from type names. |
-| Incomplete operation registry | [Identity reset](identity-and-trust.md#identity-record-and-lifecycle) and [diagnostics collect](technical-requirements.md#opentelemetry-and-diagnostics) lack explicit command-type/payload mappings. Clarify whether diagnostics aliases `host.diagnostics`; several other operation payloads are prose-only. |
-| Missing/defaulted CLI inputs | [Host assignment](host-inventory-and-lifecycle.md#discovery-and-enrollment) requires `ref_id` in its payload but omits its CLI selection/default. [Remote set](gitops.md#operation-and-read-api) requires `upstream_branch`, absent from its CLI example. Generation needs `base_commit` without a CLI resolution rule. |
-| Deployment selectors/defaults | [Apply defaults](deployment-and-rollback.md#apply-latest) allow repository/configuration/ref overrides, but `deployment.apply` lists no source selector. Preview/build have explicit source payloads, and build requires `builder_id`; clarify whether Apply's defaults extend to them. Rollback requires `mode` without an explicit default. The index retains these explicit inputs. |
-| Other argument contracts | Specify whether configuration listing can omit its repository, how non-Git credentials are checked, and whether media fetch defaults its release. The index retains the only documented explicit forms. |
-| Review/version inputs | Define transport for artifact deletion review, GC-plan creation, rebase draft versions, and installation task-version/review binding. Draft/preparation commits require repository versions beyond their shown `--expected-version`; document how clients obtain and submit both. |
-| Missing read/download contracts | Define media-plan retrieval, diagnostic bundle and image downloads, retained rebase draft/file access, and whether `hosts endpoints` reads host detail or a dedicated route. No paths are specified for these flows. |
-| Read schemas and selectors | [Common reads](api-and-interfaces.md#reads-and-events) define collection/detail conventions but leave several schemas, filters, cursor bounds, event topics, and log defaults unspecified. Define revision selection for configuration/template catalogs and full-log/per-build-log retrieval. |
-| Bootstrap admission | [Technical requirements](technical-requirements.md) say all durable mutations use JetStream and quorum loss blocks new commands; [onboarding](host-onboarding.md#installer-startup-and-network-setup) exempts local bootstrap operations. Specify their admission, persistence, and receipt behavior before enrollment. |
-| Cache and enrollment transport | [Cache](cache-gateway.md#routes-and-transport) leaves aggregate `/cache/` child routes implicit; [identity](identity-and-trust.md#enrollment-and-trust-boundary) describes TLS enrollment without concrete HTTP routes. Define these separately from ordinary command submission. |
-| Endpoint records | [Host inventory](host-inventory-and-lifecycle.md#host-record) uses port 63173 and [identity handoff](identity-and-trust.md#address-handoff-example) uses 63172 in untyped `endpoints`; [runtime](runtime-configuration.md#service-ports) assigns those to leaf and route listeners. Add protocol/service fields to distinguish them from API/cache port 63170. |
+Feature docs own the contracts: [admission scope](api-and-interfaces.md#operation-registry-and-scope),
+[task/plan reviews](api-and-interfaces.md#reviews-and-concurrency),
+[deployment defaults](deployment-and-rollback.md#preview-and-explicit-candidates),
+and [guided deletion](gitops.md#change-retention-and-garbage-collection).
+The [transport contract](runtime-configuration.md#service-ports) separates HTTP
+console access from automatic backend TLS. Enrollment authentication retains its
+[prototype gate](identity-and-trust.md#enrollment-http-exchange).
 
 ## Worked environment
 
@@ -375,7 +421,7 @@ build/rebuild tools. `nixmox deploy install <host>` is the single first/fresh-in
 workflow, with partition/install execution in the installer environment. Onboarding
 commands only inspect/prepare/commit.
 Builders, deployment targets, and image writers pull Nix outputs through a local
-streaming cache gateway. Peer serving shares the API port; NATS carries control
+streaming cache gateway. Peer serving uses the machine TLS listener; NATS carries control
 and progress, not artifact bytes.
 USB/SD, kexec, an installed agent, and temporary SSH agent bootstrap converge on
 the same agent/task protocol. Without kexec, a compatible boot adapter can use

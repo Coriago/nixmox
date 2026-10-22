@@ -77,7 +77,7 @@ versioned projections. Artifact means Git source, not a Nix system output.
 | Accepted refs and manifests | Versioned JetStream metadata |
 | Materialized source | Rebuildable node-local checkout: remote base plus retained increments |
 | Worktrees/drafts | Private owner-local storage; not claimed replicated |
-| Nix closures | Nix stores; HTTP(S) pulls through the [cache gateway](cache-gateway.md), outside Git artifact stream |
+| Nix closures | Nix stores; local HTTP gateway with automated TLS peer pulls through the [cache gateway](cache-gateway.md), outside Git artifact stream |
 
 Bundles preserve commit IDs, modes, binary files, and ancestry. A receiver verifies
 prerequisite commits and imported objects before building. A node fetches missing
@@ -157,20 +157,38 @@ and publication. Build readiness reports missing remote prerequisites separately
 | --- | --- |
 | repository.import | name, remote_url, upstream_branch, optional credential_ref |
 | repository.fetch | repository_id |
-| repository.remote.set | repository_id, url, upstream_branch |
+| repository.remote.set | repository_id, url, optional upstream_branch (preserve existing); expected repository version |
 | repository.credential.set | repository_id, credential_ref |
 | repository.rebase | repository_id, ref_id, onto_ref_id; expected repository version |
-| repository.rebase.resolve | task_id, resolved_files; expected draft version |
+| repository.rebase.resolve | task_id, resolved_files_ref; expected draft/repository versions from conflict review |
 | repository.rebase.abort | task_id |
-| artifact.delete | artifact_id; expected artifact version, reviewed dependent references |
-| repository.gc | repository_id, reviewed GC plan ID |
-| repository.publish | repository_id, ref_id, create_pull_request |
-| publication.merge | publication_id, expected_remote_head |
+| artifact.delete | artifact_id; optional plan_id (approval), task_id (resume); expected plan/artifact versions when approving |
+| repository.gc.plan | repository_id, optional artifact_ids (default all eligible); produces a plan without deleting |
+| repository.gc | repository_id, plan_id; expected plan/artifact versions; recheck affected refs and dependencies |
+| repository.publish | repository_id, ref_id, create_pull_request (default false); expected repository version |
+| publication.merge | publication_id, expected_remote_head; expected publication version |
 
 Read `/repositories/{id}/refs`, `/repositories/{id}/diff?from=...&to=...`,
 `/artifacts/{id}`, `/publications/{id}`. Rebase conflicts expose a retained draft
-and file paths; `nixmox repositories rebase-resolve TASK --files DIR` or
+and file paths; `nixmox repositories rebase-resolve TASK --files DIR --expected-version VERSION` or
 `rebase-abort TASK` mirrors the conflict panel in both UIs. No silent conflict choice.
+
+`repositories remote set <repository> --url <url>` preserves the upstream branch;
+optional `--upstream <branch>` changes it explicitly. Reads expose the current
+repository version used by the mutation envelope. `publications merge <publication>
+--expected-head <commit>` submits `publication.merge`; the service checks both the
+reviewed remote head and integration base before invoking the provider merge.
+Browser/TUI expose the same publication review and Merge action.
+
+Rebase task results expose `draft_id` and the expected draft/repository versions.
+Read conflicts through the common draft/file routes. The CLI uploads the reviewed
+directory to `POST /api/v1/drafts/{id}/resolutions?version=<version>` as streaming
+multipart parts keyed by safe relative path, then submits the returned
+`resolved_files_ref`. Uploads only stage owner-local files; they do not edit the
+accepted draft/ref. Validate paths and digest manifests, reject symlink escapes,
+bind the reference to draft/version, and expire unclaimed staging after one hour.
+Resubmitting a command reuses its staged reference; consumed references remain
+bound to the receipt. Draft unavailability is an error, never an empty resolution.
 
 ## Rebase publication and merge
 
@@ -205,12 +223,35 @@ on them. Squash/rebase merges may publish equivalent content without preserving
 the original commit ID; preserve artifacts still needed for that exact commit.
 Dependent changes must be safely rebased/repackaged before removing prerequisites.
 
-`nixmox repositories gc lab --dry-run` returns a plan listing artifacts, reclaimed
-bytes, protected references, and unpublished changes. Apply it with
-`nixmox repositories gc lab --plan gc_01 --wait`. Unpublished deletion requires
-explicit review; live-task dependencies block it. Browser/TUI: lab → Retained changes
-→ Clean up → review plan → Confirm. `nixmox artifacts delete art_01 --wait` uses the
-same dependency checks and confirmation flow. Revalidate plan versions at execution.
+`nixmox repositories gc lab --dry-run --wait` submits `repository.gc.plan` and
+returns a plan listing artifacts, reclaimed bytes, protected references, and
+unpublished changes. Apply it with `nixmox repositories gc lab --plan gc_01 --wait`.
+Supplying the plan ID explicitly approves its displayed deletion set, including
+unpublished changes; live-task dependencies still block it. Browser/TUI: lab →
+Retained changes → Clean up → review plan → Confirm.
+
+Interactive single-artifact deletion plans, displays the affected references, and
+asks for confirmation in one invocation:
+
+```sh
+nixmox artifacts delete art_01 --wait
+```
+
+Without a supplied plan, `artifact.delete` pauses its task with a generated
+`plan_id`. Interactive `--wait` guides review and resumes that task; noninteractive
+waiting returns exit 4. Scripts can resume with `--task <task> --plan <plan>`.
+For review in advance, `--dry-run` uses `repository.gc.plan` for the single artifact;
+later `artifacts delete <artifact> --plan <plan>` explicitly approves it. The CLI
+handles planning internally; users do not have to run a separate planning command.
+
+`GET /api/v1/gc-plans/{id}` returns
+`{id, version, repository_id, artifact_ids, reclaimed_bytes, protected_references,
+unpublished_artifact_ids, review, expected_versions}`. The embedded review describes
+the exact deletion set and affected references. Execute only after approval and
+fresh dependency/pin checks under repository exclusion. Changed deletion effects
+require a new plan and review; unrelated repository edits do not. Plans have no
+blanket expiry and can authorize deletion once. Retries reconcile the recorded
+result rather than deleting again. `--wait` obtains the plan/result from the task.
 
 Retain small audit records after payload deletion, including publication evidence
 or deletion reason. Retire affected change refs explicitly. Never display a deleted

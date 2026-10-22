@@ -3,6 +3,9 @@
 One administrator role operates all interfaces. Network access to the management
 console grants that authority; there are no human accounts or role hierarchy.
 Machine authentication is separate from that interface access model.
+CLI, TUI, and browser use HTTP, including secret submission; no human client needs
+certificates. Console traffic is unencrypted. Automated TLS protects backend
+daemon-to-daemon and NATS connections only.
 V1 requires no preseeded enrollment secret or manually managed NATS credentials.
 The [state inventory](#generated-and-preserved-state) owns security paths and
 preservation rules; other documents reference it.
@@ -49,9 +52,16 @@ nixmox hosts endpoints cedar
 nixmox identity reset --confirm-host cedar
 ```
 
-Reset is local-only and allowed only while unjoined, with explicit review of lost
-continuity. Browser/TUI: unjoined Settings → Identity → Reset → confirm. Joined
-hosts must leave first. No endpoint may reset a different node by name alone.
+Reset applies only to the addressed daemon's own identity while unjoined, with
+explicit review of lost continuity. Browser/TUI: unjoined Settings → Identity →
+Reset → confirm. Remote browser/CLI access to that daemon is allowed; this is not
+a loopback-only action. Joined hosts must leave first. A gateway cannot reset a
+different node by naming it.
+`identity.reset` takes `{confirm_host}` and the expected local identity version.
+It uses node-local admission; confirmation must
+match that node's displayed name/ID. Persist the replacement ID/key and reset receipt
+atomically; retrying the same command must not generate another identity. Retain
+the receipt outside identity key storage so it remains queryable after reset.
 
 ### Reusable installer identity
 
@@ -90,8 +100,8 @@ the transferred values; hardware identifiers remain hints, never authorization.
   "node_id": "n_cedar",
   "version": 9,
   "endpoints": [
-    {"address": "192.168.1.32:63172", "interface": "enp1s0", "priority": 20, "verified": true},
-    {"address": "100.90.0.32:63172", "interface": "tailscale0", "priority": 10, "verified": true}
+    {"service": "nats_route", "transport": "tls", "address": "192.168.1.32:63172", "interface": "enp1s0", "priority": 20, "verified": true},
+    {"service": "nats_route", "transport": "tls", "address": "100.90.0.32:63172", "interface": "tailscale0", "priority": 10, "verified": true}
   ]
 }
 ```
@@ -155,6 +165,35 @@ The unrestricted management API remains administrative authority, including join
 approval. Broker restrictions do not stop someone using that API; restrict its
 listeners to management interfaces. Human/interface authentication is outside v1.
 
+### Enrollment HTTP exchange
+
+These machine-only bootstrap routes use `machine.port` (default 63175) with
+automated TLS. Administrative `/api/v1/commands` and `/cluster/requests` reads stay
+on the HTTP console; the CLI/TUI/browser asks its daemon to perform enrollment.
+Before admission the server uses its generated daemon certificate; first-contact
+trust has the limitation above. After admission pin the cluster CA and peer identity.
+
+| Endpoint | Request / response |
+| --- | --- |
+| `POST /api/v1/enrollment/requests` | Node identity, expected cluster name, and daemon/broker CSRs → own request record; stable request ID deduplicates retries |
+| `GET /api/v1/enrollment/requests/{id}` | Request-owner read of state, expiry, cluster ID/fingerprint, and decision; no cluster inventory |
+| `POST /api/v1/enrollment/requests/{id}/certificates` | Retrieve approved certificates, CA chain, membership epoch, and scoped grants |
+
+Use standard TLS/CSR facilities for key possession and request-owner authentication;
+do not define a custom HTTP signing format. Bind approval to the node ID and exact
+daemon/broker keys. Changed keys need new approval; request IDs alone grant no
+access. Cluster-side persistence/approval/issuance requires quorum. The joining
+node retains its task locally while waiting. Certificate retrieval is idempotent
+for the approved membership; revoked nodes cannot obtain fresh credentials.
+Add verifies the discovered key and uses this same enrollment flow without a
+node-side prompt. Certificates never contain private keys or caller-selected roles.
+
+**Implementation gate:** a small TLS/enrollment prototype must demonstrate key
+possession before admission, request-owner isolation, CSR/approval binding, and
+safe retries before freezing authentication details. The separate
+[machine listener](runtime-configuration.md#service-ports) requires no browser trust setup.
+The routes above define operation boundaries, not a validated authentication wire format.
+
 ## Managed TLS and NATS permissions
 
 Nixmox generates a cluster CA and separate daemon/client and broker TLS keys.
@@ -171,6 +210,8 @@ Full daemon ── mTLS, loopback :63171 ── Full broker
                                       Full broker
                                           ⇅ mTLS :63173, scoped leaf permissions
 Pending daemon ─ mTLS, loopback :63171 ─ Pending broker
+
+Daemon ── managed mTLS :63175 ── Peer daemon (cache/credential transfers)
 ```
 
 | Connection | Authentication and authorization |
@@ -234,7 +275,7 @@ replace trust pins. Planned installation handoff still preserves existing keys/s
 
 ### Authenticated removal response
 
-After broker rejection, a node may query a known cluster peer's HTTPS
+After broker rejection, a node may query a known cluster peer's machine listener over HTTPS:
 `GET /api/v1/membership-status?node_id=n_cedar&membership_epoch=2` endpoint.
 Authenticate the server against the node's already pinned cluster trust and
 authorized peer identity. Never learn replacement trust from a removal message,
@@ -359,12 +400,15 @@ nixmox onboarding sops credential set sops-editor
 nixmox credentials list
 nixmox repositories credential set lab github-writer
 nixmox credentials check github-writer --repository lab --wait
+nixmox credentials check cache-signer --wait
+nixmox credentials remove unused-token --wait
 ```
 
 Browser: Settings → Credentials → Add → select storage node → hidden value field
 → Save → Test access. TUI mirrors these controls with hidden input. Module-managed
-credentials show their source and cannot be overwritten by UI. Import requires
-local or encrypted gateway transport; do not send tokens over a plaintext LAN URL.
+credentials show their source and cannot be overwritten by UI. Import uses the
+same HTTP console as other operations; daemon forwarding to another storage node
+uses automated mTLS. No browser/client certificate setup is involved.
 
 Cache signing and SOPS update keys use the same import/storage rules as Git tokens.
 Select them in Settings → Cache → Signing credential or Settings → Onboarding →
@@ -377,10 +421,34 @@ SSH-derived recipients remain separate. The bundled anchor updater and optional
 custom updater follow the [preparation contract](host-onboarding.md#optional-sops-contract).
 
 Types: `credential.import`, `credential.check`, `credential.remove`; values are
-sensitive request data and must use a dedicated secure ingress that stores the
+sensitive request data and must use the dedicated [secret ingress](api-and-interfaces.md#secret-ingress) that stores the
 secret locally before dispatching a value-free durable command. No raw secret may
 enter command envelopes, receipts, traces, or logs. Removal checks repository and
 updater references; it does not silently break configured dependents.
+
+| Command type | Payload |
+| --- | --- |
+| credential.import | `name`, `kind`, `storage_node_id`, `staging_ref`; secret ingress supplies this command |
+| credential.check | `credential_id`; optional `repository_id`, required for Git kinds |
+| credential.remove | `credential_id`; expected credential version; refuse active references or declared ownership |
+| cache.credential.set | `credential_id`; expected settings version |
+| onboarding.sops.credential.set | `credential_id`; expected settings version |
+
+`credentials check <credential>` dispatches by kind: Git kinds require
+`--repository` and test read access without pushing; cache signing keys sign/verify a disposable
+challenge; SOPS age keys validate parsing and derive the public recipient; bootstrap
+SSH keys validate parsing/signing locally. Non-Git checks reject `--repository`.
+Local key checks do not claim target SSH access or repository decryption; those
+are checked during bootstrap/preparation. Unsupported kinds return
+`UNSUPPORTED_CAPABILITY`. Results include `{kind, checks, scope, passed}` without
+secret material. Browser/TUI show the same scope and Remove dependency check.
+Removal waits for deletion receipts from every managed replica; unreachable holders
+block completion, and provider-side revocation remains separate.
+Supported kinds are `git-http-token`, `git-ssh-key`, `ssh-private-key` (bootstrap),
+`nix-cache-signing-key`, and `sops-age-key`. Public `scope` lists configured bindings;
+import alone creates none. Repository credential selection adds its binding.
+Successful Git read checks do not claim write permission; publication checks that
+capability through its provider/transport without changing unrelated branches.
 
 Any console can route a credential-dependent operation to an available full member
 that holds it. If none is available, return `CREDENTIAL_UNAVAILABLE`; local Git and

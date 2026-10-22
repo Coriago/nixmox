@@ -21,7 +21,10 @@ not mean fully managed.
   "configuration": {"repository_id": "r_lab", "name": "cedar", "ref_id": "ref_cedar"},
   "deployment_verified": false,
   "pending_reasons": ["configuration_not_deployed"],
-  "endpoints": [{"address": "192.168.1.32:63173", "interface": "enp1s0", "verified": true}],
+  "endpoints": [
+    {"service": "api", "transport": "http", "address": "192.168.1.32:63170", "interface": "enp1s0", "priority": 20, "verified": true},
+    {"service": "machine", "transport": "https", "address": "192.168.1.32:63175", "interface": "enp1s0", "priority": 20, "verified": true}
+  ],
   "capabilities": {"build": true, "install": true, "media_write": false},
   "broker_role": "leaf",
   "active_task_ids": []
@@ -38,6 +41,15 @@ active member. A new explicit join creates a new membership epoch for the same I
 An `awaiting_approval` join request leaves membership `unjoined`; it is not a
 pending member. Request records and approval bindings live in
 [identity and trust](identity-and-trust.md#enrollment-and-trust-boundary).
+
+Endpoint records use `service: api|machine|nats_route|nats_leaf` and
+`transport: http|https|tls`: `api` uses `http`, `machine` uses `https`, and NATS uses
+`tls`. Console access and the local cache use `api`; enrollment, peer transfers,
+and membership status use `machine`, subject to each route's access rules. Advertise actual
+configured ports; no client infers a service from its port. Verification is scoped
+to the endpoint/service and observed peer identity. `hosts endpoints <host>` reads
+`GET /api/v1/hosts/{id}`: its `connectivity` list contains
+`{peer_id, service, selected_address, state, reason}`; address/reason may be null.
 
 ## Health status
 
@@ -82,10 +94,12 @@ expiry requires an explicit new attempt, not an automatic approval-request loop.
 nixmox discovery list
 nixmox cluster create homelab --wait
 # Submit from the unjoined node; --wait remains awaiting approval:
-nixmox --endpoint http://cedar:63170 cluster join --address alder:63170 --name homelab --wait
+nixmox --endpoint http://cedar:63170 cluster join --address alder:63175 --name homelab --wait
 # In another console, approve the exact request shown by the cluster:
 nixmox --endpoint http://alder:63170 cluster requests list
 nixmox --endpoint http://alder:63170 cluster requests approve join_01 --version 1 --wait
+# Reject a different request:
+nixmox cluster requests reject join_02 --version 1 --wait
 # Alternative: initiate from an existing cluster console:
 nixmox --endpoint http://alder:63170 cluster add --discovery discovery_cedar --wait
 nixmox hosts assign cedar --repository lab --configuration cedar --wait
@@ -96,12 +110,25 @@ nixmox hosts show cedar
 | --- | --- |
 | cluster.create | name |
 | cluster.join | address, expected_cluster_name |
-| cluster.request.approve | request_id, expected_version; binds stored key/expiry |
-| cluster.request.reject | request_id, expected_version |
+| cluster.request.approve | request_id; expected `join_request:<id>` version; binds stored key/expiry |
+| cluster.request.reject | request_id; expected `join_request:<id>` version |
 | cluster.add | discovery_id, expected_node_id, expected_key_fingerprint |
-| host.assign | host_id, repository_id, configuration, ref_id |
-| host.adopt | host_id, pinned source, observed output; explicit verification |
-| cluster.leave | host_id, expected membership epoch |
+| host.assign | host_id, repository_id, configuration, optional ref_id; expected host/configuration versions |
+| host.adopt | host_id, candidate_id, confirm_host; expected host version |
+| cluster.leave | host_id, membership_epoch; expected host version |
+| host.remove | host_id, force (must be true), confirm_host, membership_epoch; expected host version |
+
+Assignment defaults `ref_id` to the selected configuration's tracked ref, resolved
+under its expected version. `hosts assign ... --ref <ref>` overrides it explicitly;
+the selected ref must export that configuration. Reassignment changes desired
+state, never running evidence.
+
+`nixmox hosts adopt cedar --candidate cand_01 --confirm-host cedar --wait` verifies
+that the running output equals the candidate's pinned output and that the permanent
+Nixmox service is present. Collect evidence from the authenticated target; never
+accept a caller's assertion of its running output. Mismatch blocks adoption without
+activation. Browser/TUI Verify running configuration selects the same candidate
+and confirms the host. Adoption preserves the desired binding and reports drift.
 
 Browser: unjoined Clusters → homelab → Request join → Awaiting approval. Existing
 cluster: Hosts → Join requests → inspect node/address/key → Approve or Reject.
@@ -111,6 +138,7 @@ scripts supply `--key-fingerprint`. TUI uses the same screens/actions. The unjoi
 [Clusters flow](host-onboarding.md#clusters-joining-and-headless-setup) is shared
 by installer and installed nodes, including timeout, Search again, and live updates.
 Discovery advertises the unjoined node's browser URL as well as enrollment endpoints.
+Explicit join addresses select the peer's machine listener, not its console port.
 After approval/Add, both show
 Hosts → cedar → Pending → Assign configuration. A preconfigured installed host
 uses Verify running configuration instead of silently assuming assignment is proof.
@@ -152,7 +180,8 @@ Proposed topology: one durable broker initially; promote to three eligible full
 members when available. Two full hosts do not imply two-replica JetStream fault
 tolerance. Each node fetches Git bases from the remote independently; JetStream
 stores local changes. After three-replica promotion, quorum loss
-blocks new durable mutations; never silently scale down because nodes disappeared.
+blocks new cluster-scoped durable mutations; local bootstrap operations retain
+their node-local scope. Never silently scale down because nodes disappeared.
 Graceful removal coordinates explicit replica changes. Explain durability in UI.
 
 ```sh

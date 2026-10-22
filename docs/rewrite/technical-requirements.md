@@ -1,7 +1,9 @@
 # Technical architecture and acceptance
 
 Implement one domain/service layer consumed by CLI, browser, and TUI. Long-running
-operations use the task engine; all durable mutations use NATS/JetStream. Native
+operations use the task engine; cluster-scoped durable mutations use NATS/JetStream.
+The explicit [node-local operations](api-and-interfaces.md#operation-registry-and-scope)
+reuse durable local receipt/task storage before enrollment and during quorum loss. Native
 protocols handle discovery, remote Git fetches, closure transfer, SSH, and disk I/O.
 
 Apply/rollback use the standard Nix build/rebuild and activation toolchain;
@@ -12,8 +14,9 @@ SSH can bootstrap temporary agents; subsequent host orchestration
 uses the same NATS protocol. Reboot entry may prepare a compatible spare device
 through confirmed media tasks. Reject hosts with neither kexec nor a ready/preparable
 adapter/media route; never format storage required by the running system.
-Cross-host Nix outputs use the [streaming cache gateway](cache-gateway.md), sharing
-the API port. NATS carries discovery/control/progress, never archive bytes. No
+Cross-host Nix outputs use the [streaming cache gateway](cache-gateway.md) over the
+managed machine TLS listener; local Nix and all user interfaces use HTTP.
+NATS carries discovery/control/progress, never archive bytes. No
 HTTP-over-NATS or generic SSH-over-NATS fallback is included.
 
 ## Component contracts
@@ -105,7 +108,7 @@ byte offset. Reconnection starts a fresh snapshot; safety refresh catches missed
 final updates. Telemetry never renews membership by itself. A disconnected browser
 freezes uptime rather than pretending the source is still live.
 
-Enrollment uses a limited TLS bootstrap exchange outside NATS; unapproved nodes
+Enrollment uses a limited TLS bootstrap exchange on the machine listener outside NATS; unapproved nodes
 have no cluster broker connection. After cluster approval/Add, commands and control
 queries use authenticated NATS. Topology changes may interrupt
 the transport carrying a result; look up the durable receipt, never rerun effects
@@ -158,7 +161,7 @@ broker/            embedded NATS/JetStream storage
 Write authoritative files atomically and durably before acknowledging the effect
 boundary they represent. Cluster projections are reconstructable views, not a
 replacement for local execution evidence. Logs are append-only bytes with offsets.
-Quorum loss blocks new durable commands; already-admitted work follows its effect
+Quorum loss blocks new cluster-scoped durable commands; already-admitted work follows its effect
 policy. No takeover of uncertain target effects based solely on a coordinator lease.
 
 Version persisted records and wire envelopes for identification. Mixed-version
@@ -200,12 +203,27 @@ reviewable bundle of versions, sanitized configuration, task IDs, connection sta
 and bounded diagnostic logs. Exclude credentials and arbitrary repository content.
 OTLP export is optional; local structured diagnostics work without a collector.
 
+`diagnostics collect --host <host>` aliases `hosts diagnostics <host>` and submits
+`host.diagnostics`. Optional `--since`/`--until` map to UTC timestamps; `until`
+defaults to admission time and `since` to `until` minus one hour. Reject reversed
+ranges or spans over 24 hours.
+The task returns `diagnostic_id` and `download_url`. Reads:
+`GET /api/v1/diagnostics/{id}` returns
+`{id, version, host_id, owner_node_id, since, until, bytes, sha256, state, expires_at, download_url}`;
+`GET /api/v1/diagnostics/{id}/download` streams the sanitized tar.gz bundle with
+filename, digest, and length. Retain for 24 hours after completion; expiry returns
+410 and unavailable owners return 503. Stream directly over HTTP, never JetStream.
+
 ## Acceptance matrix
 
 | Scenario | Required assertion |
 | --- | --- |
 | First use | Public remote base plus local changes needs no Git write/SOPS credentials |
 | Interface parity | Same form validation, payload, confirmation, and task result in CLI/TUI/browser |
+| Interface contracts | Every documented verb maps to a registered operation/read; preview/build defaults, assignment refs, credential-kind checks, and immutable media release resolution agree across clients |
+| Review concurrency | Install starts without erase approval; wrong/stale review, missing device acknowledgement, changed source/device facts, and stale GC plans fail before effects; unrelated health/progress updates preserve approval; duplicate resumption cannot repeat effects |
+| Read/transfer contracts | Cursor/filter bounds, revision-pinned catalogs/files, log retention gaps, per-build logs, and owner-unavailable downloads return their documented outcomes |
+| Local admission | Network/discovery and local join intent survive restart without cluster quorum using shared task machinery; cluster mutations never fall back to local execution |
 | Three-node deployment | Pinned unpublished source builds on a non-target node and activates on target |
 | Cache gateway | One closure pulls disjoint outputs from two peers through one URL; peer failure is bounded; signatures, streaming, GC safety, and actual source progress are verified |
 | Apply latest | Host-list/detail action runs build/diff/deploy; default review and explicit auto-approval match CLI `apply --yes`; restart preserves the choice and pinned source |
@@ -221,6 +239,7 @@ OTLP export is optional; local structured diagnostics work without a collector.
 | Operation boundaries | One Install command handles first/fresh installs; Apply never formats; unsupported entry returns INSTALLATION_UNSUPPORTED before effects |
 | Agent entry parity | USB/SD, kexec, installed agent, and SSH bootstrap converge on the same identity/task protocol; bootstrap requires no preinstalled Nix |
 | Installer bootstrap | Auto-launched TUI, Wi-Fi setup, discovery timeout/retry, and headless Ethernet enrollment share browser/TUI state; LAN access works without internet |
+| Transport separation | CLI/TUI/browser, including credential and Wi-Fi submission, work over HTTP without certificates or HTTPS redirects; machine-only routes are absent there. Daemon transfers and NATS require automated TLS; enrollment/status use their scoped bootstrap/removal exceptions. Custom machine ports propagate through discovery, joining, and firewall rules |
 | Installer profiles | Pinned x86/Pi/custom recipes prefer the capable writing host for builds; remote overrides/fallback transfer verified images; USB/SD writing is architecture-independent; advertised board/boot support has physical test evidence |
 | Git durability | Another node fetches the remote base and applies retained changes after writer loss |
 | Git retention | No full repo in JetStream; published inclusion or reviewed deletion controls change cleanup |
