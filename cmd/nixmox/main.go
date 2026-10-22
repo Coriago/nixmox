@@ -72,6 +72,12 @@ func exitError(out io.Writer, err error) int {
 	return 1
 }
 func run(ctx context.Context, args []string, out, errOut io.Writer) int {
+	if len(args) > 0 && args[0] == "activation-receipt" {
+		if len(args) != 3 {
+			return 2
+		}
+		return errorCode(errOut, deployment.RunActivationReceipt(ctx, args[1], args[2]))
+	}
 	root := flags("nixmox", errOut)
 	endpoint := root.String("endpoint", "", "HTTP console origin")
 	configPath := root.String("config", "", "runtime YAML path")
@@ -90,6 +96,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return serve(ctx, args[1:], *configPath, out, errOut)
 	}
 	ep := *endpoint
+	localEndpoint := *endpoint == "" && os.Getenv("NIXMOX_ENDPOINT") == ""
 	if ep == "" {
 		ep = os.Getenv("NIXMOX_ENDPOINT")
 	}
@@ -117,6 +124,24 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 			return 2
 		}
 		return errorCode(errOut, tui.Run(ctx, c))
+	}
+	if args[0] == "apply" || args[0] == "deploy" && len(args) > 1 && args[1] == "apply" {
+		applyArgs := args[1:]
+		if args[0] == "deploy" {
+			applyArgs = args[2:]
+		}
+		if len(applyArgs) == 0 || strings.HasPrefix(applyArgs[0], "-") {
+			if !localEndpoint {
+				fmt.Fprintln(errOut, "An explicit target host is required with a remote endpoint.")
+				return 2
+			}
+			id, err := c.Identity(ctx)
+			if err != nil {
+				return exitError(errOut, err)
+			}
+			applyArgs = append([]string{id.NodeID}, applyArgs...)
+		}
+		return deployWorkflowCommand(ctx, c, append([]string{"apply"}, applyArgs...), out, errOut)
 	}
 	if len(args) < 2 {
 		fmt.Fprintln(errOut, "A subcommand is required.")
@@ -380,6 +405,8 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 	hosts := &host.Catalog{State: sources.State, Identity: clusters.Identity, Members: clusters.Members, Configurations: configurations, Sample: inventorySampler.Snapshot}
 	operations = append(operations, hosts.Operations()...)
 	deployments := &deployment.Service{Sources: sources, Configurations: configurations, Hosts: hosts, Identity: clusters.Identity, Root: store.Root + "/builds"}
+	deployments.System = deployment.LocalSystem{ManagementReady: clusters.BrokerReady, StateRoot: store.Root + "/builds"}
+	deployments.RefreshHost = inventorySampler.Refresh
 	operations = append(operations, deployments.Operations()...)
 	svc, err := service.Open(store, network.Inspector{Config: cfg}, operations...)
 	if err != nil {

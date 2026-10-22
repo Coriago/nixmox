@@ -8,6 +8,10 @@ import (
 type DeploymentReader interface {
 	Candidate(context.Context, string) (domain.Candidate, error)
 	Activities(context.Context, string, string, string) (any, error)
+	Diff(context.Context, string) (domain.PackageDiff, error)
+	DiffChanges(context.Context, string, string, string, string, string) (domain.Page[domain.PackageChange], error)
+	Deployment(context.Context, string) (domain.Deployment, error)
+	Generations(context.Context, string, string, string) (domain.Page[domain.Generation], error)
 }
 
 func (s *Service) SetDeployments(r DeploymentReader) {

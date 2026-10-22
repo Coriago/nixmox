@@ -8,15 +8,16 @@ import (
 )
 
 type Sampler struct {
-	mu     sync.RWMutex
-	sample domain.HostSample
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu      sync.RWMutex
+	sample  domain.HostSample
+	cancel  context.CancelFunc
+	done    chan struct{}
+	refresh chan struct{}
 }
 
 func StartSampler(inspector Inspector, identity func() domain.Identity, publish func(domain.HostSample) error) *Sampler {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Sampler{cancel: cancel, done: make(chan struct{})}
+	s := &Sampler{cancel: cancel, done: make(chan struct{}), refresh: make(chan struct{}, 1)}
 	go func() {
 		defer close(s.done)
 		ticker := time.NewTicker(15 * time.Second)
@@ -35,10 +36,17 @@ func StartSampler(inspector Inspector, identity func() domain.Identity, publish 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+			case <-s.refresh:
 			}
 		}
 	}()
 	return s
+}
+func (s *Sampler) Refresh() {
+	select {
+	case s.refresh <- struct{}{}:
+	default:
+	}
 }
 func (s *Sampler) Snapshot() domain.HostSample {
 	s.mu.RLock()

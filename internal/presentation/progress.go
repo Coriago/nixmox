@@ -15,11 +15,15 @@ func TaskProgress(task domain.Task) string {
 	}
 	b, _ := json.Marshal(task.Progress)
 	var p struct {
-		Phase        string    `json:"phase"`
-		Freshness    string    `json:"freshness"`
-		ObservedAt   time.Time `json:"observed_at"`
-		Availability string    `json:"availability"`
-		Downloads    struct {
+		Phase          string    `json:"phase"`
+		Freshness      string    `json:"freshness"`
+		ObservedAt     time.Time `json:"observed_at"`
+		Availability   string    `json:"availability"`
+		Activation     string    `json:"activation"`
+		Observation    string    `json:"observation"`
+		ExpectedOutput string    `json:"expected_output"`
+		RunningOutput  string    `json:"running_output"`
+		Downloads      struct {
 			BytesReceived  uint64   `json:"bytes_received"`
 			BytesTotal     *uint64  `json:"bytes_total"`
 			BytesPerSecond *float64 `json:"bytes_per_second"`
@@ -37,6 +41,9 @@ func TaskProgress(task domain.Task) string {
 	}
 	if p.Availability == "unavailable" {
 		return "Structured Nix progress has not been reported yet."
+	}
+	if p.Observation != "" {
+		return fmt.Sprintf("%s · %s\nActivation: %s · observation: %s\nExpected: %s\nRunning: %s", p.Phase, p.Freshness, p.Activation, p.Observation, p.ExpectedOutput, p.RunningOutput)
 	}
 	stale := !task.Terminal() && time.Since(p.ObservedAt) > 5*time.Second
 	freshness := p.Freshness

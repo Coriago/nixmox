@@ -24,6 +24,8 @@ type Service struct {
 	Identity       func() domain.Identity
 	Root           string
 	Nix            nixstore.Nix
+	System         TargetSystem
+	RefreshHost    func()
 }
 type Selector struct {
 	RepositoryID  string `json:"repository_id,omitempty"`
@@ -72,7 +74,7 @@ func (s *Service) Operations() []service.Operation {
 		op.Reconcile = s.runBuild
 		ops = append(ops, op)
 	}
-	return ops
+	return append(ops, s.workflowOperations()...)
 }
 func (s *Service) resolveBuild(ctx context.Context, c domain.Command) (json.RawMessage, error) {
 	var p buildPayload
@@ -182,7 +184,7 @@ func (s *Service) runBuild(ctx context.Context, e *service.Execution) (any, erro
 		return nil, domain.Err("BUILDER_UNAVAILABLE", "Pinned builder identity differs from the executor.", 503)
 	}
 	id := gitstore.StableID("cand_", e.Command.ID)
-	if e.Command.Type == "deployment.build" {
+	if e.Command.Type != "deployment.preview" {
 		candidate, err := s.Candidate(ctx, id)
 		if err == nil {
 			info, err := s.Nix.Info(ctx, candidate.OutputPath)
@@ -223,7 +225,7 @@ func (s *Service) runBuild(ctx context.Context, e *service.Execution) (any, erro
 			return nil, domain.Err("INVALID_STATE", "Build checkpoint is invalid.", 409)
 		}
 	} else {
-		evaluation, err = s.Nix.EvaluateGit(ctx,dir,pin.Source.FlakeDirectory,pin.Source.Commit,pin.Source.FlakeAttribute)
+		evaluation, err = s.Nix.EvaluateGit(ctx, dir, pin.Source.FlakeDirectory, pin.Source.Commit, pin.Source.FlakeAttribute)
 		if err != nil {
 			return nil, err
 		}
@@ -275,6 +277,9 @@ func (s *Service) runBuild(ctx context.Context, e *service.Execution) (any, erro
 		return nil, err
 	}
 	candidate := domain.Candidate{SchemaVersion: 1, ID: id, Version: 1, Source: pin.Source, BuilderID: pin.BuilderID, System: evaluation.System, State: "built", OutputPath: output.Path, NarHash: output.NarHash, InputLockDigest: evaluation.InputLockDigest, DerivationPath: evaluation.Derivation, TaskID: e.TaskID, CreatedAt: pin.At}
+	if comparison, compareErr := s.makeDiff(ctx, candidate, e.Command.TargetID, ""); compareErr == nil {
+		candidate.Comparison = &domain.CandidateComparison{DiffID: comparison.ID, HostID: e.Command.TargetID}
+	}
 	if _, err = s.Sources.State.CAS(ctx, "candidate."+id, candidate, 0); err != nil {
 		return nil, err
 	}

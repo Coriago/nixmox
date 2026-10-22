@@ -139,31 +139,33 @@ type Cancellation struct {
 	Requested bool `json:"requested"`
 }
 type Task struct {
-	SchemaVersion   int             `json:"schema_version"`
-	ID              string          `json:"id"`
-	Version         int64           `json:"version"`
-	CommandID       string          `json:"command_id"`
-	Kind            string          `json:"kind"`
-	State           string          `json:"state"`
-	Phase           string          `json:"phase"`
-	Scope           string          `json:"scope"`
-	OwnerNodeID     string          `json:"owner_node_id"`
-	ClusterID       *string         `json:"cluster_id"`
-	MembershipEpoch int             `json:"membership_epoch,omitempty"`
-	CoordinatorID   string          `json:"coordinator_id"`
-	BuilderID       *string         `json:"builder_id"`
-	TargetID        string          `json:"target_id"`
-	ParentID        *string         `json:"parent_id"`
-	Source          any             `json:"source"`
-	Progress        any             `json:"progress"`
-	Cancellation    Cancellation    `json:"cancellation"`
-	Effects         map[string]bool `json:"effects"`
+	SchemaVersion   int                 `json:"schema_version"`
+	ID              string              `json:"id"`
+	Version         int64               `json:"version"`
+	CommandID       string              `json:"command_id"`
+	Kind            string              `json:"kind"`
+	State           string              `json:"state"`
+	Phase           string              `json:"phase"`
+	Scope           string              `json:"scope"`
+	OwnerNodeID     string              `json:"owner_node_id"`
+	ClusterID       *string             `json:"cluster_id"`
+	MembershipEpoch int                 `json:"membership_epoch,omitempty"`
+	CoordinatorID   string              `json:"coordinator_id"`
+	BuilderID       *string             `json:"builder_id"`
+	TargetID        string              `json:"target_id"`
+	ParentID        *string             `json:"parent_id"`
+	Source          any                 `json:"source"`
+	Progress        any                 `json:"progress"`
+	Approval        *DeploymentApproval `json:"approval,omitempty"`
+	Cancellation    Cancellation        `json:"cancellation"`
+	Effects         map[string]bool     `json:"effects"`
 	Log             struct {
 		NodeID     string `json:"node_id"`
 		NextOffset int    `json:"next_offset"`
 	} `json:"log"`
 	Result     json.RawMessage `json:"result"`
 	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
+	RecheckAt  *time.Time      `json:"recheck_at,omitempty"`
 	Exclusions []string        `json:"exclusions,omitempty"`
 	WaitingFor []string        `json:"waiting_for,omitempty"`
 	Error      *Error          `json:"error"`
@@ -184,6 +186,9 @@ func (t Task) NetworkResult() *NetworkStatus {
 
 func (t Task) Terminal() bool {
 	return t.State == "succeeded" || t.State == "failed" || t.State == "cancelled"
+}
+func (t Task) RequiresAttention() bool {
+	return t.State == "blocked" && t.RecheckAt == nil && len(t.WaitingFor) == 0
 }
 func (t *Task) Transition(state, phase string) error {
 	allowed := map[string][]string{"queued": {"running", "cancelling", "blocked"}, "running": {"succeeded", "failed", "cancelling", "reconciling", "blocked"}, "blocked": {"running", "cancelling", "reconciling"}, "reconciling": {"running", "succeeded", "failed", "cancelling", "blocked"}, "cancelling": {"cancelled", "reconciling"}}

@@ -27,9 +27,9 @@
     const deadline = Date.now() + 190000;
     while (Date.now() < deadline) {
       const task = await request("/tasks/" + receipt.task_id);
-      if (task.progress) { const p=task.progress; $("build-progress").textContent = task.phase + " · " + p.freshness + "\nDownloads: " + p.downloads.bytes_received + " / " + (p.downloads.bytes_total ?? "unknown") + " bytes\nBuilds: " + p.builds.completed_derivations + " / " + (p.builds.total_derivations ?? "unknown") + " known · " + p.builds.active_derivations + " active"; }
+      if (task.progress?.downloads && task.progress?.builds) { const p=task.progress; $("build-progress").textContent = task.phase + " · " + p.freshness + "\nDownloads: " + p.downloads.bytes_received + " / " + (p.downloads.bytes_total ?? "unknown") + " bytes\nBuilds: " + p.builds.completed_derivations + " / " + (p.builds.total_derivations ?? "unknown") + " known · " + p.builds.active_derivations + " active"; }
       if (task.state === "succeeded") return task.result;
-      if (["failed", "cancelled", "blocked"].includes(task.state)) throw new Error(task.error?.message || "Task " + task.state + ": " + receipt.task_id);
+      if (["failed", "cancelled"].includes(task.state) || task.state === "blocked" && !task.recheck_at && !task.waiting_for?.length) throw new Error(task.error?.message || "Task " + task.state + ": " + receipt.task_id);
       await pause(300);
     }
     throw new Error("Task is still running. Follow it on the Tasks page: " + receipt.task_id);
@@ -175,9 +175,70 @@
   async function hosts() { const selected=$("target-host").value;const page=await request("/hosts?limit=500");$("target-host").replaceChildren(...page.items.map(h=>new Option(h.name+" · "+h.membership+" · "+h.reachability,h.id)));if(page.items.some(h=>h.id===selected))$("target-host").value=selected;await hostDetails(); }
   async function selectedHost(){const id=$("target-host").value;if(!id)throw new Error("Select a target host.");return request("/hosts/"+id);}
   async function hostDetails(){const h=await selectedHost();$("host-details").textContent=h.environment+" · "+h.health.status+" · "+(h.configuration?h.configuration.name:"No configuration assigned")+" · observed "+(h.last_seen||"unknown");}
+  let deploymentTask, deploymentDiff, deploymentCursor, rollbackGeneration, deploymentHost, watchTimer;
+  async function submitDeployment(type,payload,expected,target) {
+    const random=[...crypto.getRandomValues(new Uint8Array(16))].map(v=>v.toString(16).padStart(2,"0")).join("");
+    const envelope={id:"cmd_"+random,type,target_id:target,expected_versions:expected,payload};
+    const key="nixmox.command."+envelope.id;
+    sessionStorage.setItem(key,JSON.stringify(envelope));
+    const receipt=await request("/commands",envelope);sessionStorage.removeItem(key);return receipt;
+  }
+  async function diffRows(cursor="") {
+    if(!deploymentDiff)return;
+    const query=new URLSearchParams({kind:$("diff-kind").value,q:$("diff-query").value,limit:"25",cursor});
+    const page=await request("/diffs/"+deploymentDiff.id+"/changes?"+query);
+    $("diff-rows").replaceChildren();
+    for(const row of page.items){const box=document.createElement("details"),label=document.createElement("summary"),paths=document.createElement("pre");
+      const versions=items=>items.map(v=>v.version||"unversioned").join(", ")||"—";
+      label.textContent=row.kind+" · "+row.name+" · "+versions(row.old)+" → "+versions(row.new);
+      paths.textContent="Previous outputs\n"+row.old.map(v=>v.store_path).join("\n")+"\nCandidate outputs\n"+row.new.map(v=>v.store_path).join("\n");box.append(label,paths);$("diff-rows").append(box);}
+    deploymentCursor=page.next_cursor;$("diff-next").hidden=!deploymentCursor;
+  }
+  async function showDiff(id) {
+    deploymentDiff=await request("/diffs/"+id);const d=deploymentDiff,s=d.summary;$("package-diff").hidden=false;
+    $("diff-summary").textContent=s.added+" added · "+s.removed+" removed · "+s.version_changed+" version changed · "+s.output_changed+" output changed · "+s.ambiguous+" ambiguous · "+s.unchanged+" unchanged";
+    $("diff-baseline").textContent=(d.stale?"Stale comparison · ":"")+d.baseline.output_path+" → "+d.candidate_output+" · baseline observed "+d.baseline.observed_at+" · closure size "+d.closure_size.before_bytes+" → "+d.closure_size.after_bytes+" bytes (not download size)";
+    await diffRows();
+  }
+  async function watchDeployment(id) {
+    clearTimeout(watchTimer);
+    try {
+      deploymentTask=await request("/tasks/"+id);const t=deploymentTask;
+      $("deployment-panel").hidden=false;$("deploy-status").textContent=t.id+" · "+t.state+" · "+t.phase+(t.error?" · "+t.error.message:"");
+      $("deploy-result").textContent=JSON.stringify(t.result||{source:t.source,progress:t.progress,effects:t.effects},null,2);
+      $("deploy-cancel").hidden=!t.cancellation.allowed||["failed","cancelled","succeeded"].includes(t.state);
+      $("deploy-approve").hidden=!(t.state==="blocked"&&t.phase==="review"&&t.approval?.state==="pending");
+      if(t.approval&&deploymentDiff?.id!==t.approval.diff_id)await showDiff(t.approval.diff_id);
+      if(["succeeded","failed","cancelled"].includes(t.state)){sessionStorage.removeItem("nixmox.deployment.task");return;}
+      watchTimer=setTimeout(()=>watchDeployment(id),1500);
+    } catch(e){error(e);watchTimer=setTimeout(()=>watchDeployment(id),5000);}
+  }
+  async function deploymentOptions(generation) {
+    deploymentHost=await selectedHost();rollbackGeneration=generation||null;
+    $("deployment-panel").hidden=false;$("deploy-auto").checked=false;$("deploy-mode").value="switch";
+    $("deploy-selection").textContent=rollbackGeneration?"Rollback "+deploymentHost.name+" to generation "+generation.number+" · "+generation.output_path:"Apply latest to "+deploymentHost.name+" · "+(deploymentHost.configuration?.name||"No assigned configuration");
+  }
+  $("apply-host").onclick=()=>run(()=>deploymentOptions());
+  $("deploy-start").onclick=()=>run(async()=>{
+    if(!deploymentHost)throw new Error("Choose Apply latest or a generation first.");
+    const h=deploymentHost,p={mode:$("deploy-mode").value,auto_approve:$("deploy-auto").checked};if(rollbackGeneration)p.generation_id=rollbackGeneration.id;
+    const receipt=await submitDeployment(rollbackGeneration?"deployment.rollback":"deployment.apply",p,{["host:"+h.id]:h.version},h.id);
+    sessionStorage.setItem("nixmox.deployment.task",receipt.task_id);await watchDeployment(receipt.task_id);
+  });
+  $("deploy-approve").onclick=()=>run(async()=>{
+    const t=deploymentTask;if(!t?.approval||t.approval.diff_id!==deploymentDiff?.id)throw new Error("Refresh the current review.");
+    await command("deployment.approve",{task_id:t.id,diff_id:deploymentDiff.id,diff_version:deploymentDiff.version},{},t.target_id);await watchDeployment(t.id);
+  });
+  $("deploy-cancel").onclick=()=>run(async()=>{const t=deploymentTask;if(!t)return;await submitDeployment("task.cancel",{task_id:t.id},{["task:"+t.id]:t.version},t.target_id);await watchDeployment(t.id);});
+  $("diff-search").onclick=()=>run(()=>diffRows());$("diff-next").onclick=()=>run(()=>diffRows(deploymentCursor));
+  $("host-generations").onclick=()=>run(async()=>{
+    const h=await selectedHost(),page=await request("/hosts/"+h.id+"/generations?limit=500");$("deployment-panel").hidden=false;$("generation-list").replaceChildren();
+    for(const g of page.items){const row=document.createElement("p");row.textContent="Generation "+g.number+" · "+(g.running?"running · ":"")+(g.boot?"next boot · ":"")+g.output_path+" · "+(g.available?"available":"unavailable");row.append(button("Review rollback",()=>deploymentOptions(g)));$("generation-list").append(row);}
+  });
+  const savedDeployment=sessionStorage.getItem("nixmox.deployment.task");if(savedDeployment)watchDeployment(savedDeployment);
   $("target-host").onchange=()=>run(hostDetails);
   $("refresh-hosts").onclick=()=>run(hosts);
-  for(const [id,verb] of [["preview-host","preview"],["build-host","build"]])$(id).onclick=()=>run(async()=>{const h=await selectedHost();const result=await command("deployment."+verb,{host_id:h.id},{["host:"+h.id]:h.version},h.id);$("candidate-result").textContent=result.id?"Candidate "+result.id+"\nSource "+result.source.commit+"\nOutput "+result.output_path+"\nNAR hash "+result.nar_hash:JSON.stringify(result,null,2);notice("Completed "+verb+" for "+h.name);});
+  for(const [id,verb] of [["preview-host","preview"],["build-host","build"]])$(id).onclick=()=>run(async()=>{const h=await selectedHost();const result=await command("deployment."+verb,{host_id:h.id},{["host:"+h.id]:h.version},h.id);$("candidate-result").textContent=result.id?"Candidate "+result.id+"\nSource "+result.source.commit+"\nOutput "+result.output_path+"\nNAR hash "+result.nar_hash:JSON.stringify(result,null,2);if(result.id&&verb==="build")$("candidate-result").after(button("Compare candidate packages",async()=>{const d=await command("deployment.diff",{host_id:h.id,candidate_id:result.id},{},h.id);$("deployment-panel").hidden=false;await showDiff(d.id);}));notice("Completed "+verb+" for "+h.name);});
   $("fetch-repository").onclick = () => run(async () => { await command("repository.fetch", {repository_id: repository.id}); await openRepository(repository.id); });
   $("new-configuration").onclick = () => run(newConfiguration);
   $("open-draft").onsubmit = event => { event.preventDefault(); const id = new FormData(event.currentTarget).get("draft_id"); run(() => openDraft(id)); };

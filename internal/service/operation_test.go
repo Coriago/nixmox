@@ -185,3 +185,48 @@ func TestBlockedReviewSurvivesRestartAndRequiresVersionedResume(t *testing.T) {
 	await(t, s, task.ID, "succeeded")
 	code(t, s.Resume(task.ID, task.Version, check), "VERSION_CONFLICT")
 }
+
+func TestReceiptReconciliationResumesAfterRestartWithoutRepeatingEffect(t *testing.T) {
+	st := operationStore(t)
+	var effects, reconciles atomic.Int32
+	op := testOperation(func(ctx context.Context, e *Execution) (any, error) {
+		if err := e.Exclude("system:target"); err != nil {
+			return nil, err
+		}
+		if err := e.Checkpoint("activation_intent", map[string]string{"unit": "stable"}, false); err != nil {
+			return nil, err
+		}
+		effects.Add(1)
+		return nil, &Blocked{Phase: "reconciling", Reason: domain.Err("OBSERVATION_UNKNOWN", "Awaiting receipt.", 503), RecheckAfter: time.Second}
+	})
+	op.Reconcile = func(ctx context.Context, e *Execution) (any, error) {
+		reconciles.Add(1)
+		task, err := e.Snapshot()
+		if err != nil {
+			return nil, err
+		}
+		if len(task.Exclusions) != 1 || task.Cancellation.Allowed {
+			t.Error("lost effect exclusion", task)
+		}
+		return "receipt verified", nil
+	}
+	s, err := Open(st, inspectFunc(good), op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := admitOperation(t, s, "receipt-recovery", "target:a")
+	task := await(t, s, r.TaskID, "blocked")
+	if task.RecheckAt == nil {
+		t.Fatal("lost scheduled reconciliation")
+	}
+	s.Close()
+	s, err = Open(st, inspectFunc(good), op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	await(t, s, r.TaskID, "succeeded")
+	if effects.Load() != 1 || reconciles.Load() != 1 {
+		t.Fatal("repeated effect or lost reconciliation", effects.Load(), reconciles.Load())
+	}
+}

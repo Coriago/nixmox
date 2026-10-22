@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestRepositoryAssignmentToPinnedCandidate(t *testing.T) {
 	if _, err := os.Stat("/nix/var/nix/daemon-socket/socket"); err != nil {
 		t.Skip("real Nix integration requires daemon")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -105,8 +106,19 @@ func TestRepositoryAssignmentToPinnedCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hosts := &host.Catalog{State: sources.State, Identity: manager.Identity, Members: manager.Members, Configurations: configurations, Sample: func() domain.HostSample { return sample }}
-	builds := &deployment.Service{Sources: sources, Configurations: configurations, Hosts: hosts, Identity: manager.Identity, Root: local.Root + "/builds", Nix: nixstore.Nix{Substituters: []string{"https://cache.nixos.org"}}}
+	systemState := &fixtureSystem{}
+	sample.Capabilities.Apply = true
+	hosts := &host.Catalog{State: sources.State, Identity: manager.Identity, Members: manager.Members, Configurations: configurations, Sample: func() domain.HostSample {
+		v := sample
+		systemState.mu.Lock()
+		defer systemState.mu.Unlock()
+		if systemState.running != "" {
+			running := systemState.running
+			v.RunningOutput = &running
+		}
+		return v
+	}}
+	builds := &deployment.Service{Sources: sources, Configurations: configurations, Hosts: hosts, Identity: manager.Identity, Root: local.Root + "/builds", System: systemState, Nix: nixstore.Nix{Substituters: []string{"https://cache.nixos.org"}}}
 	ops := append(manager.Operations(), sources.Operations()...)
 	ops = append(ops, hosts.Operations()...)
 	ops = append(ops, builds.Operations()...)
@@ -177,4 +189,174 @@ func TestRepositoryAssignmentToPinnedCandidate(t *testing.T) {
 	if replay.ID != task.ID {
 		t.Fatal("build retry identity changed")
 	}
+
+	// Real immutable Nix closures, with activation effects isolated behind a
+	// fixture target. No profile or running system on the developer is changed.
+	baseline := func(label string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.CopyFS(dir, os.DirFS(candidate.OutputPath)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "baseline"), []byte(label), 0600); err != nil {
+			t.Fatal(err)
+		}
+		b, err := exec.CommandContext(ctx, "nix-store", "--add", dir).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	first, second := baseline("first"), baseline("second")
+	systemState.set(first, 1)
+	admit := func(id, kind string, p any, versions map[string]int64) domain.Receipt {
+		t.Helper()
+		b, _ := json.Marshal(p)
+		r, err := svc.Admit(domain.Command{ID: id, Type: kind, TargetID: target.ID, Payload: b, ExpectedVersions: versions})
+		if err != nil {
+			t.Fatal(kind, err)
+		}
+		return r
+	}
+	await := func(id string, predicate func(domain.Task) bool) domain.Task {
+		t.Helper()
+		for ctx.Err() == nil {
+			v, err := svc.Task(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if predicate(v) {
+				return v
+			}
+			if v.State == "failed" {
+				t.Fatal(v.Error)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal(ctx.Err())
+		return domain.Task{}
+	}
+	versions := map[string]int64{"host:" + target.ID: assigned.Version}
+	receipt := admit("cmd_apply_review", "deployment.apply", map[string]any{"candidate_id": candidate.ID}, versions)
+	review := await(receipt.TaskID, func(v domain.Task) bool { return v.State == "blocked" && v.Phase == "review" })
+	if review.Approval == nil || review.Approval.State != "pending" || len(review.Exclusions) != 0 || systemState.calls() != 0 {
+		t.Fatal("review retained target lock or activated", review)
+	}
+	diff, err := builds.Diff(ctx, review.Approval.DiffID)
+	if err != nil || diff.Baseline.OutputPath != first || diff.CandidateOutput != candidate.OutputPath {
+		t.Fatal(diff, err)
+	}
+	changes, err := builds.DiffChanges(ctx, diff.ID, "", "", "1", "")
+	if err != nil || len(changes.Items) != 1 {
+		t.Fatal(changes, err)
+	}
+	if changes.NextCursor != nil {
+		if _, err = builds.DiffChanges(ctx, diff.ID, "", "different filter", "1", *changes.NextCursor); err == nil {
+			t.Fatal("cursor accepted different filter")
+		}
+	}
+	// A running-generation change after review must invalidate approval.
+	systemState.set(second, 2)
+	submit("cmd_approve_stale", "deployment.approve", map[string]any{"task_id": review.ID, "diff_id": review.Approval.DiffID, "diff_version": review.Approval.DiffVersion}, nil)
+	replacement := await(review.ID, func(v domain.Task) bool {
+		return v.State == "blocked" && v.Phase == "review" && v.Approval != nil && v.Approval.DiffID != diff.ID
+	})
+	if len(replacement.Exclusions) != 0 || systemState.calls() != 0 {
+		t.Fatal("stale approval activated or held target", replacement)
+	}
+	systemState.mu.Lock()
+	systemState.lostReply = true
+	systemState.mu.Unlock()
+	submit("cmd_approve_current", "deployment.approve", map[string]any{"task_id": review.ID, "diff_id": replacement.Approval.DiffID, "diff_version": replacement.Approval.DiffVersion}, nil)
+	done := await(review.ID, func(v domain.Task) bool { return v.State == "succeeded" })
+	var deployed domain.Deployment
+	if json.Unmarshal(done.Result, &deployed) != nil || deployed.Observation != "verified" || systemState.calls() != 1 {
+		t.Fatal(deployed, done)
+	}
+	// The exact approval command replays its receipt, not target effects.
+	submit("cmd_approve_current", "deployment.approve", map[string]any{"task_id": review.ID, "diff_id": replacement.Approval.DiffID, "diff_version": replacement.Approval.DiffVersion}, nil)
+	if systemState.calls() != 1 {
+		t.Fatal("activation repeated after lost reply")
+	}
+	history, err := builds.Generations(ctx, target.ID, "100", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackID := ""
+	for _, g := range history.Items {
+		if g.OutputPath == second {
+			rollbackID = g.ID
+		}
+	}
+	if rollbackID == "" {
+		t.Fatal("previous generation not retained", history)
+	}
+	staged := submit("cmd_rollback_boot", "deployment.rollback", map[string]any{"generation_id": rollbackID, "mode": "boot", "auto_approve": true}, versions)
+	var rollback domain.Deployment
+	if json.Unmarshal(staged.Result, &rollback) != nil || rollback.Observation != "staged" || rollback.RunningOutput != candidate.OutputPath || rollback.OutputPath != second {
+		t.Fatal(rollback)
+	}
+	binding, err := hosts.Host(ctx, target.ID)
+	if err != nil || *binding.Configuration != *assigned.Configuration {
+		t.Fatal("rollback changed desired binding", binding, err)
+	}
 }
+
+// These target effects are deliberately simulated. The separate VM acceptance
+// suite must verify the real NixOS profile, activation unit and reboot behavior.
+type fixtureSystem struct {
+	mu               sync.Mutex
+	running, profile string
+	number, starts   int
+	history          []domain.Generation
+	lostReply        bool
+}
+
+func (f *fixtureSystem) set(path string, number int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.running = path
+	f.profile = path
+	f.number = number
+	f.history = append(f.history, domain.Generation{Number: number, OutputPath: path, Available: true})
+}
+func (f *fixtureSystem) calls() int { f.mu.Lock(); defer f.mu.Unlock(); return f.starts }
+func (f *fixtureSystem) snapshot() deployment.SystemSnapshot {
+	history := append([]domain.Generation{}, f.history...)
+	for i := range history {
+		history[i].Running = history[i].OutputPath == f.running
+	}
+	return deployment.SystemSnapshot{Running: f.running, Profile: f.profile, Generation: f.number, ObservedAt: time.Now().UTC(), Generations: history}
+}
+func (f *fixtureSystem) Inspect(context.Context) (deployment.SystemSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.running == "" {
+		return deployment.SystemSnapshot{}, domain.Err("OBSERVATION_UNAVAILABLE", "Fixture target not initialized.", 503)
+	}
+	return f.snapshot(), nil
+}
+func (f *fixtureSystem) Select(ctx context.Context, output string) (deployment.SystemSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.profile != output {
+		f.number++
+		f.profile = output
+		f.history = append(f.history, domain.Generation{Number: f.number, OutputPath: output, Available: true})
+	}
+	return f.snapshot(), nil
+}
+func (f *fixtureSystem) Start(ctx context.Context, task, output, mode string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.starts++
+	if mode == "switch" {
+		f.running = output
+	}
+	if f.lostReply {
+		return domain.Err("OUTCOME_UNKNOWN", "Fixture lost dispatch reply.", 503)
+	}
+	return nil
+}
+func (f *fixtureSystem) Activation(context.Context, string) (string, error) { return "succeeded", nil }
+func (f *fixtureSystem) Ready(context.Context) bool                         { return true }

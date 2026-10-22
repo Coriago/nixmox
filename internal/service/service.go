@@ -426,11 +426,14 @@ func (s *Service) signal() {
 func (s *Service) work() {
 	defer close(s.done)
 	defer s.workers.Wait()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-s.wake:
+		case <-ticker.C:
 		}
 		for {
 			s.mu.Lock()
@@ -440,6 +443,14 @@ func (s *Service) work() {
 			}
 			var selected *domain.Task
 			for _, t := range s.tasks {
+				if t.State == "blocked" && t.RecheckAt != nil && !time.Now().Before(*t.RecheckAt) {
+					_ = t.Transition("reconciling", t.Phase)
+					t.RecheckAt = nil
+					t.Error = nil
+					if err := s.persistTask(t); err != nil {
+						break
+					}
+				}
 				if t.State == "blocked" && t.Error != nil && t.Error.Code == "RESOURCE_BUSY" && len(t.WaitingFor) > 0 && s.exclusionsAvailable(t.ID, t.WaitingFor) {
 					_ = t.Transition("reconciling", t.Phase)
 					t.Error = nil
@@ -509,6 +520,10 @@ func (s *Service) execute(ctx context.Context, cancel context.CancelFunc, t doma
 		if errors.As(err, &blocked) {
 			_ = t.Transition("blocked", blocked.Phase)
 			t.Error = blocked.Reason
+			if blocked.RecheckAfter >= time.Second && blocked.RecheckAfter <= time.Minute {
+				at := time.Now().UTC().Add(blocked.RecheckAfter)
+				t.RecheckAt = &at
+			}
 		} else {
 			_ = t.Transition("failed", t.Phase)
 			t.Error = safeOperationError(err)

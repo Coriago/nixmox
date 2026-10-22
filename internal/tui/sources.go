@@ -19,6 +19,8 @@ import (
 )
 
 type sourceMessage struct {
+	diff           *domain.PackageDiff
+	generations    []domain.Generation
 	hosts          []domain.Host
 	host           domain.Host
 	configurations []domain.Configuration
@@ -32,6 +34,14 @@ type sourceMessage struct {
 	err            error
 }
 type sourceModel struct {
+	deploymentDiff *domain.PackageDiff
+	generations    []domain.Generation
+	deployAuto     bool
+	deployMode     string
+	rollback       *domain.Generation
+	diffQuery      textinput.Model
+	diffKind       int
+	diffCursor     string
 	hosts          []domain.Host
 	host           domain.Host
 	configurations []domain.Configuration
@@ -304,7 +314,7 @@ func (m *sourceModel) update(msg tea.Msg) tea.Cmd {
 		m.selection = 0
 		m.notice = ""
 		switch v.mode {
-		case "hosts", "host", "assign", "build-progress":
+		case "hosts", "host", "assign", "build-progress", "deploy-options", "generations", "package-diff", "diff-search":
 			return m.hostMessage(v)
 		case "repositories":
 			m.repos = v.repos
@@ -547,7 +557,7 @@ func (m *sourceModel) view() string {
 	var b strings.Builder
 	b.WriteString("Nixmox · Sources\n\n")
 	switch m.mode {
-	case "hosts", "host", "assign", "build-progress":
+	case "hosts", "host", "assign", "build-progress", "deploy-options", "generations", "package-diff", "diff-search":
 		b.WriteString(m.hostView())
 	case "repositories":
 		for i, r := range m.repos {

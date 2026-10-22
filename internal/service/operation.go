@@ -93,13 +93,17 @@ func (e *Execution) MarkEffect(name string, observed bool) error {
 }
 
 type Blocked struct {
-	Phase  string
-	Reason *domain.Error
+	Phase        string
+	Reason       *domain.Error
+	RecheckAfter time.Duration
 }
 
 func (b *Blocked) Error() string { return b.Reason.Error() }
 func Block(phase, code, message string) error {
 	return &Blocked{Phase: phase, Reason: domain.Err(code, message, 409)}
+}
+func ReconcileLater(code, message string) error {
+	return &Blocked{Phase: "reconciling", Reason: domain.Err(code, message, 503), RecheckAfter: 10 * time.Second}
 }
 func networkOperation(inspector Inspector) Operation {
 	run := func(ctx context.Context, e *Execution) (any, error) {

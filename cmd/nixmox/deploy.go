@@ -13,6 +13,12 @@ import (
 )
 
 func deployCommand(ctx context.Context, c *client.Client, args []string, out, errOut io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "apply", "approve", "rollback", "generations", "diff", "show":
+			return deployWorkflowCommand(ctx, c, args, out, errOut)
+		}
+	}
 	if len(args) < 2 {
 		return 2
 	}
@@ -104,7 +110,7 @@ func watchTask(ctx context.Context, c *client.Client, id string, asJSON bool, ou
 			}
 			last = text
 		}
-		if task.Terminal() || task.State == "blocked" {
+		if task.Terminal() || task.RequiresAttention() {
 			if !asJSON {
 				if result := presentation.TaskResult(task); result != "" {
 					fmt.Fprintln(out, result)

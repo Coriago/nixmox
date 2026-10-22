@@ -191,7 +191,7 @@ func (c *Client) Wait(ctx context.Context, id string) (domain.Task, error) {
 	defer ticker.Stop()
 	for {
 		t, err := c.Task(ctx, id)
-		if err != nil || t.Terminal() || t.State == "blocked" {
+		if err != nil || t.Terminal() || t.RequiresAttention() {
 			return t, err
 		}
 		select {
