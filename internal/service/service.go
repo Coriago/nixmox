@@ -34,6 +34,8 @@ type admission struct {
 	CoordinatorID   string          `json:"coordinator_id,omitempty"`
 }
 type Service struct {
+	sources              SourceReader
+	configurations       ConfigurationReader
 	mu                   sync.Mutex
 	store                *storage.Store
 	inspector            Inspector

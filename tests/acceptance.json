@@ -5,7 +5,7 @@
   "areas": {
     "configuration": {"status":"partial","evidence":["internal/config/config_test.go","tests/vm/bootstrap.nix"],"gates":["remaining_runtime_adapters"]},
     "interface_parity": {"status":"partial","evidence":["internal/httpapi/server_test.go","internal/tui/model_test.go","cmd/nixmox/main_test.go"]},
-    "browser": {"status":"partial","evidence":["internal/httpapi/server_test.go","internal/httpapi/telemetry_test.go","tests/browser/telemetry.py"],"gates":["configuration_editor","log_gap_recovery"]},
+    "browser": {"status":"partial","evidence":["internal/httpapi/server_test.go","internal/httpapi/telemetry_test.go","tests/browser/telemetry.py"],"gates":["configuration_editor_browser_verification","log_gap_recovery"]},
     "host_telemetry": {"status":"partial","evidence":["internal/telemetry/proc_test.go","internal/cluster/telemetry_test.go","internal/httpapi/telemetry_test.go","tests/browser/telemetry.py","tests/vm/bootstrap.nix","tests/physical/smoke.sh"],"gates":["continuous_inventory","otlp_same_source_export","telemetry_drop_counters","all_metric_history_views"]},
     "reviews": {"status":"pending","evidence":[]},
     "reads": {"status":"partial","evidence":["internal/service/service_test.go","internal/httpapi/server_test.go","internal/cluster/relay_test.go"],"gates":["remaining_resource_catalogs","log_sse_recovery"]},
@@ -24,6 +24,7 @@
     "rollback_health": {"status":"pending","evidence":[]},
     "diff_progress": {"status":"pending","evidence":[]},
     "cache": {"status":"pending","evidence":[]},
-    "git": {"status":"pending","evidence":[]}
+    "git": {"status":"partial","evidence":["internal/gitstore/git_test.go","internal/configuration/integration_test.go"],"gates":["multi_node_quorum_source_tests","rebase_publication_gc","private_remote_credentials"]},
+    "configuration_generation": {"status":"partial","evidence":["internal/render/render_test.go","internal/configuration/integration_test.go"],"gates":["editor_end_to_end_verification","descriptor_updates","preparation_templates","cross_console_draft_owner_routing"]}
   }
 }

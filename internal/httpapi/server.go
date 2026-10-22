@@ -41,6 +41,9 @@ func New(s *service.Service, clusters ...ClusterReader) http.Handler {
 		a.cluster = clusters[0]
 	}
 	mux := http.NewServeMux()
+	a.sourceRoutes(mux)
+	a.configurationRoutes(mux)
+	mux.HandleFunc("GET /ui/sources", func(w http.ResponseWriter, r *http.Request) { a.render(w, r, "sources.html", 200, a.view()) })
 	mux.HandleFunc("GET /api/v1/cluster/status", func(w http.ResponseWriter, r *http.Request) {
 		if a.cluster == nil {
 			writeError(w, domain.Err("UNAVAILABLE", "Cluster status unavailable.", 503), "")
@@ -97,7 +100,7 @@ func New(s *service.Service, clusters ...ClusterReader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'")
 		if r.Method == http.MethodPost {
 			if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 				writeError(w, domain.Err("FORBIDDEN", "Cross-origin mutation refused.", 403), "")

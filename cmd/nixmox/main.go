@@ -21,13 +21,17 @@ import (
 	"nixmox/internal/client"
 	"nixmox/internal/cluster"
 	"nixmox/internal/config"
+	"nixmox/internal/configuration"
 	"nixmox/internal/domain"
+	"nixmox/internal/gitops"
+	"nixmox/internal/gitstore"
 	"nixmox/internal/host"
 	"nixmox/internal/httpapi"
 	"nixmox/internal/machine"
 	"nixmox/internal/network"
 	"nixmox/internal/presentation"
 	"nixmox/internal/service"
+	"nixmox/internal/state"
 	"nixmox/internal/storage"
 	"nixmox/internal/telemetry"
 	"nixmox/internal/transport"
@@ -120,6 +124,23 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	rest := args[2:]
 	if group == "cluster" {
 		return clusterCommand(ctx, c, args[1:], out, errOut)
+	}
+	if group == "repositories" {
+		return repositoryCommand(ctx, c, args[1:], out, errOut)
+	}
+	if group == "configurations" {
+		return configurationCommand(ctx, c, args[1:], out, errOut)
+	}
+	if group == "artifacts" && verb == "show" && len(rest) >= 1 {
+		if !domain.SafeID.MatchString(rest[0]) {
+			return 2
+		}
+		var value domain.Artifact
+		if err := c.Read(ctx, "/api/v1/artifacts/"+rest[0], &value); err != nil {
+			return exitError(errOut, err)
+		}
+		printJSON(out, value)
+		return 0
 	}
 	if group == "hosts" && verb == "telemetry" {
 		return hostTelemetryCommand(ctx, c, rest, out, errOut)
@@ -307,11 +328,24 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 	}
 	defer clusters.Close()
 	operations := append(clusters.Operations(), host.Operations(host.Inspector{Config: cfg, BrokerReady: clusters.BrokerReady})...)
+	git, err := gitstore.New(store.Root + "/git")
+	if err != nil {
+		return exitError(errOut, err)
+	}
+	sources := &gitops.Service{State: state.Store{Acquire: clusters.DurableStores}, Git: git}
+	operations = append(operations, sources.Operations()...)
+	configurations, err := configuration.New(sources, store)
+	if err != nil {
+		return exitError(errOut, err)
+	}
+	operations = append(operations, configurations.Operations()...)
 	svc, err := service.Open(store, network.Inspector{Config: cfg}, operations...)
 	if err != nil {
 		return exitError(errOut, err)
 	}
 	defer svc.Close()
+	svc.SetSources(sources)
+	svc.SetConfigurations(configurations)
 	sampler := telemetry.Start(svc.Identity, time.Duration(cfg.Telemetry.Host.FastIntervalMs)*time.Millisecond, time.Duration(cfg.Telemetry.Host.FilesystemIntervalMs)*time.Millisecond)
 	defer sampler.Close()
 	if err := svc.SetTelemetry(sampler); err != nil {

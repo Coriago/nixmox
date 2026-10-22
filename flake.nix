@@ -24,6 +24,7 @@
             vendorHash = "sha256-ZLY+pkDyvlL40vDdQ0y+C3a0+ji2Mio2HdXNo+NH+ig=";
             subPackages = [ "cmd/nixmox" ];
             env.CGO_ENABLED = 0;
+            preBuild = "bash scripts/build-assets.sh";
             checkPhase = ''
               runHook preCheck
               go test ./...

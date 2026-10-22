@@ -33,6 +33,8 @@ type submitted struct {
 }
 type event struct{ err error }
 type Model struct {
+	sources             *sourceModel
+	sourcesFocus        bool
 	client              *client.Client
 	ctx                 context.Context
 	events              <-chan error
@@ -118,6 +120,24 @@ func (m Model) waitEvent() tea.Cmd {
 	}
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(sourceMessage); ok && m.sources != nil {
+		return m, m.sources.update(msg)
+	}
+	if m.sourcesFocus {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			if key.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if key.String() == "esc" {
+				m.sourcesFocus = false
+				return m, nil
+			}
+			return m, m.sources.update(msg)
+		}
+		if _, ok := msg.(tea.WindowSizeMsg); ok {
+			m.sources.update(msg)
+		}
+	}
 	if update, ok := msg.(telemetryMessage); ok {
 		if !m.telemetryFocus || update.host != m.telemetry.HostID || update.generation != m.telemetryGeneration {
 			return m, nil
@@ -316,10 +336,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "Tab: Network/Tasks · g: Cluster · Enter/r: check · ↑/↓: select task · c: cancel/create · r: retry · p: retry uncertain submission · PgUp/PgDn: scroll · q: close"
 			return m, nil
 		case "g":
+			m.sourcesFocus = false
 			m.clusterFocus = !m.clusterFocus
 			m.taskFocus = false
 			m.content()
 			m.viewport.GotoTop()
+			return m, nil
+		case "s":
+			m.sourcesFocus = true
+			if m.sources == nil {
+				m.sources = newSources(m.ctx, m.client, m.width, m.viewport.Height+8)
+				return m, m.sources.fetch()
+			}
 			return m, nil
 		case "tab", "shift+tab":
 			m.clusterFocus = false
@@ -500,6 +528,9 @@ func (m *Model) content() {
 	m.viewport.SetYOffset(offset)
 }
 func (m Model) View() string {
+	if m.sourcesFocus && m.sources != nil {
+		return m.sources.view()
+	}
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render("Nixmox")
 	hint := "Network · Enter/r: Check network"
 	if m.taskFocus {
@@ -518,7 +549,7 @@ func (m Model) View() string {
 			input = "\nJoin cluster\nAddress: " + m.addressInput.View() + "\nExpected name: " + m.nameInput.View() + "\nTab: switch field · Enter: request join · Esc: cancel"
 		}
 	}
-	return title + "\n\n" + m.viewport.View() + input + "\n\n" + lipgloss.NewStyle().Width(m.width).Render(m.notice) + "\n" + hint + " · Tab: switch · g: Cluster · h: Telemetry · ?: help · q: close\n"
+	return title + "\n\n" + m.viewport.View() + input + "\n\n" + lipgloss.NewStyle().Width(m.width).Render(m.notice) + "\n" + hint + " · Tab: switch · g: Cluster · s: Sources · h: Telemetry · ?: help · q: close\n"
 }
 func Run(ctx context.Context, c *client.Client) error {
 	ctx, cancel := context.WithCancel(ctx)

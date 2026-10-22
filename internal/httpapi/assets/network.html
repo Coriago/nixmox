@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="htmx-config" content='{"allowEval":false,"includeIndicatorStyles":false}'><title>Nixmox · Local node</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/htmx.min.js" defer></script><script src="/assets/events.js" defer></script></head>
-<body><header><a href="/ui/network">Nixmox</a><a href="/ui/cluster">Cluster</a><span>Local node</span></header><main>{{if .Task}}{{template "task-content" .}}{{else if .Telemetry}}{{template "telemetry-content" .}}{{else if .JoinRequest}}{{template "join-request" .}}{{else if .ClusterPage}}{{template "cluster-content" .}}{{else}}{{template "content" .}}{{end}}</main></body></html>
+<body><header><a href="/ui/network">Nixmox</a><a href="/ui/cluster">Cluster</a><a href="/ui/sources">Sources</a><span>Local node</span></header><main>{{if .Task}}{{template "task-content" .}}{{else if .Telemetry}}{{template "telemetry-content" .}}{{else if .JoinRequest}}{{template "join-request" .}}{{else if .ClusterPage}}{{template "cluster-content" .}}{{else}}{{template "content" .}}{{end}}</main></body></html>
 {{define "content"}}
 <h1>Network</h1><p>Inspect this node’s management connections.</p>
 <p id="stream-state" role="status">Connecting to live updates…</p>

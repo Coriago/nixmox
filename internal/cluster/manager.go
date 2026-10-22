@@ -81,6 +81,17 @@ type Manager struct {
 	telemetry         *telemetryTransport
 }
 
+// DurableStores is an adapter boundary for cluster feature services. Pending
+// leaves never obtain direct KV/Object Store access through this method.
+func (m *Manager) DurableStores() (*broker.Stores, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed || m.stores == nil || m.membership == nil {
+		return nil, unavailable()
+	}
+	return m.stores, nil
+}
+
 func Open(st *storage.Store, c config.Config) (*Manager, error) {
 	id, err := st.Identity()
 	if err != nil {

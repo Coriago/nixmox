@@ -33,3 +33,5 @@ result
 
 # Python test harness bytecode
 __pycache__/
+internal/httpapi/assets/renderer.wasm
+internal/httpapi/assets/wasm_exec.js

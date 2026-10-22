@@ -232,6 +232,9 @@ func ValidateRemote(remote string) error {
 		if err != nil {
 			return errors.New("invalid repository remote_url")
 		}
+		if u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("repository URLs cannot contain query credentials or fragments")
+		}
 		switch u.Scheme {
 		case "https", "http", "ssh", "file":
 		default:
