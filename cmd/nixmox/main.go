@@ -1,17 +1,13 @@
 package main
 
 import (
-	"context"
-	"nixmox/internal/app"
-	"nixmox/internal/console"
+	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
+
+	"nixmox/internal/domain"
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := console.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, app.Serve)
-	stop()
-	os.Exit(code)
+	fmt.Fprintln(os.Stderr, domain.Unavailable("command interface"))
+	os.Exit(3)
 }

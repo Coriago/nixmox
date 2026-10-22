@@ -14,8 +14,6 @@ func Serve(ctx context.Context, config runtime.Config) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
-	// Compose identity/local store -> TLS broker -> telemetry/tasks -> services ->
-	// gateway. Bind every required listener before readiness; shut down in reverse.
-	// Until those boundaries are implemented, do not create state or open listeners.
+	// Daemon composition is not implemented; do not create state or open listeners.
 	return domain.Unavailable("daemon engines")
 }

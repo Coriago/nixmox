@@ -4,12 +4,11 @@ Step 3 implements reusable primitives, not application workflows. The daemon sta
 gated until feature admission, enrollment and recovery are wired in step 4.
 
 Implementation packages are `internal/engine/{comms,telemetry,task,nix,git}`;
-the parent package contains contracts only. UI core is `internal/presentation`,
-with native/HTTP adapters in `internal/console`.
+the parent package contains contracts only. UI implementation and research/design
+notes were removed at the user's request.
 
 Current pins: Go 1.26, nats-server 2.15.1, nats.go 1.54.0, OTel core/SDK 1.47.0,
-OTLP log HTTP exporter 0.23.0, gopsutil 4.26.9, Bubble Tea 1.3.10,
-Bubbles 0.21.1, Lip Gloss 1.1.0, and go-nix commit 4bdde671e0a1.
+OTLP log HTTP exporter 0.23.0, gopsutil 4.26.9, and go-nix commit 4bdde671e0a1.
 These are dependency pins, not claims of completed integration validation.
 
 ## NATS and JetStream
@@ -81,18 +80,6 @@ allowed per subprocess; combining producers requires an explicit reducer.
 `nix.LogAdapter()` is the first adapter. Package differences are not a log
 adapter: they compare exact structured closure metadata. No feature handler
 needs to know how Nix output is framed or parsed.
-
-## UI core
-
-Context7: /charmbracelet/bubbles; pinned compatible Bubble Tea 1 / Bubbles 0.21 /
-Lip Gloss 1. Sources: https://htmx.org/docs/ and
-https://htmx.org/attributes/hx-preserve/ plus pinned textarea/viewport source.
-Async work returns messages, not concurrent model mutations. Resize updates sizes
-without replacing input controls. Keep focus/scroll and manual buffers independent
-of progress. hx-preserve alone does not guarantee textarea focus/cursor; place the
-editor outside refresh targets. HTML uses Go escaping, Vary: HX-Request, local
-assets and one JSON SSE stream. Preview uses the same pure Go code in WASM/native;
-no Nix evaluation, network fetch, or authority in a preview.
 
 ## Nix
 
