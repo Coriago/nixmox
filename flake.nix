@@ -107,8 +107,10 @@
               iproute2
               util-linux
               systemd
+              (python3.withPackages (p: [ p.playwright ]))
               nix
             ];
+            PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
           };
         }
       );

@@ -126,12 +126,19 @@ pkgs.testers.runNixOSTest {
         pending_refresh = json.loads(node.succeed("nixmox hosts refresh " + current["node_id"] + " --command-id " + pending_command + " --wait --json"))
         assert pending_refresh["state"] == "succeeded" and pending_refresh["coordinator_id"] == identities["alder"]["node_id"]
         assert json.loads(node.succeed("nixmox commands show " + pending_command + " --json"))["task_id"] == pending_refresh["id"]
+        metrics = json.loads(alder.succeed("nixmox hosts telemetry " + current["node_id"] + " --json"))
+        assert metrics["host_id"] == current["node_id"] and metrics["membership_epoch"] == current["membership_epoch"]
+        assert metrics["freshness"] == "live" and metrics["cpu"]["logical_count"] > 0 and metrics["memory"]["total_bytes"] > 0, metrics
+        assert any(item["interface"] == "eth1" for item in metrics["network"]), metrics
+        node.succeed("curl --fail --silent http://127.0.0.1:63200/ui/hosts/" + current["node_id"] + "/telemetry | grep 'CPU usage'")
     alder.succeed("systemctl stop nixmox.service")
     birch.fail("nixmox cluster status --json")
     birch.fail("nixmox hosts refresh " + identities["birch"]["node_id"] + " --command-id cmd_no_quorum --wait --json")
     missing_task = "task_" + hashlib.sha256(b"cmd_no_quorum").hexdigest()
     birch.fail("nixmox tasks show " + missing_task + " --json")
     assert json.loads(birch.succeed("nixmox network check --wait --json"))["state"] == "succeeded"
+    isolated_metrics = json.loads(birch.succeed("nixmox hosts telemetry " + identities["birch"]["node_id"] + " --json"))
+    assert isolated_metrics["freshness"] == "live" and isolated_metrics["cpu"]["utilization"] is not None
     alder.succeed("systemctl start nixmox.service")
     birch.wait_until_succeeds("nixmox cluster status --json")
     cedar.wait_until_succeeds("nixmox cluster status --json")

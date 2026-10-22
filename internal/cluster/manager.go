@@ -78,6 +78,7 @@ type Manager struct {
 	hub               *deliveryHub
 	queryWorkers      sync.WaitGroup
 	queryIngress      chan struct{}
+	telemetry         *telemetryTransport
 }
 
 func Open(st *storage.Store, c config.Config) (*Manager, error) {
@@ -108,6 +109,8 @@ func (m *Manager) Close() {
 	m.mu.Lock()
 	d, b, q := m.dispatcher, m.broker, m.querySubscription
 	agent, hub := m.agent, m.hub
+	telemetry := m.telemetry
+	m.telemetry = nil
 	m.agent = nil
 	m.hub = nil
 	m.dispatcher = nil
@@ -116,6 +119,9 @@ func (m *Manager) Close() {
 	m.querySubscription = nil
 	m.closed = true
 	m.mu.Unlock()
+	if telemetry != nil {
+		telemetry.Close()
+	}
 	if agent != nil {
 		agent.Close()
 	}
@@ -178,7 +184,19 @@ func (m *Manager) activateDispatcher() error {
 		}
 		return err
 	}
+	telemetry, err := startTelemetry(m, b, s, membership)
+	if err != nil {
+		agent.Close()
+		if hub != nil {
+			hub.Close()
+		}
+		if d != nil {
+			d.Close()
+		}
+		return err
+	}
 	m.mu.Lock()
+	m.telemetry = telemetry
 	m.dispatcher = d
 	m.hub = hub
 	m.agent = agent

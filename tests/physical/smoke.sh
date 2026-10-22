@@ -99,6 +99,9 @@ timeout 45 "$binary" --endpoint http://127.0.0.1:64310 hosts refresh "$node_id" 
 grep -q '"state": "succeeded"' "$work/refreshed.json"
 grep -q '"name": "heliosmac"' "$work/refreshed.json"
 grep -q '"environment": "bootstrap"' "$work/refreshed.json"
+"$binary" --endpoint http://127.0.0.1:64310 hosts telemetry "$node_id" --json > "$work/telemetry.json"
+grep -q '"freshness":"live"' "$work/telemetry.json"
+grep -q '"interface":"wlp3s0"' "$work/telemetry.json"
 systemctl is-active --quiet NetworkManager sshd
-printf '%s\n' 'PASS: Wi-Fi inspection, private keys, crash recovery, deduplication, enrollment and durable remote host refresh'
+printf '%s\n' 'PASS: Wi-Fi inspection, private keys, crash recovery, deduplication, enrollment, remote host refresh and live telemetry'
 REMOTE

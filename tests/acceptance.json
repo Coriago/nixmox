@@ -5,8 +5,8 @@
   "areas": {
     "configuration": {"status":"partial","evidence":["internal/config/config_test.go","tests/vm/bootstrap.nix"],"gates":["remaining_runtime_adapters"]},
     "interface_parity": {"status":"partial","evidence":["internal/httpapi/server_test.go","internal/tui/model_test.go","cmd/nixmox/main_test.go"]},
-    "browser": {"status":"partial","evidence":["internal/httpapi/server_test.go"],"gates":["real_browser_editor_and_reconnection"]},
-    "host_telemetry": {"status":"partial","evidence":["tests/vm/bootstrap.nix","tests/physical/smoke.sh"],"gates":["continuous_inventory","os_metrics_sampler","independent_nats_otlp_delivery","telemetry_interface_parity"]},
+    "browser": {"status":"partial","evidence":["internal/httpapi/server_test.go","internal/httpapi/telemetry_test.go","tests/browser/telemetry.py"],"gates":["configuration_editor","log_gap_recovery"]},
+    "host_telemetry": {"status":"partial","evidence":["internal/telemetry/proc_test.go","internal/cluster/telemetry_test.go","internal/httpapi/telemetry_test.go","tests/browser/telemetry.py","tests/vm/bootstrap.nix","tests/physical/smoke.sh"],"gates":["continuous_inventory","otlp_same_source_export","telemetry_drop_counters","all_metric_history_views"]},
     "reviews": {"status":"pending","evidence":[]},
     "reads": {"status":"partial","evidence":["internal/service/service_test.go","internal/httpapi/server_test.go","internal/cluster/relay_test.go"],"gates":["remaining_resource_catalogs","log_sse_recovery"]},
     "admission_recovery": {"status":"partial","evidence":["internal/service/service_test.go","internal/service/operation_test.go","internal/service/epoch_test.go","internal/cluster/admission_test.go","internal/cluster/relay_test.go","tests/e2e_test.go","tests/vm/bootstrap.nix"],"gates":["destructive_effect_reconciliation","long_outage_delivery_exhaustion"]},

@@ -29,6 +29,7 @@ import (
 	"nixmox/internal/presentation"
 	"nixmox/internal/service"
 	"nixmox/internal/storage"
+	"nixmox/internal/telemetry"
 	"nixmox/internal/transport"
 	"nixmox/internal/tui"
 )
@@ -119,6 +120,9 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	rest := args[2:]
 	if group == "cluster" {
 		return clusterCommand(ctx, c, args[1:], out, errOut)
+	}
+	if group == "hosts" && verb == "telemetry" {
+		return hostTelemetryCommand(ctx, c, rest, out, errOut)
 	}
 	id := ""
 	if (group == "tasks" && verb != "list") || group == "commands" || (group == "hosts" && verb == "refresh") {
@@ -308,6 +312,11 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 		return exitError(errOut, err)
 	}
 	defer svc.Close()
+	sampler := telemetry.Start(svc.Identity, time.Duration(cfg.Telemetry.Host.FastIntervalMs)*time.Millisecond, time.Duration(cfg.Telemetry.Host.FilesystemIntervalMs)*time.Millisecond)
+	defer sampler.Close()
+	if err := svc.SetTelemetry(sampler); err != nil {
+		return exitError(errOut, err)
+	}
 	if err := clusters.Attach(svc); err != nil {
 		return exitError(errOut, err)
 	}

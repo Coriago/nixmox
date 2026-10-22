@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -32,30 +33,36 @@ type submitted struct {
 }
 type event struct{ err error }
 type Model struct {
-	client          *client.Client
-	ctx             context.Context
-	events          <-chan error
-	viewport        viewport.Model
-	network         domain.NetworkStatus
-	tasks           []domain.Task
-	notice          string
-	pending         *domain.Command
-	submitting      bool
-	width           int
-	taskFocus       bool
-	selected        int
-	fetching        bool
-	refreshAgain    bool
-	cluster         domain.ClusterStatus
-	clusterError    string
-	clusterFocus    bool
-	creating        bool
-	nameInput       textinput.Model
-	addressInput    textinput.Model
-	joining         bool
-	requestSelected int
-	requests        []domain.JoinRequest
-	review          *domain.JoinRequest
+	client              *client.Client
+	ctx                 context.Context
+	events              <-chan error
+	viewport            viewport.Model
+	network             domain.NetworkStatus
+	tasks               []domain.Task
+	notice              string
+	pending             *domain.Command
+	submitting          bool
+	width               int
+	taskFocus           bool
+	selected            int
+	fetching            bool
+	refreshAgain        bool
+	cluster             domain.ClusterStatus
+	clusterError        string
+	clusterFocus        bool
+	creating            bool
+	nameInput           textinput.Model
+	addressInput        textinput.Model
+	joining             bool
+	requestSelected     int
+	requests            []domain.JoinRequest
+	review              *domain.JoinRequest
+	telemetryFocus      bool
+	telemetry           domain.HostTelemetry
+	telemetryEvents     <-chan client.TelemetryUpdate
+	telemetryCancel     context.CancelFunc
+	telemetryGeneration uint64
+	telemetryHistory    []telemetryPoint
 }
 
 func New(ctx context.Context, c *client.Client) Model {
@@ -111,6 +118,52 @@ func (m Model) waitEvent() tea.Cmd {
 	}
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if update, ok := msg.(telemetryMessage); ok {
+		if !m.telemetryFocus || update.host != m.telemetry.HostID || update.generation != m.telemetryGeneration {
+			return m, nil
+		}
+		if update.update.Error != nil {
+			m.notice = update.update.Error.Error()
+			m.telemetry.Freshness = "stale"
+			m.telemetry.Filesystems.Freshness = "stale"
+			if len(m.telemetryHistory) > 0 && m.telemetryHistory[len(m.telemetryHistory)-1].value != nil {
+				m.telemetryHistory = append(m.telemetryHistory, telemetryPoint{at: time.Now()})
+			}
+		} else if update.update.Sample.SchemaVersion == 1 {
+			value := update.update.Sample
+			if value.StreamID != m.telemetry.StreamID || value.Sequence != m.telemetry.Sequence {
+				if value.ObservedAt != nil {
+					if value.StreamID != m.telemetry.StreamID {
+						m.telemetryHistory = append(m.telemetryHistory, telemetryPoint{at: *value.ObservedAt})
+					}
+					m.telemetryHistory = append(m.telemetryHistory, telemetryPoint{at: *value.ObservedAt, value: value.CPU.Utilization})
+				}
+				cutoff := time.Now().Add(-5 * time.Minute)
+				for len(m.telemetryHistory) > 0 && (m.telemetryHistory[0].at.Before(cutoff) || len(m.telemetryHistory) > 1201) {
+					m.telemetryHistory = m.telemetryHistory[1:]
+				}
+			}
+			m.telemetry = value
+			m.notice = "Host telemetry · " + value.Freshness
+		}
+		m.content()
+		return m, m.waitTelemetry()
+	}
+	if key, ok := msg.(tea.KeyMsg); ok && m.telemetryFocus {
+		switch key.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "esc", "h", "tab", "g":
+			m.telemetryCancel()
+			m.telemetryFocus = false
+			m.content()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
+	}
 	if key, ok := msg.(tea.KeyMsg); ok && m.creating {
 		switch key.String() {
 		case "ctrl+c":
@@ -232,6 +285,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tea.KeyMsg:
 		switch v.String() {
+		case "h":
+			host := m.network.NodeID
+			if m.taskFocus && len(m.tasks) > m.selected {
+				host = m.tasks[m.selected].OwnerNodeID
+			}
+			if host == "" {
+				return m, nil
+			}
+			ctx, cancel := context.WithCancel(m.ctx)
+			m.telemetryCancel = cancel
+			m.telemetryGeneration++
+			m.telemetryFocus = true
+			m.telemetry = domain.UnknownTelemetry(host)
+			m.telemetryHistory = nil
+			m.telemetryEvents = m.client.TelemetryEvents(ctx, host)
+			m.content()
+			m.viewport.GotoTop()
+			return m, m.waitTelemetry()
 		case "esc":
 			if m.review != nil {
 				m.review = nil
@@ -363,6 +434,11 @@ func (m Model) submit(cmd domain.Command) (tea.Model, tea.Cmd) {
 }
 func (m *Model) content() {
 	offset := m.viewport.YOffset
+	if m.telemetryFocus {
+		m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(m.telemetryContent()))
+		m.viewport.SetYOffset(offset)
+		return
+	}
 	lines := []string{"Connection", presentation.Network(m.network), "Freshness: " + m.network.Freshness, "", "Recent tasks"}
 	if m.clusterFocus {
 		lines = []string{"Cluster", "Membership: " + m.cluster.Membership}
@@ -432,6 +508,9 @@ func (m Model) View() string {
 	if m.clusterFocus {
 		hint = "Cluster · c: Create · j: Join · Enter: Review request"
 	}
+	if m.telemetryFocus {
+		hint = "Host telemetry · Esc/h: Back · PgUp/PgDn: Scroll"
+	}
 	input := ""
 	if m.creating {
 		input = "\nCreate cluster: " + m.nameInput.View() + "\nEnter: submit · Esc: cancel"
@@ -439,7 +518,7 @@ func (m Model) View() string {
 			input = "\nJoin cluster\nAddress: " + m.addressInput.View() + "\nExpected name: " + m.nameInput.View() + "\nTab: switch field · Enter: request join · Esc: cancel"
 		}
 	}
-	return title + "\n\n" + m.viewport.View() + input + "\n\n" + lipgloss.NewStyle().Width(m.width).Render(m.notice) + "\n" + hint + " · Tab: switch · g: Cluster · ?: help · q: close\n"
+	return title + "\n\n" + m.viewport.View() + input + "\n\n" + lipgloss.NewStyle().Width(m.width).Render(m.notice) + "\n" + hint + " · Tab: switch · g: Cluster · h: Telemetry · ?: help · q: close\n"
 }
 func Run(ctx context.Context, c *client.Client) error {
 	ctx, cancel := context.WithCancel(ctx)

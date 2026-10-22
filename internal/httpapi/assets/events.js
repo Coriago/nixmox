@@ -1,5 +1,44 @@
 (() => {
   const state = document.getElementById('stream-state');
+  const telemetry = document.getElementById('telemetry-view');
+  if (telemetry) {
+    const stream = new EventSource('/api/v1/events?topics=hosts.telemetry&host_id=' + encodeURIComponent(telemetry.dataset.hostId));
+    let history = [], timer, lastStream, lastSequence;
+    const graph = document.getElementById('cpu-history');
+    const update = sample => {
+      if (!sample || sample.host_id !== telemetry.dataset.hostId || sample.schema_version !== 1) {
+        state.textContent = 'Unavailable · displayed observations are stale'; return;
+      }
+      state.textContent = sample.freshness === 'live' ? 'Live updates connected' : 'Measurements ' + sample.freshness;
+      if (sample.stream_id !== lastStream || sample.sequence !== lastSequence) {
+        const at = Date.parse(sample.observed_at);
+        const value = sample.freshness === 'live' ? sample.cpu?.utilization : null;
+        if (Number.isFinite(at)) history.push({at, value, gap: sample.stream_id !== lastStream, interval: sample.interval_seconds * 1000});
+        lastStream = sample.stream_id; lastSequence = sample.sequence;
+        const end = Date.now(), start = end - 300000;
+        history = history.filter(point => point.at >= start).slice(-1201);
+        let path = '', previous;
+        for (const point of history) {
+          if (!Number.isFinite(point.value)) { previous = null; continue; }
+          const x = Math.max(0, Math.min(600, (point.at - start) / 500));
+          const y = 80 - Math.max(0, Math.min(1, point.value)) * 80;
+          const gap = !previous || point.gap || point.at - previous.at > Math.max(3000, 3 * point.interval);
+          path += (gap ? 'M' : 'L') + x.toFixed(2) + ',' + y.toFixed(2);
+          previous = point;
+        }
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        line.setAttribute('d', path); line.setAttribute('fill', 'none'); line.setAttribute('stroke', 'currentColor'); line.setAttribute('stroke-width', '2');
+        graph.replaceChildren(line);
+      }
+      clearTimeout(timer);
+      timer = setTimeout(() => htmx.trigger('#telemetry-status', 'refresh'), 100);
+    };
+    stream.addEventListener('snapshot', event => { try { update(JSON.parse(event.data)['hosts.telemetry']); } catch (_) {} });
+    stream.addEventListener('host.telemetry', event => { try { update(JSON.parse(event.data)); } catch (_) {} });
+    stream.onerror = () => { state.textContent = 'Disconnected · displayed observations are stale'; lastStream = null; };
+    window.addEventListener('pagehide', () => { clearTimeout(timer); stream.close(); });
+    return;
+  }
   const target = document.getElementById('task-status') ? '#task-status' : document.getElementById('cluster-status') ? '#cluster-status' : '#network-status';
   const topics = document.getElementById('cluster-status') ? 'cluster.status,cluster.requests,tasks' : 'network.status,tasks';
   const stream = new EventSource('/api/v1/events?topics=' + topics);

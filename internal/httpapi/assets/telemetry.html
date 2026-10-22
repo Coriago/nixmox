@@ -1,0 +1,15 @@
+{{define "telemetry-content"}}
+<section id="telemetry-view" data-host-id="{{.TargetID}}">
+<h1>Host telemetry</h1><p><code>{{.TargetID}}</code></p>
+<p id="stream-state" role="status">Connecting to live updates…</p>
+<figure><figcaption>Recent CPU usage · last five minutes viewed · gaps indicate missing samples</figcaption><svg id="cpu-history" viewBox="0 0 600 80" role="img" aria-label="Recent CPU utilization"></svg></figure>
+{{template "telemetry-status" .}}
+</section>
+{{end}}
+{{define "telemetry-status"}}
+<section id="telemetry-status" hx-get="/ui/hosts/{{.TargetID}}/telemetry/status" hx-trigger="refresh" hx-swap="outerHTML" hx-sync="this:replace">
+<p>Measurements: {{.Telemetry.Freshness}}{{if .Telemetry.ObservedAt}} · {{.Telemetry.ObservedAt}}{{end}}</p>
+<table><thead><tr><th>Measurement</th><th>Value</th><th>Freshness</th></tr></thead><tbody>{{range .MetricRows}}<tr><td>{{.Name}}</td><td>{{.Value}}</td><td>{{.Freshness}}</td></tr>{{end}}</tbody></table>
+{{if .Telemetry.Unavailable}}<details><summary>Unavailable measurements</summary><ul>{{range .Telemetry.Unavailable}}<li>{{.Field}}: {{.Reason}}</li>{{end}}</ul></details>{{end}}
+</section>
+{{end}}

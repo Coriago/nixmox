@@ -34,23 +34,25 @@ type admission struct {
 	CoordinatorID   string          `json:"coordinator_id,omitempty"`
 }
 type Service struct {
-	mu               sync.Mutex
-	store            *storage.Store
-	inspector        Inspector
-	operations       map[string]Operation
-	identity         domain.Identity
-	admissions       map[string]admission
-	tasks            map[string]domain.Task
-	network          domain.NetworkStatus
-	ctx              context.Context
-	cancel           context.CancelFunc
-	wake             chan struct{}
-	done             chan struct{}
-	active           map[string]context.CancelFunc
-	workers          sync.WaitGroup
-	clusterTransport ClusterTransport
-	fatal            bool
-	subscribers      map[chan struct{}]struct{}
+	mu                   sync.Mutex
+	store                *storage.Store
+	inspector            Inspector
+	operations           map[string]Operation
+	identity             domain.Identity
+	admissions           map[string]admission
+	tasks                map[string]domain.Task
+	network              domain.NetworkStatus
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	wake                 chan struct{}
+	done                 chan struct{}
+	active               map[string]context.CancelFunc
+	workers              sync.WaitGroup
+	clusterTransport     ClusterTransport
+	fatal                bool
+	subscribers          map[chan struct{}]struct{}
+	telemetry            TelemetrySource
+	telemetrySubscribers map[chan struct{}]struct{}
 	// Crash-boundary injection is used only by storage recovery tests.
 	checkpoint func(string) error
 }

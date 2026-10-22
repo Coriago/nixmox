@@ -61,6 +61,14 @@ func New(s *service.Service, clusters ...ClusterReader) http.Handler {
 	mux.HandleFunc("GET /ui/cluster/requests/{id}", a.joinRequestPage)
 	mux.HandleFunc("GET /api/v1/identity", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, s.Identity()) })
 	mux.HandleFunc("GET /api/v1/network/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, s.Network()) })
+	mux.HandleFunc("GET /api/v1/hosts/{id}/telemetry", func(w http.ResponseWriter, r *http.Request) {
+		if len(r.URL.Query()) != 0 {
+			writeError(w, domain.Err("INVALID_QUERY", "Telemetry takes no query parameters.", 400), "")
+			return
+		}
+		v, err := s.Telemetry(r.PathValue("id"))
+		respond(w, v, err)
+	})
 	mux.HandleFunc("POST /api/v1/commands", a.command)
 	mux.HandleFunc("GET /api/v1/commands/{id}", func(w http.ResponseWriter, r *http.Request) {
 		v, err := s.Receipt(r.PathValue("id"))
@@ -72,6 +80,8 @@ func New(s *service.Service, clusters ...ClusterReader) http.Handler {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/logs/download", a.downloadLogs)
 	mux.HandleFunc("GET /api/v1/events", a.events)
 	mux.HandleFunc("GET /ui/network", a.networkPage)
+	mux.HandleFunc("GET /ui/hosts/{id}/telemetry", a.telemetryPage)
+	mux.HandleFunc("GET /ui/hosts/{id}/telemetry/status", a.telemetryFragment)
 	mux.HandleFunc("GET /ui/cluster", a.clusterPage)
 	mux.HandleFunc("GET /ui/cluster/status", a.clusterFragment)
 	mux.HandleFunc("GET /ui/network/status", a.networkFragment)
@@ -226,7 +236,7 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 	selected := map[string]bool{}
 	for _, topic := range strings.Split(topics, ",") {
 		switch topic {
-		case "identity", "network.status", "tasks", "cluster.status", "cluster.requests":
+		case "identity", "network.status", "tasks", "cluster.status", "cluster.requests", "hosts.telemetry":
 			selected[topic] = true
 		default:
 			writeError(w, domain.Err("INVALID_QUERY", "Unsupported event topic.", 400), "")
@@ -234,10 +244,29 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for k, v := range q {
-		if k != "topics" || len(v) != 1 {
+		if (k != "topics" && k != "host_id") || len(v) != 1 {
 			writeError(w, domain.Err("INVALID_QUERY", "Invalid event selector.", 400), "")
 			return
 		}
+	}
+	if selected["hosts.telemetry"] != q.Has("host_id") || (q.Has("host_id") && !domain.SafeID.MatchString(q.Get("host_id"))) {
+		writeError(w, domain.Err("INVALID_QUERY", "hosts.telemetry requires one host_id.", 400), "")
+		return
+	}
+	var telemetryChanges <-chan struct{}
+	if selected["hosts.telemetry"] {
+		if _, err := a.service.Telemetry(q.Get("host_id")); err != nil {
+			writeError(w, err, "")
+			return
+		}
+		var cancel func()
+		var err error
+		telemetryChanges, cancel, err = a.service.SubscribeTelemetry()
+		if err != nil {
+			writeError(w, err, "")
+			return
+		}
+		defer cancel()
 	}
 	ch, unsub, err := a.service.Subscribe()
 	if err != nil {
@@ -268,6 +297,14 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 		if selected["network.status"] {
 			v["network.status"] = a.service.Network()
+		}
+		if selected["hosts.telemetry"] {
+			value, err := a.service.Telemetry(q.Get("host_id"))
+			if err == nil {
+				v["hosts.telemetry"] = value
+			} else {
+				v["hosts.telemetry"] = map[string]string{"availability": "unavailable"}
+			}
 		}
 		if selected["tasks"] {
 			p, err := a.service.ListTasks(service.TaskFilter{}, "100", "")
@@ -301,10 +338,41 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 	versions := map[string]int64{}
 	tick := time.NewTicker(15 * time.Second)
 	defer tick.Stop()
+	var telemetryTick <-chan time.Time
+	if selected["hosts.telemetry"] {
+		timer := time.NewTicker(250 * time.Millisecond)
+		defer timer.Stop()
+		telemetryTick = timer.C
+	}
+	lastTelemetry := ""
+	sendTelemetry := func() error {
+		value, err := a.service.Telemetry(q.Get("host_id"))
+		if err != nil {
+			if lastTelemetry == "unavailable" {
+				return nil
+			}
+			lastTelemetry = "unavailable"
+			return send("host.telemetry", map[string]string{"availability": "unavailable", "host_id": q.Get("host_id")})
+		}
+		key := fmt.Sprintf("%s/%d/%s/%s", value.StreamID, value.Sequence, value.Freshness, value.Filesystems.Freshness)
+		if key == lastTelemetry {
+			return nil
+		}
+		lastTelemetry = key
+		return send("host.telemetry", value)
+	}
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-telemetryChanges:
+			if sendTelemetry() != nil {
+				return
+			}
+		case <-telemetryTick:
+			if sendTelemetry() != nil {
+				return
+			}
 		case <-tick.C:
 			if send("snapshot", snapshot()) != nil {
 				return
@@ -349,6 +417,8 @@ type view struct {
 	ClusterPage     bool
 	JoinRequests    []domain.JoinRequest
 	JoinRequest     *domain.JoinRequest
+	Telemetry       *domain.HostTelemetry
+	MetricRows      []presentation.MetricRow
 }
 
 type controlView struct {
