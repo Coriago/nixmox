@@ -12,7 +12,7 @@ and secret delivery. These paths stay outside NATS:
 | Communication | Transport |
 | --- | --- |
 | Console API, forms, SSE, assets, uploads, log/media/diagnostic downloads | HTTP |
-| Initial CSR/certificate enrollment and signed removal retrieval | HTTP on `machine.port` |
+| Initial CSR/certificate enrollment and signed removal retrieval | Same HTTP port as the console |
 | Nix cache lookup/downloads | HTTP; Nix verifies signatures/hashes |
 | LAN discovery | UDP |
 | Initial agent bootstrap | SSH |
@@ -106,14 +106,18 @@ must use those configured ports rather than its conventional defaults.
 | `nx.<cluster>.secret.<node>` | Secret import to the selected holder | Core request/reply only; restricted grants, no persistence or payload logging |
 | `nx.<cluster>.activity.<node>` | Latest host telemetry sample, stream ID/sequence | Core, no persistence/ack/replay; latest-value delivery |
 | `nx.<cluster>.result.<node>` | Command/task ID, executor, versioned outcome | JetStream, deduped by task/command receipt |
-| `nx.<cluster>.log.<task>` | Absolute offset, bytes, owner ID | Core; recover from persisted logs |
-| `nx.<cluster>.progress.<task>` | Versioned progress snapshots and activity updates | Core; recover latest persisted snapshot via query |
+| `nx.<cluster>.log.<node>.<task>` | Absolute offset, bytes, owner ID | Core; recover from persisted logs |
+| `nx.<cluster>.progress.<node>.<task>` | Versioned progress snapshots and activity updates | Core; recover latest persisted snapshot via query |
 | `nx_state` KV | Versioned membership, refs, host/task projections | Watch plus snapshot reconciliation |
 | `nx_git` Object Store | Retained local Git increments, never remote base snapshots | File-backed JetStream; bounded storage with explicit retention/GC |
 
 Enforce [machine permissions](identity-and-trust.md#managed-tls-and-nats-permissions)
 through NATS accounts and accepting-broker grants, not subject prefixes alone.
-Leaves stream assigned work without becoming voting replicas.
+Full-member services can submit work to any executor and read cluster-wide task
+state, logs, and progress. A node publishes logs/progress only under its own prefix;
+that write restriction does not restrict authorized peer subscriptions. Gateways
+query the owner for snapshots/log gaps and stream live updates back to the requesting
+console. Pending leaves retain scoped reads and remain non-voting.
 
 Commands expire after 120 seconds if not admitted. Broker deduplication is an
 optimization; durable request fingerprints/receipts enforce retry identity.

@@ -286,37 +286,19 @@ Reuse generation forms when creating a configuration during setup.
 
 ## Confirmation and checkpoints
 
-Confirmation binds preparation version, node ID, relevant observed device facts,
-selected disk identities, and candidate/source. Typing a path is an acknowledgement,
-not sufficient evidence by itself. Changed bindings invalidate confirmation;
-unrelated observations and health updates do not.
+Use the [shared review rules](api-and-interfaces.md#reviews-and-concurrency) and
+[task recovery contract](task-engine.md#admission-and-execution).
 
-```json
-{
-  "host_id": "n_cedar",
-  "task_id": "task_01",
-  "review_id": "review_01",
-  "acknowledgements": {"typed_device_paths": ["/dev/disk/by-id/nvme-EXAMPLE"]}
-}
-```
+Installation review binds preparation version, node ID, observed device facts,
+selected disks, and candidate/source. Require a typed stable path for **every**
+erase target, checked against fresh target observations; a supplied path alone is
+not authorization. Show configuration/commit, builder, disk model/serial/capacity,
+SOPS status, and network handoff. Preparation and source must be ready before effects.
 
-This resumption refers to the [review embedded in the task](api-and-interfaces.md#reviews-and-concurrency).
-The target checks the recorded preparation and fresh device observations. Observation
-expiry requires recollection, not automatic loss of approval when relevant facts
-still match. A changed erase plan or destructive retry requires fresh confirmation.
-Initial Install submission may omit confirmation and pause. Every erase target
-must be acknowledged at destructive review; missing acknowledgements at that step
-are an error. Interactive waiting prompts; noninteractive waiting returns exit 4.
-
-Show configuration/commit, builder, selected disks (model, serial, capacity),
-secret-update status, and network handoff in review. Enable installation only when
-preparation is ready and the reviewed source is available to the executor.
-
-Persist effect intents/checkpoints. Loss of connection after partition/install
-enters reconciliation. A completed installation proceeds to reboot/observation,
-never repeats partitioning. A partial destructive retry requires a new observation,
-review, and confirmation. Preserve logs and original source revision.
-Re-running preparation later generates a new diff/commit; it does not reinstall.
+Install may start without approval and pause for review. Completed installation
+continues to reboot/observation, not partitioning again. A partial destructive
+retry needs fresh device observations as well as a new review.
+Re-running preparation creates a new diff/commit; it does not reinstall.
 
 ## Installation backend and handoff
 
@@ -333,10 +315,9 @@ The Nixmox installer agent runs Disko/Nix installation tools; nixos-anywhere is
 excluded. There is no separate output-transfer mechanism. Installer entry uses
 `kexec-tools` or the profile's [reboot adapter](deployment-and-rollback.md#reboot-adapters).
 
-Phase receipts, actual filesystems, firmware population, and boot-entry verification
-are mandatory before selecting the installed system and rebooting. A shell exit
-code alone cannot establish readiness. Each phase has a durable receipt and
-reconciles its actual effects after interruption; never blindly rerun Disko.
+Verify actual filesystems, firmware files, and boot entries before selecting the
+installed system and rebooting. A successful shell exit alone is not readiness;
+phase receipts and interruption handling follow the task recovery contract.
 
 Preserve identity, scoped enrollment evidence, required host/decryption keys, and
 network settings using the [state inventory](identity-and-trust.md#generated-and-preserved-state).

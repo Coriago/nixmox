@@ -143,7 +143,7 @@ Console/cache HTTP access is network-based, not controlled by NATS membership.
 
 ### Enrollment HTTP exchange
 
-Use plain HTTP on `machine.port` (63175). Administration remains on the console.
+Use plain HTTP on `http.port` (63170), shared with the console and caches.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -183,7 +183,7 @@ Full daemon ── mTLS, loopback :63171 ── Full broker
                                           ⇅ mTLS :63173, scoped leaf permissions
 Pending daemon ─ mTLS, loopback :63171 ─ Pending broker
 
-Daemon ── plain HTTP :63175 ── Peer daemon (enrollment/signed removal record)
+Daemon ── plain HTTP :63170 ── Peer daemon (enrollment/signed removal record)
 Nix    ── plain HTTP :63170 ── Peer cache (signed Nix outputs)
 ```
 
@@ -210,13 +210,13 @@ read-only or disconnected. They are not durable cluster replicas.
 | Its assigned commands and task-scoped query replies | Its observations, heartbeat, activity, and execution results |
 | Required source/artifact access and permitted inventory views | Logs/progress for tasks assigned to cedar; exact delivery acknowledgments |
 
-For example, allow delivery on `nx.c_lab.command.n_cedar`, publishing to
-`nx.c_lab.activity.n_cedar` and `nx.c_lab.result.n_cedar`, and explicit
-`nx.c_lab.log.<assigned-task>` / `nx.c_lab.progress.<assigned-task>` subjects.
-Full services own durable consumers and authorize deliveries/acks; do not grant
-leaves arbitrary consumer creation, KV/Object Store access, `$JS.API.>`, `$SYS.>`,
-other nodes' subjects, or unrestricted reply inboxes. Reconcile task-scoped grants
-on assignment/completion. Validate task ownership in the service as well.
+Cedar receives `nx.c_lab.command.n_cedar` and publishes its own activity/results.
+Its log/progress publish grants are `nx.c_lab.log.n_cedar.*` and
+`nx.c_lab.progress.n_cedar.*`: stable node grants, not per-task broker updates.
+Receivers check that the subject, claimed owner, and recorded task owner agree.
+Full services own durable consumers and authorize deliveries/acks. Leaves cannot
+create consumers, access KV/Object Store or `$JS.API.>`/`$SYS.>`, publish as another
+node, or read unrestricted reply inboxes. Membership changes revoke their grants.
 
 Logs/progress use Core NATS with snapshot/offset recovery; commands use durable
 delivery. Required Git increments are exposed through scoped application requests;
@@ -251,7 +251,7 @@ replace trust pins. Planned installation handoff still preserves existing keys/s
 
 Removal is committed through NATS/JetStream. The cluster issuer signs the removal
 record: `{cluster_id, node_id, membership_epoch, status: "removed", removal_version}`.
-Deliver it through NATS, or retrieve the same record over plain HTTP on `machine.port`:
+Deliver it through NATS, or retrieve the same record over plain HTTP on `http.port`:
 `GET /api/v1/membership-status?node_id=n_cedar&membership_epoch=2`.
 
 The node verifies the signature using cluster trust saved at enrollment, then

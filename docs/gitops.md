@@ -241,11 +241,9 @@ handles planning internally; users do not have to run a separate planning comman
 `GET /api/v1/gc-plans/{id}` returns
 `{id, version, repository_id, artifact_ids, reclaimed_bytes, protected_references,
 unpublished_artifact_ids, review, expected_versions}`. The embedded review describes
-the exact deletion set and affected references. Execute only after approval and
-fresh dependency/pin checks under repository exclusion. Changed deletion effects
-require a new plan and review; unrelated repository edits do not. Plans have no
-blanket expiry and can authorize deletion once. Retries reconcile the recorded
-result rather than deleting again. `--wait` obtains the plan/result from the task.
+the exact deletion set and affected references under the [shared review rules](api-and-interfaces.md#reviews-and-concurrency).
+Recheck dependency/source pins under repository exclusion. Recovery follows the
+[task contract](task-engine.md#admission-and-execution); `--wait` reads its plan/result.
 
 Retain small audit records after payload deletion, including publication evidence
 or deletion reason. Retire affected change refs explicitly. Never display a deleted

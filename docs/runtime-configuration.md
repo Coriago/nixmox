@@ -30,7 +30,7 @@ verified deployment or adoption.
     enable = true;
     cluster = {
       name = "homelab";
-      joinAddress = "alder.example:63175";
+      joinAddress = "alder.example:63170";
     };
     network = {
       managementInterfaces = [ "enp1s0" "tailscale0" ];
@@ -94,8 +94,7 @@ credential-dependent operations. Git remote configuration never triggers a push.
 | --- | --- | --- |
 | enable | bool / false | Install CLI and daemon service |
 | dataDir | string / /var/lib/nixmox | Persistent identity, tasks, repositories, receipts |
-| http.port | integer / 63170 | Plain HTTP console API, local cache gateway, and peer store cache |
-| machine.port | integer / 63175 | Plain HTTP bootstrap enrollment and signed membership-status records |
+| http.port | integer / 63170 | All HTTP routes: console, enrollment, signed removal, and caches |
 | nats.clientPort | integer / 63171 | Embedded broker client listener, loopback only |
 | nats.routePort | integer / 63172 | Permanent broker routes on management interfaces |
 | nats.leafPort | integer / 63173 | Pending-node leaf connections on management interfaces |
@@ -105,7 +104,7 @@ credential-dependent operations. Git remote configuration never triggers a push.
 | openFirewall | bool / true | Open required ports only on management interfaces |
 | discovery.enable | bool / false | Advertise unjoined node or cluster on allowed LAN interfaces |
 | discovery.port | integer / 63174 | UDP discovery; discovering peers must use the same port |
-| cluster.name, cluster.joinAddress | nullable strings / null | Both set submits a join request to the peer's machine address (`host:port`) awaiting cluster approval; one set alone is invalid |
+| cluster.name, cluster.joinAddress | nullable strings / null | Both set submits a join request to the peer's HTTP address (`host:port`) awaiting cluster approval; one set alone is invalid |
 | configuration | nullable {repository, name} / null | Intended configuration association |
 | repositories | attribute set / {} | Named repository declarations; remoteUrl required for each |
 | credentials | attribute set / {} | Named kind and runtime secretFile references |
@@ -145,12 +144,11 @@ do not inherit the broker's conventional ports.
 
 | Port | Transport | Listener |
 | --- | --- | --- |
-| 63170 | TCP / HTTP | Browser, CLI/TUI API, local cache gateway, and peer store cache |
+| 63170 | TCP / HTTP | Console/API/SSE, enrollment, signed removal, and both caches |
 | 63171 | TCP / TLS | NATS clients; loopback only |
 | 63172 | TCP / TLS | Permanent NATS routes |
 | 63173 | TCP / TLS | Pending-node NATS leaf connections |
 | 63174 | UDP | Discovery |
-| 63175 | TCP / HTTP | Enrollment and public signed membership-status records |
 
 Both cache namespaces use plain HTTP on `http.port`: `/cache/` is local-only,
 and `/store-cache/` exposes signed local outputs to machines on the management
@@ -165,8 +163,8 @@ is required or provided in v1. Console requests and submitted secrets are unencr
 on that connection; access is limited to the configured management network.
 
 Nixmox serves no HTTPS. TLS protects NATS clients/routes/leaves only.
-The machine HTTP listener serves enrollment and signed removal records, separate
-from console/cache routes. Secrets travel between daemons through Core NATS.
+One HTTP listener serves all routes on the configured management interfaces.
+Route-specific checks still apply. Secrets travel between daemons through Core NATS.
 External services retain their own transports. Advertise actual services and ports.
 
 Reserve configured listener ports in `net.ipv4.ip_local_reserved_ports`, merging
@@ -185,7 +183,7 @@ password. Configure each client/route/leaf TLS block independently. See
 [generated/preserved paths](identity-and-trust.md#generated-and-preserved-state).
 
 Firewall rules use configured ports and management interfaces, never the loopback
-client port. Advertise actual console/machine/route/leaf endpoints; peers must not assume
+client port. Advertise actual HTTP/route/leaf endpoints; peers must not assume
 the remote node uses their own port settings. A custom discovery port must match
 across discovering peers; explicit address enrollment remains available.
 
@@ -208,8 +206,6 @@ schema_version: 1
 data_dir: /var/lib/nixmox
 http:
   port: 63170
-machine:
-  port: 63175
 nats:
   client_port: 63171
   route_port: 63172
@@ -223,7 +219,7 @@ network:
   allow_fallback: true
 cluster:
   name: homelab
-  join_address: alder.example:63175
+  join_address: alder.example:63170
 repositories:
   lab:
     remote_url: https://github.com/example/nixos-config.git

@@ -130,10 +130,9 @@ Any console can resume it. Waiting/prompt/exit behavior follows the
 nixmox deploy approve task_01 --diff diff_01 --diff-version 1 --wait
 ```
 
-Approval references the exact diff version, candidate, baseline, target, and mode.
-The server resumes the existing task, not a second deployment. Keep its source,
-candidate, and diff pinned while awaiting approval; do not hold a target execution
-lock during user review. Cancel releases task retention pins when safe.
+Approval binds diff version, candidate, baseline, target, and mode under the
+[shared review rules](api-and-interfaces.md#reviews-and-concurrency). Keep source,
+candidate, and diff pinned, but release target execution locks during review.
 
 ## Preview and explicit candidates
 
@@ -292,16 +291,11 @@ do not substitute a Git text diff and label it a package diff. Missing baseline
 metadata is an unavailable comparison, not zero changes. If a cached baseline is
 used while the target is unreachable, show its timestamp and freshness explicitly.
 
-Recheck the target output before activation. If it differs from the reviewed
-baseline, mark the diff stale and recompute under target exclusion. Manual approval
-must release target exclusion and return to review; auto-approval may continue
-with the new recorded diff only
-for the same pinned candidate, target, and mode. Admission checks the expected host
-version; execution rechecks the reviewed binding and baseline, not unrelated host
-health/inventory versions. An unavailable comparison blocks activation in either mode.
-Changes in outputs/versions invalidate
-evidence even when a source branch has the same name. Package equality does not
-prove identical generated configuration, service behavior, or activation effects.
+Before activation, compare the running output with the reviewed baseline under
+target exclusion. If changed, recompute the diff: manual approval releases the lock
+and returns to review; auto-approval may accept a new recorded diff only for the
+same pinned candidate, target, and mode. An unavailable comparison blocks activation.
+Package equality alone does not prove equal configuration or activation behavior.
 
 ## Required build and deployment progress
 
@@ -453,10 +447,9 @@ Default observation gate: the same authenticated node reports the expected outpu
 as running and its management service is responsive. Application-specific checks
 are optional future gates, not inferred from agent liveness.
 
-On loss of connection, mark observation unknown/reconciling. Reconnect queries
-running/profile/boot state and the execution receipt. Do not reactivate merely
-because the response was lost. Cancellation during activation reports effects and
-reconciles; it does not silently revert or claim nothing changed.
+After connection loss, reconcile running/profile/boot state and the execution
+receipt under the [task recovery contract](task-engine.md#admission-and-execution).
+Cancellation during activation reports actual effects; it is not automatic rollback.
 
 ## Rollback
 
@@ -520,13 +513,11 @@ submits its ID with the prompted acknowledgement. Scripts resume with:
 nixmox deploy install cedar --task task_01 --review review_01 --confirm-device /dev/disk/by-id/nvme-EXAMPLE --wait
 ```
 
-The embedded review binds the task's intent. Boot reviews require `--confirm-host`;
-erase reviews require every `--confirm-device`. Neither grants approval for the other.
-Resume only the awaited review; changed effects require a new one. Resuming with
-`--task` and no acknowledgement regenerates a stale review of the same pinned intent
-and pauses, without changing source or repeating effects. Store verified acknowledgements
-as bound `confirmation` evidence. Browser/TUI use the same resumptions with unique
-command IDs; noninteractive waiting returns exit 4.
+Boot reviews require `--confirm-host`; erase reviews require every `--confirm-device`.
+Neither approves the other. Resume under the shared review rules; `--task` without
+acknowledgements refreshes a stale review of the same pinned intent and pauses.
+Store acknowledgements as bound `confirmation` evidence. All interfaces use this
+flow; noninteractive waiting follows the shared CLI exit codes.
 
 `host.enter_installer` takes `host_id`, `method` (CLI reboot uses `reboot`), optional
 `installer_id`, `task_id`, `review_id`, and `acknowledgements: {confirm_host}` at entry
@@ -538,8 +529,8 @@ not need `--confirm-host`. Scripts resume the exact entry review, for example:
 nixmox hosts reboot cedar --into installer --task task_entry_01 --review review_entry_01 --confirm-host cedar --wait
 ```
 
-Media-write reviews remain separate child tasks. Changed entry plans need renewed
-approval; the ordinary `host.reboot` operation still requires direct host confirmation.
+Media-write reviews are separate child tasks. Ordinary `host.reboot` still requires
+host confirmation.
 When already in a verified installer, skip entry and its boot approval. Otherwise
 inspect entry compatibility, including media that can be prepared, before disruptive
 actions. Compatible but unwritten media is a preparation step, not an unsupported host.

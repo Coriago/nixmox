@@ -157,11 +157,10 @@ otherwise resolve the local daemon's ID, as for media build.
 `GET /api/v1/media/plans/{id}` returns
 `{id, version, image_id, writer_id, image_digest, device_id, device_path,
 device_size_bytes, observation_id, review}`. The embedded review binds the device,
-expanded image digest, and writing effect. `media write --plan` supplies the plan
-version; `--confirm-device` provides the typed acknowledgement. Refresh device
-observations and recheck eligibility before writing. Changed identity, image, or
-write effects require Plan again; matching refreshed facts do not expire approval.
-Device facts always come from the writer, not the submitted path alone.
+expanded image digest, and writing effect under the [shared review rules](api-and-interfaces.md#reviews-and-concurrency).
+`media write --plan` supplies the plan version; `--confirm-device` acknowledges the
+stable path. Before writing, the writer refreshes device identity/capacity/eligibility;
+never trust the submitted path alone.
 
 `GET /api/v1/media/{id}/download` streams the verified image file with its recorded
 compression and digest, filename, and Content-Length. Media/task records expose

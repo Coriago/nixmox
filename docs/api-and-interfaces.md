@@ -41,8 +41,7 @@ these same command objects and invokes the same admission service.
 Secret import has a dedicated redacted ingress described below; it dispatches
 only a secret-free reference through this command path.
 Rebase uploads stage bytes through the draft resolution ingress; accepting those
-files still requires a typed command. Enrollment has its own limited machine
-exchange. These exceptions do not expose arbitrary resource mutations.
+files still requires a typed command. Enrollment has dedicated HTTP routes. These exceptions do not expose arbitrary resource mutations.
 Membership-status reads return the signed removal evidence defined in
 [identity and trust](identity-and-trust.md#authenticated-removal-response) over
 plain HTTP. Revoked nodes verify the payload against pinned cluster trust without
@@ -127,11 +126,11 @@ queryable on their owner after joining; no automatic replay into cluster command
 
 ### Reviews and concurrency
 
-`expected_versions` uses `<resource-kind>:<id>` keys, for example `host:n_cedar`,
-`repository:r_lab`, `draft:draft_01`, `preparation:prep_01`, or `task:task_01`.
-CLI `--version` and `--expected-version` populate the operation's primary key;
-they are not duplicate payload fields. Clients copy other required versions from
-the displayed draft/plan/review, never silently fetch newer versions to force success.
+These rules apply to every feature; feature pages specify their review bindings.
+
+`expected_versions` uses `<resource-kind>:<id>` keys, such as `host:n_cedar` or
+`repository:r_lab`. CLI `--version` / `--expected-version` set the primary key.
+Copy versions from the displayed review; never fetch newer versions to force success.
 
 ```json
 {
@@ -144,27 +143,21 @@ the displayed draft/plan/review, never silently fetch newer versions to force su
 }
 ```
 
-Reviews live inside the owning task or plan; there is no separate review resource
-or collection. Task resumptions submit the task ID, current `review_id`, and
-acknowledgements. Plan approvals use the plan ID/version and required acknowledgements.
-Atomically check that approval is still applicable, then record it; duplicate
-submissions cannot resume effects twice. Replace the task review ID or plan ID
-when relevant source, devices, configuration, or intended effects change.
-Plan IDs identify immutable reviewed effects; status versions cannot silently
-change what a saved `--plan` approves.
-Health updates, log/progress updates, and unrelated host metadata
-do not invalidate it. Recheck relevant facts before effects; a new observation ID
-alone is not a change in those facts. Stale bindings return `CONFIRMATION_STALE`.
-There is no universal review timeout: device observations use onboarding's freshness
-rules; other reviews remain valid while their bindings hold. Deployment diff
-approval retains its existing `diff_id`/`diff_version` contract.
+- Reviews live in tasks/plans, not a separate collection. Resume with task ID,
+  current review ID, and acknowledgements; plan approval uses plan ID/version.
+  Deployment approval uses its `diff_id`/`diff_version`.
+- Check versions and relevant facts under resource exclusion before effects.
+  Persist approval; duplicate submissions cannot resume effects twice.
+- Changed source, devices, configuration, or effects require a new review/plan ID.
+  IDs cannot silently change meaning. Health, progress, and unrelated metadata
+  do not invalidate approval. Stale bindings return `CONFIRMATION_STALE`.
+- Refresh expired observations using the feature's freshness rules; unchanged
+  facts preserve approval. Reviews have no universal timeout.
+- A destructive retry requires fresh review. Reads or closing a UI never approve work.
 
-Draft and preparation reads include `expected_versions` for themselves and the
-repository version captured with their diff. Commit checks both. Editing/rebasing
-invalidates the prior review. A conflict requires a newly rendered review, not a
-version-only retry. `expected_versions` protects the records a mutation changes;
-do not copy unrelated host/task versions into a confirmation. Reads never renew
-or approve reviews; the owning operation handles re-review when bindings change.
+Draft/preparation reads include their version and the repository version captured
+with the diff; commit checks both. Edits/rebases require a new diff, not a
+version-only retry. Include versions only for records the mutation changes.
 
 ## Reads and events
 

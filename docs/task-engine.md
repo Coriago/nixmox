@@ -72,10 +72,8 @@ Persist approval policy and evidence, for example:
 }
 ```
 
-Approval state is pending/approved/stale; unrelated tasks have no approval object.
-Record whether approval was manual or automatic. Duplicate approval commands must
-not resume work twice. A restart preserves the pause or recorded approval and
-revalidates its evidence before target effects; closing a UI cannot approve work.
+Approval state is pending/approved/stale; record manual versus automatic approval.
+Preserve it across restart and follow the [shared review rules](api-and-interfaces.md#reviews-and-concurrency).
 
 `reconciling` means effects may have occurred and must be inspected. Terminal states
 are immutable; Retry creates a new linked task. Cancellation can be refused once
@@ -118,10 +116,10 @@ A restart between steps 1–3 reconciles the same task ID, not a second task. Th
 not a claim of exactly-once external effects. The executing node is authoritative
 for its local effects; cluster snapshots are a view of persisted execution records.
 
-Proposal: observers/coordinators can be replaced, but another worker must not repeat
-an uncertain destructive phase merely because a lease expired. Target-local fencing
-and receipts prevent overlapping execution. When the executor is unreachable, mark
-reconciliation blocked rather than invent a success or take over disk operations.
+Recovery always checks the executor's receipts and actual effects before continuing.
+Target-local fencing prevents overlap; a lost reply or expired coordinator lease
+never authorizes replay of uncertain effects. If the executor is unreachable,
+mark reconciliation blocked; do not let another worker take over.
 
 ## Logs and interaction
 

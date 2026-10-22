@@ -22,8 +22,7 @@ not mean fully managed.
   "deployment_verified": false,
   "pending_reasons": ["configuration_not_deployed"],
   "endpoints": [
-    {"service": "api", "transport": "http", "address": "192.168.1.32:63170", "interface": "enp1s0", "priority": 20, "verified": true},
-    {"service": "machine", "transport": "http", "address": "192.168.1.32:63175", "interface": "enp1s0", "priority": 20, "verified": true}
+    {"service": "api", "transport": "http", "address": "192.168.1.32:63170", "interface": "enp1s0", "priority": 20, "verified": true}
   ],
   "capabilities": {"build": true, "install": true, "media_write": false},
   "broker_role": "leaf",
@@ -42,9 +41,8 @@ An `awaiting_approval` join request leaves membership `unjoined`; it is not a
 pending member. Request records and approval bindings live in
 [identity and trust](identity-and-trust.md#enrollment-and-trust-boundary).
 
-Endpoint records use `service: api|machine|nats_route|nats_leaf` and
-`transport: http|tls`: `api` and `machine` use HTTP; NATS uses TLS.
-Console and caches use `api`; enrollment and signed removal records use `machine`.
+Endpoint records use `service: api|nats_route|nats_leaf` and `transport: http|tls`.
+All HTTP routes use `api`; NATS routes/leaves use TLS.
 Advertise actual ports. HTTP reachability is not cryptographic peer authentication;
 NATS verifies peer keys, caches verify output signatures, and removal verifies its payload. `hosts endpoints <host>` reads
 `GET /api/v1/hosts/{id}`: its `connectivity` list contains
@@ -147,7 +145,7 @@ expiry requires an explicit new attempt, not an automatic approval-request loop.
 nixmox discovery list
 nixmox cluster create homelab --wait
 # Submit from the unjoined node; --wait remains awaiting approval:
-nixmox --endpoint http://cedar:63170 cluster join --address alder:63175 --name homelab --wait
+nixmox --endpoint http://cedar:63170 cluster join --address alder:63170 --name homelab --wait
 # In another console, approve the exact request shown by the cluster:
 nixmox --endpoint http://alder:63170 cluster requests list
 nixmox --endpoint http://alder:63170 cluster requests approve join_01 --version 1 --wait
@@ -191,7 +189,7 @@ scripts supply `--key-fingerprint`. TUI uses the same screens/actions. The unjoi
 [Clusters flow](host-onboarding.md#clusters-joining-and-headless-setup) is shared
 by installer and installed nodes, including timeout, Search again, and live updates.
 Discovery advertises the unjoined node's browser URL as well as enrollment endpoints.
-Explicit join addresses select the peer's machine listener, not its console port.
+Join addresses use the peer's advertised HTTP port, shared with its console.
 After approval/Add, both show
 Hosts → cedar → Pending → Assign configuration. A preconfigured installed host
 uses Verify running configuration instead of silently assuming assignment is proof.
