@@ -1,55 +1,14 @@
-specification documents are in docs/
-Specifications must remain concise and focus on key details.
-Do not get verbose
-Favor examples of usage, configuration and data objects over verbose explanations.
-
 Implement the rewrite specified in docs/.
+DO ALL IMPLEMENTATION IN ONE SHOT. NO UNIT TESTS. KEEP LINES OF CODE AS LOW AS POSSIBLE. FAVOR CLEAN ABSTRACTIONS WITH GOOD REUSE.
+ONCE IMPLEMENTATION IS DONE MAKE SOME INTEGRATION TESTS
+ONCE INTEGRATION TESTS ARE DONE DO E2E WITH VMS
+VALIDATE REAL FUNCTIONS THAT CAN'T BE VIRTUALIZED ON THE TEST MACHINE. MEDIA, KEXEC ETC
 Do not write readme.md files until the end once the application reaches maturity.
 
-## Sources of truth
-
-- specs define intended behavior, interfaces, and defaults.
-- If specs conflict or omit a consequential decision, identify it before
+specs define intended behavior, interfaces, and defaults.
+If specs conflict or omit a consequential decision, identify it before
   implementing dependent behavior. Resolve routine implementation details yourself.
-
-## Implementation approach
-
-- Deliver small, complete vertical slices with working integration and tests.
-- Use one domain/service layer across CLI, browser, and TUI.
-- Keep transport, rendering, persistence, and external-tool adapters separate
-  from domain rules.
-- Follow the specified command admission, task lifecycle, concurrency,
-  credential, and storage contracts.
-- Resolve documented implementation gates before dependent work.
-- Do not introduce compatibility layers, new frameworks, or additional services
-  without a concrete requirement.
-- Always consider refactoring code after each deliverable to keep the code base clean.
-
-## Correctness
-
-- Never bypass approval, validation, membership permissions, or quorum
-  requirements to make a workflow succeed.
-- Preserve pinned source/output identity and command retry identity.
-- Reconcile uncertain effects; never blindly repeat destructive operations.
-- Keep secrets out of Git, the Nix store, command payloads, logs, and diagnostics.
-- Bound queues, buffers, retries, and external calls; support cancellation and
-  explicit unavailable/stale states.
-
-## Verification
-
-- Use the acceptance matrix in docs/rewrite/technical-requirements.md.
-- Run checks appropriate to each change, including real integration tests at
-  affected Nix, NATS, Git, and operating-system boundaries.
-- Distributed claims require multi-node tests, including quorum failure and recovery.
-- Boot/media support requires disposable physical-device evidence.
-- Never run destructive tests on the developer host or non-disposable devices.
-- Do not claim a requirement is complete based only on mocks or documentation.
-
-## Completion
-
-- Finish the authorized slice rather than leaving disconnected scaffolding.
-- Report what works, what was tested, and remaining limitations or gates.
-- Distinguish implemented behavior from planned or unverified behavior.
+Create a flake and use its devshell for any tooling you need.
 
 ## Disposable test machine
 
