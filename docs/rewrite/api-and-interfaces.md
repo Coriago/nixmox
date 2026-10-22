@@ -30,8 +30,6 @@ an unresolved editable binding or guided installation before preparation. Builds
 are admitted with pinned source; installation pins it before build/erase phases.
 Changing the binding does not change tasks or the reported running system.
 
-Object examples are partial; each feature defines its required fields.
-
 ## Command API
 
 `POST /api/v1/commands` is the normal mutation entry point. The operation registry
@@ -184,7 +182,8 @@ clients deduplicate by ID and refresh for current state. Revision-based catalogs
 draft files, and diffs pin their source/version across pages; changed/unavailable
 versions fail explicitly rather than mixing revisions. Invalid cursors/filters or
 bounds return 400; an unavailable cursor position returns 410 `CURSOR_EXPIRED`.
-Detail routes use opaque IDs. Static routes such as `/media/profiles` take precedence.
+Each collection has a `/{id}` detail route using opaque IDs. Static routes such
+as `/media/profiles` take precedence.
 Resource details have stable IDs; mutable records have versions. Observations and
 live status include `observed_at` and `freshness` (`live`, `stale`, `unknown`);
 immutable source/output records use their commit/digest instead. Owner-local
@@ -264,12 +263,9 @@ nixmox tasks show task_01 --json
 nixmox tasks logs task_01 --follow
 ```
 
-`apply [host]` aliases `deploy apply [host]`. Both default to the local node's
-assigned configuration, latest tracked revision, automatic builder selection,
-`switch`, and foreground progress with diff approval. Only explicit overrides
-need flags; see [apply defaults](deployment-and-rollback.md#apply-latest).
-The CLI resolves the local node ID and reads its binding/version to populate the
-normal command envelope; the API never guesses a target from the serving gateway.
+Apply aliases and source/builder defaults follow [Apply latest](deployment-and-rollback.md#apply-latest).
+The CLI resolves the local node and binding into the command envelope; the API
+never guesses a target from the serving gateway.
 
 Mutations print command/task IDs. `--wait` waits for terminal task status or a
 required approval that cannot be prompted for in a noninteractive client;
@@ -291,12 +287,6 @@ requirements; deployment auto-approval does not cover those operations.
 when user input is required. Boot approval and erase confirmation are separate;
 `deployment.approve` applies only to candidate deployment, not destructive install.
 
-`deploy install <host>` is the only public installation verb, for both initial and
-fresh installs. `--preparation` optionally supplies an existing committed preparation;
-otherwise its task guides preparation. Onboarding verbs only inspect/prepare/commit.
-Browser/TUI use Apply for updates and Install for fresh installation, backed by the
-same `deployment.apply` and `deployment.install` commands as the CLI.
-
 ## TUI and browser conventions
 
 Both expose Hosts, Configurations, Repositories, Tasks, Media, and Settings.
@@ -313,8 +303,8 @@ required only when auto-approval is off. Each task opens
 progress, logs, result, and eligible retry/cancel actions. Closing either UI does
 not cancel work. Selection state is local; task state belongs to the service.
 
-Every feature's interaction table is a parity checklist. Additional CLI verbs
-must declare their command type and payload schema in the operation registry.
+All interfaces use the same feature flows. Additional CLI verbs must declare their
+command type and payload schema in the operation registry.
 
 ## Secret ingress
 

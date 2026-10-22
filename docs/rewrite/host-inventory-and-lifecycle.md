@@ -143,13 +143,8 @@ After approval/Add, both show
 Hosts → cedar → Pending → Assign configuration. A preconfigured installed host
 uses Verify running configuration instead of silently assuming assignment is proof.
 
-Installed hosts with a configuration binding expose
-[Apply latest](deployment-and-rollback.md#apply-latest) on list rows and detail
-pages in browser/TUI, including the per-operation Auto-approve toggle. This starts
-the complete build/diff/deploy task; pending installation uses the onboarding flow.
-The Install action submits `deployment.install` for first or fresh installation.
-Show it disabled with capability reasons when the running OS has no supported
-installer-entry method; agent connectivity alone does not imply installability.
+Installed hosts expose [Apply latest and Install](deployment-and-rollback.md#operation-boundaries)
+on host lists/details. Disabled actions show capability reasons.
 
 ## State transitions
 
@@ -178,8 +173,7 @@ require an already-full member to complete the first deployment.
 
 Proposed topology: one durable broker initially; promote to three eligible full
 members when available. Two full hosts do not imply two-replica JetStream fault
-tolerance. Each node fetches Git bases from the remote independently; JetStream
-stores local changes. After three-replica promotion, quorum loss
+tolerance. After three-replica promotion, quorum loss
 blocks new cluster-scoped durable mutations; local bootstrap operations retain
 their node-local scope. Never silently scale down because nodes disappeared.
 Graceful removal coordinates explicit replica changes. Explain durability in UI.
@@ -220,8 +214,3 @@ quarantine old cluster storage so it cannot rejoin broker replication. A timeout
 TLS failure, or unauthenticated rejection only means disconnected, not removed.
 Use the [removal-response contract](identity-and-trust.md#authenticated-removal-response).
 Cluster reuse must not resurrect old broker membership or routes.
-
-Acceptance: create with no full members; request/approve/reject/expire; cluster Add
-without node confirmation; conflicting key/cluster rejection; preconfigured pending
-host; promotion; LAN endpoint change; stale inventory after restart; quorum loss;
-graceful removal and fresh rejoin with unchanged node identity.

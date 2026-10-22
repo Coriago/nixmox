@@ -144,14 +144,7 @@ Nixmox serves the local store in-process using a pinned `go-nix/pkg/nar` library
 for NAR serialization. No Harmonia service or per-download Nix subprocess is
 required. Use the same implementation in installed nodes and installer agents.
 
-| Route below `/store-cache/` | GET behavior |
-| --- | --- |
-| `nix-cache-info` | Cache protocol metadata |
-| `<store-hash>.narinfo` | Valid store path, references, NAR hash/size, signatures, and relative archive URL |
-| `nar/<store-hash>/<nar-hash>.nar` | Validate both hashes and stream that exact local output |
-
-Support HEAD without exporting a body; uploads are unsupported. Start with
-uncompressed NARs (`Compression: none`), with FileHash/FileSize equal to
+Start with uncompressed NARs (`Compression: none`), with FileHash/FileSize equal to
 NarHash/NarSize. Use bounded streaming buffers and backpressure. Interrupted
 downloads restart; Range requests may receive the complete 200 response.
 
@@ -163,12 +156,8 @@ on completion or cancellation while preserving task/generation pins. Preserve
 existing signatures and add the configured Nixmox signature using Nix's fingerprint.
 Serving errors are scoped to the request and reported through cache health/telemetry.
 
-## Acceptance
+## Verification
 
-Use real Nix imports: a closure split across two peers succeeds via one local URL;
-existing outputs avoid rebuilding; unreachable peers do not stall healthy ones;
-mid-stream failure never registers a corrupt output; signatures remain enforced.
-Verify bounded streaming without archive staging, cancellation/GC safety, custom
-ports and interface changes, restricted pending access, no recursive requests,
-and accurate peer progress in all three interfaces. Test loss and recovery of the
-serving backend independently of console/task availability.
+Real Nix imports must verify split-peer closures, bounded streaming, trusted
+signatures, mid-stream failure, cancellation/GC safety, and restricted pending access
+and accurate peer progress. Test serving-backend loss independently of console/tasks.

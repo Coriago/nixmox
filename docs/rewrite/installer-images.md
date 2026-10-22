@@ -17,13 +17,10 @@ Built-in profiles are complete recipes: users select one without writing Nix.
 Images contain no assigned permanent host configuration, shared machine identity,
 or private credentials. Customization uses ordinary Nix modules and exported image
 derivations, not a separate hardware configuration language.
-Generated machine keys and required SSH/SOPS keys follow the
-[security state inventory](identity-and-trust.md#generated-and-preserved-state);
-protected handoff state belongs to the individual host, never the reusable image.
-Each fresh boot uses ephemeral identity state; moving media between hosts must
-not carry the previous host's ID/keys. Authorized transitions restore the existing
-host identity before agent startup, for both media and kexec variants. See
-[reusable installer identity](identity-and-trust.md#reusable-installer-identity).
+Fresh boots generate ephemeral identity; authorized media/kexec handoffs restore
+the host identity before agent startup. Follow the
+[state inventory](identity-and-trust.md#generated-and-preserved-state) and
+[installer identity rules](identity-and-trust.md#reusable-installer-identity).
 
 | Initial profile | Target system | Image | Boot media |
 | --- | --- | --- | --- |
@@ -46,15 +43,10 @@ or USB on Pi 5. Custom profiles explicitly declare their supported boot media.
 
 ## Build and write
 
-The same pinned installer module/profile also supplies a **kexec variant** where
-the hardware supports it. USB/SD packages it as a disk image; kexec packages the
-kernel/initrd and required runtime into a kexec payload. Launch with `kexec-tools`
-and orderly systemd shutdown as defined in the deployment contract.
-An ISO/raw image is not passed directly to kexec. Both variants contain the same
-Nixmox agent, networking, UI, and installation tools; variant-specific boot wiring
-is the only difference in behavior. Build/fetch the variant through the task engine
-and record its digest. Profiles without a compatible variant advertise kexec as
-unsupported; architecture alone is insufficient.
+Profiles with tested hardware support also supply a kexec kernel/initrd payload
+using the same installer module. Record its digest and advertise unsupported
+variants explicitly; an ISO/raw image is not a kexec payload. Entry follows the
+[deployment contract](deployment-and-rollback.md#reboot-into-installer-and-fresh-install).
 
 The normal workflow builds on the machine with the destination device attached,
 then writes there. Builder selection is an advanced override, not a required step.
@@ -228,9 +220,6 @@ contract (the repository must export this image derivation and exact output path
 }
 ```
 
-The recipe imports the proposed `nixmox.nixosModules.installer` plus its own
-hardware/image modules. That shared module supplies the installer experience;
-board recipes supply the boot chain, drivers, firmware, and partition layout.
 Browser/TUI: Media → Profiles → Add → repository/ref → image attribute and metadata.
 CLI: `nixmox media profiles add --file edge-profile.json --wait` submits
 `media.profile.register`; JSON uses the module fields above in snake_case.
@@ -261,22 +250,11 @@ recovery dependencies, or handoff state. Recovery on the same physical disk requ
 a partition-preserving plan; whole-disk erasure requires a separate boot source.
 Initial supported adapters and recovery-selection mechanisms must be pinned and
 physically validated per profile before advertising readiness.
-For a running-OS node, a compatible adapter plus reusable installer media or an
-eligible spare device is a supported reboot route. Install can prepare that device
-through the media task flow before entering the installer. Only reject entry when
-neither kexec nor a ready/preparable reboot route exists. Never format media required
-by the running system; writing installer media and erasing the final installation
-target are separate confirmed operations.
+For running-OS targets, Install can [prepare spare reboot media](deployment-and-rollback.md#preparing-reboot-media)
+before entry; media writing and installation erasure require separate confirmation.
 
-Acceptance: x86 VM boot plus physical USB; physical Pi 5 SD boot, Ethernet/Wi-Fi,
-TUI/browser enrollment, installation to a separate target and reboot; compressed
-image capacity/readback; wrong-board profile; missing builder; custom recipe pinning.
-Verify writer-preferred building, configured emulation on the writer, explicit
-builder overrides, remote fallback/transfer failure, SD cards through both reader
-types, and extending a built-in recipe without losing installer behavior.
-Add physical USB/NVMe boot evidence before advertising those Pi boot methods.
-Verify media/kexec variants expose the same installer behavior, preserve handoff
-identity, and never silently substitute a stock installer missing the agent.
-Verify the same medium boots two hosts with different IDs; daemon restart keeps
-the current boot's ID; authorized reinstall retains the installed host's ID;
-stale/invalid handoff cannot restore a previous media user's identity.
+Advertise board/boot support only after physical validation: x86 USB and Pi 5 SD,
+Ethernet/Wi-Fi, enrollment, separate-target installation, and reboot. Pi USB/NVMe
+boot claims need separate evidence. Test custom and compressed images, capacity/
+readback, both SD reader types, writer preference/emulation, explicit builders,
+remote transfer failure, and identity reuse rules across media/kexec variants.

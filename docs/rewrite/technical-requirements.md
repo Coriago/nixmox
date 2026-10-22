@@ -6,18 +6,10 @@ The explicit [node-local operations](api-and-interfaces.md#operation-registry-an
 reuse durable local receipt/task storage before enrollment and during quorum loss. Native
 protocols handle discovery, remote Git fetches, closure transfer, SSH, and disk I/O.
 
-Apply/rollback use the standard Nix build/rebuild and activation toolchain;
-`deployment.install` runs partition/install phases through the Nixmox installer
-agent using Disko/Nix installation tools. Nixos-anywhere is not used.
-Shared installer modules produce media and kexec payloads containing the agent.
-SSH can bootstrap temporary agents; subsequent host orchestration
-uses the same NATS protocol. Reboot entry may prepare a compatible spare device
-through confirmed media tasks. Reject hosts with neither kexec nor a ready/preparable
-adapter/media route; never format storage required by the running system.
-Cross-host Nix outputs use the [streaming cache gateway](cache-gateway.md) over the
-managed machine TLS listener; local Nix and all user interfaces use HTTP.
-NATS carries discovery/control/progress, never archive bytes. No
-HTTP-over-NATS or generic SSH-over-NATS fallback is included.
+Backend ownership: [deployment](deployment-and-rollback.md#execution-contract),
+[installer execution](host-onboarding.md#installation-backend-and-handoff), and
+[cache transfer](cache-gateway.md). NATS carries control/progress; native protocols
+carry Git, SSH bootstrap, and Nix output bytes.
 
 ## Component contracts
 
@@ -81,15 +73,9 @@ must use those configured ports rather than its conventional defaults.
 | `nx_state` KV | Versioned membership, refs, host/task projections | Watch plus snapshot reconciliation |
 | `nx_git` Object Store | Retained local Git increments, never remote base snapshots | File-backed JetStream; bounded storage with explicit retention/GC |
 
-Cluster separation also uses NATS accounts/permissions; subject prefixes alone are
-not isolation. Pending-node permissions cannot include another node's command
-consumer or arbitrary KV/administration access.
-Leaves stream assigned commands, replies, logs/progress, and results; they do not
-become durable voting replicas. Full services manage their consumers and exact
-delivery/ack permissions. Enforce task-scoped subjects and reply inboxes on the
-accepting cluster broker, not only on the leaf's local server. The authoritative
-[security contract](identity-and-trust.md#managed-tls-and-nats-permissions) requires
-mutual TLS on clients/routes/leaves and an explicit full-broker key allowlist.
+Enforce [machine permissions](identity-and-trust.md#managed-tls-and-nats-permissions)
+through NATS accounts and accepting-broker grants, not subject prefixes alone.
+Leaves stream assigned work without becoming voting replicas.
 
 Commands expire after 120 seconds if not admitted. Broker deduplication is an
 optimization; durable request fingerprints/receipts enforce retry identity.
@@ -216,38 +202,27 @@ filename, digest, and length. Retain for 24 hours after completion; expiry retur
 
 ## Acceptance matrix
 
-| Scenario | Required assertion |
-| --- | --- |
-| First use | Public remote base plus local changes needs no Git write/SOPS credentials |
-| Interface parity | Same form validation, payload, confirmation, and task result in CLI/TUI/browser |
-| Interface contracts | Every documented verb maps to a registered operation/read; preview/build defaults, assignment refs, credential-kind checks, and immutable media release resolution agree across clients |
-| Review concurrency | Install starts without erase approval; wrong/stale review, missing device acknowledgement, changed source/device facts, and stale GC plans fail before effects; unrelated health/progress updates preserve approval; duplicate resumption cannot repeat effects |
-| Read/transfer contracts | Cursor/filter bounds, revision-pinned catalogs/files, log retention gaps, per-build logs, and owner-unavailable downloads return their documented outcomes |
-| Local admission | Network/discovery and local join intent survive restart without cluster quorum using shared task machinery; cluster mutations never fall back to local execution |
-| Three-node deployment | Pinned unpublished source builds on a non-target node and activates on target |
-| Cache gateway | One closure pulls disjoint outputs from two peers through one URL; peer failure is bounded; signatures, streaming, GC safety, and actual source progress are verified |
-| Apply latest | Host-list/detail action runs build/diff/deploy; default review and explicit auto-approval match CLI `apply --yes`; restart preserves the choice and pinned source |
-| CLI defaults | Bare `nixmox apply` targets the local node, follows progress, previews and confirms before switch; remote gateways require an explicit target |
-| Stream recovery | Missing/duplicate log chunks reconcile; stale UI is visible |
-| Build feedback | Actual cache sources, download rates, active derivations, transfer bars, and unknown totals are correct across interfaces |
-| Package diff | Added/removed/version-changed packages compare target and candidate outputs; stale and ambiguous results remain explicit |
-| Restart | Command retry resolves the same task; effects are not blindly replayed |
-| Quorum loss/recovery | Writes block without unsafe fallback; readable stale data stays labeled |
-| Removal/reuse | Identity retained, membership revoked, no stale routes/old broker identity reused |
-| Installer handoff | Same node returns on changed endpoint with verified deployed configuration |
-| Fresh install/recovery | kexec and normal reboot enter a verified installer before destructive review; Pi SD recovery survives NVMe reinstall; identity/network handoff and single-node state survive |
-| Operation boundaries | One Install command handles first/fresh installs; Apply never formats; unsupported entry returns INSTALLATION_UNSUPPORTED before effects |
-| Agent entry parity | USB/SD, kexec, installed agent, and SSH bootstrap converge on the same identity/task protocol; bootstrap requires no preinstalled Nix |
-| Installer bootstrap | Auto-launched TUI, Wi-Fi setup, discovery timeout/retry, and headless Ethernet enrollment share browser/TUI state; LAN access works without internet |
-| Transport separation | CLI/TUI/browser, including credential and Wi-Fi submission, work over HTTP without certificates or HTTPS redirects; machine-only routes are absent there. Daemon transfers and NATS require automated TLS; enrollment/status use their scoped bootstrap/removal exceptions. Custom machine ports propagate through discovery, joining, and firewall rules |
-| Installer profiles | Pinned x86/Pi/custom recipes prefer the capable writing host for builds; remote overrides/fallback transfer verified images; USB/SD writing is architecture-independent; advertised board/boot support has physical test evidence |
-| Git durability | Another node fetches the remote base and applies retained changes after writer loss |
-| Git retention | No full repo in JetStream; published inclusion or reviewed deletion controls change cleanup |
-| Security boundary | No anonymous broker reads/writes; unapproved request gets no broker access; approved leaf streams only permitted subjects; reject pending route peers; rotation/removal update connections and grants. Unrestricted management API remains outside this boundary |
+Run shared contract fixtures across CLI/TUI/browser, plus three-node E2E for
+distributed behavior. Native/WASM checks must agree on validation and actions.
+Physical boot/media claims require disposable-device evidence; VMs alone are insufficient.
 
-For application changes, extend `e2e/run.py` and run both parts of comprehensive
-three-node E2E. Test the actual changed source with working-tree snapshot mode,
-or an authorized published revision. Never publish merely to run tests. Report
-source mode, tested SHA, final checkpoint, artifact directory, and failure evidence.
-Unit/schema/WASM/browser checks complement this gate. Destructive hardware claims
-also need disposable-device evidence; VM assertions are not physical USB validation.
+| Area | Required checks |
+| --- | --- |
+| Configuration | Generate without host/write credentials; template selection/pinning; safe serialization/paths; incomplete commits; hardware with/without filesystems; generated/bound multi-disk layouts; preserve manual edits |
+| Interface parity | Same operations, defaults, validation, reviews, errors, and results; explicit unknown/stale state; every verb maps to a registered operation/read |
+| Reviews | Start without advance erase approval; reject stale bindings/missing acknowledgements; unrelated health/progress does not invalidate approval; duplicate resume cannot repeat effects |
+| Reads | Pagination/filter bounds, revision-pinned catalogs/files, log gaps/per-build logs, download expiry and unavailable owners |
+| Admission/recovery | Interrupt every admission boundary; retry resolves the same task; restart queued/running/cancelling work; uncertain effects reconcile without destructive replay |
+| Local scope/quorum | Network/discovery/join intent survive restart without quorum; cluster mutations block; stale reads stay labeled; no fallback or lease-only takeover |
+| Enrollment | Create with no full members; approve/reject/expire and cluster Add; conflicting keys/clusters; promotion, removal, fresh rejoin, authenticated removal notices |
+| Trust/secrets | Deny anonymous broker access, unapproved nodes, pending route peers, and unauthorized leaf subjects; rotation/removal reconcile grants; preserve issuer; no secrets in Git, commands, logs, or diagnostics |
+| Transport | HTTP console/secret submission without certificates; machine-only routes absent there; managed backend TLS; custom ports, firewall, reservations, occupied listeners |
+| Installer bootstrap | Linux SSH bootstrap without Nix; privileges/host keys/cleanup; automatic TUI, headless Ethernet, Wi-Fi hotplug/errors, discovery timeout/retry/late results, joining from either side |
+| Installation | USB/SD, kexec, and reboot converge; incompatible entry fails before effects; media/boot/erase approvals separate; same identity/output returns; single-node/issuer state survives; no repeated partitioning |
+| Preparation/SOPS | Reuse unassigned configuration; reject swapped/duplicate disks; confirm every erase target; no-SOPS install; updater failures; exact rule selection, all key groups, shared aliases, idempotent recipient edits |
+| Media/recovery | Physical profile validation, compressed image capacity/readback, writer preference/emulation/overrides, remote transfer failure; recovery survives Apply/rollback/GC |
+| Apply | Local/default/remote-target rules; unpublished remote build; pinned source through rebase; manual/auto approval and restart; changed baseline; boot staging; activation interruption and target exclusion |
+| Rollback/health | Retained/missing outputs; desired/running drift; exact output verification and separately reported health; no automatic rollback |
+| Diff/progress | Added/removed/version/output/ambiguous changes; target baseline; changing/unknown totals, cache sources/rates, retries, simultaneous builds/downloads, reconnect; byte completion never implies deployment success |
+| Cache | Split-peer closures through one URL; bounded streaming/failure; signatures, pins/GC, cancellation, restricted pending access, no recursive serving |
+| Git | Independent repositories; writer loss; missing base/artifact; concurrent edits and upload/CAS restart; conflict abort; pinned old commits; PR push versus upstream inclusion; reviewed deletion; no full base in JetStream |

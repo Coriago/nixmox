@@ -35,19 +35,11 @@ Builder/source are nullable for operations such as shutdown. Unknown total progr
 is null, never a fabricated percentage. Results contain resource IDs and observed
 outcomes, not success inferred from a shell exit code alone.
 
-`progress` is the compact phase summary, not the full activity model. Build and
-deployment tasks additionally expose the structured
-[progress snapshot and activities](deployment-and-rollback.md#required-build-and-deployment-progress).
-Track activity IDs, attempts, executor, source/cache, counts, bytes, and timings.
-Persist the latest snapshot and activity lifecycle outcomes; high-frequency rate
-samples may be coalesced rather than fsynced individually. Final activity/result
-summaries remain available after task completion.
-
-Normalize progress on the executing node and stream it through NATS to the serving
-gateway. Deduplicate by task/activity/attempt and sequence/version. Aggregate child
-tasks without counting the same download/build twice. Recovery starts from the
-persisted snapshot and reconciles active work; neither restart nor retransmission
-may inflate counters or invent completion. Log bytes remain a separate stream.
+Build/deployment tasks also expose [progress snapshots and activities](deployment-and-rollback.md#required-build-and-deployment-progress).
+Persist latest snapshots and lifecycle outcomes; high-frequency samples may be coalesced.
+Retain final activity/result summaries after completion.
+Normalize on the executor and stream through NATS. Deduplicate by task/activity/attempt
+and version; child aggregation and recovery must not double-count work. Logs are separate.
 
 Build substitution and output transfer use the [cache gateway](cache-gateway.md).
 Pin required source outputs and report actual serving peers, bytes, and retries.
@@ -106,9 +98,8 @@ an operation reaches a non-interruptible phase; show that reason in every UI.
 
 Operations register typed payload validation, required capabilities, resource keys,
 phase handlers, effect checkpoints, cancellation rules, and reconciliation handlers.
-Registry scope determines where admission is durable and whether quorum is needed.
-Reuse the existing receipt/task stores and embedded broker; no separate local
-journal or task engine is required. Node-local tasks record `scope: "node_local"`,
+Admission follows [registry scope](api-and-interfaces.md#operation-registry-and-scope).
+Node-local tasks record `scope: "node_local"`,
 `owner_node_id`, and null cluster context; they are not taken over remotely.
 Cluster tasks record `scope: "cluster"` and require cluster admission.
 Subprocesses receive argv arrays; no interpolated shell commands from API payloads.
@@ -186,8 +177,3 @@ Activities support `kind` and `state` filters with common pagination. A build's
 contract, and its `/download` streams the retained build log. CLI `tasks logs`
 accepts optional `--activity <id>`, `--offset <bytes>`, and `--limit <bytes>`;
 `--follow` recovers gaps through these reads and follows explicitly selected logs.
-
-Acceptance: interrupt each admission boundary; redeliver identical commands;
-restart while queued/running/cancelling; cancel remote work; lose a log chunk;
-lose the executor after an effect. None may duplicate a destructive operation or
-turn an unknown outcome into success.

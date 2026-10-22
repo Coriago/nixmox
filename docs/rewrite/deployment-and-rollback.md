@@ -13,9 +13,6 @@ confirmation, and installation. Ordinary Apply never formats disks.
 | Reboot into installer | `nixmox hosts reboot <host> --into installer`; `host.enter_installer` | Enter the installer only; no erasure or installation |
 | Prepare configuration | `nixmox onboarding inspect/prepare/commit` | Collect facts, render/review configuration, and commit; never install |
 
-Installation has one public workflow and command type, regardless of whether the
-host has been installed before. Onboarding supplies preparation and confirmation
-services to that workflow; its execution phases do not become separate install APIs.
 Apply requires a running NixOS system with verified rebuild/activation capability;
 it is unavailable in the installer or on a non-NixOS bootstrap target and never
 falls back to installation. A bootstrap agent on NixOS may Apply a configuration
@@ -80,10 +77,6 @@ nixmox apply --yes
 nixmox apply cedar --builder birch
 ```
 
-`nixmox apply [host]` and `nixmox deploy apply [host]` are aliases with identical
-defaults. Examples with additional arguments demonstrate overrides, not required
-boilerplate.
-
 | Omitted argument | Default |
 | --- | --- |
 | Host | Current node, identified through the local daemon's stable node ID |
@@ -134,12 +127,9 @@ compatibility, target exclusion, and observation gates still apply.
 }
 ```
 
-The approval choice is persisted with the task. Manual review uses `blocked` with
-reason `APPROVAL_REQUIRED`; reconnecting through any console resumes that review.
-Apply waits by default (`--wait` is accepted but redundant). Interactive execution
-shows the diff and prompts once. Noninteractive waiting
-without `--yes` returns exit 4 when approval is required, printing task/diff IDs;
-it never approves implicitly. To approve later:
+Persist approval policy with the task; manual review blocks with `APPROVAL_REQUIRED`.
+Any console can resume it. Waiting/prompt/exit behavior follows the
+[CLI contract](api-and-interfaces.md#cli-contract). Approve later with:
 
 ```sh
 nixmox deploy approve task_01 --diff diff_01 --diff-version 1 --wait
@@ -196,20 +186,13 @@ The service resolves a selector to a commit before task admission. Unknown sourc
 platform mismatch, missing builder capability, or conflicting target work returns
 a specific error before activation.
 
-| Step | Browser | TUI |
-| --- | --- | --- |
-| Preview | Hosts → cedar → Deployment → Preview | Hosts → cedar → Deployment → Preview |
-| Select builder | Build → Builder: birch | Build → builder selector → birch |
-| Inspect candidate | Candidate → packages/configuration diff | Candidate → Diff tabs |
-| Apply | Hosts row/detail → Apply latest → options / Auto-approve → Start → inline diff approval if needed | Same action, toggle, progress, and inline approval |
-| Watch | Task progress and deployment state | Task detail with Logs/Result |
+Browser/TUI: Host → Deployment → Preview/Build → Candidate → Diff.
+Tasks expose shared progress, logs, and results.
 
 ## Required package diff
 
-Before applying a built candidate, show an NH-style package summary: additions,
-removals, and old → new versions. This is structured API data shared by browser,
-TUI, and CLI, not terminal output embedded in the browser.
-[NH package diff UX](https://github.com/nix-community/nh)
+Before Apply, show structured package additions, removals, and old → new versions
+in all interfaces.
 
 Compare the target's observed running system closure with the exact candidate
 closure, even when another node built it. Do not compare with the builder's own
@@ -324,18 +307,10 @@ Changes in outputs/versions invalidate
 evidence even when a source branch has the same name. Package equality does not
 prove identical generated configuration, service behavior, or activation effects.
 
-Acceptance: added/removed/version-changed packages; same-version output changes;
-multiple versions and unknown versions; remote builder versus target baseline;
-unchanged package set with changed configuration; rollback direction; stale baseline;
-pagination and identical summaries across all interfaces.
-
 ## Required build and deployment progress
 
-Provide the depth of feedback associated with `nh os switch`: structured download
-and build activity, not just a spinner and a raw log tail. NH uses nix-output-monitor
-for build-tree displays; this is a UX reference, not a requirement to run NH or
-scrape its terminal rendering.
-[NH build display](https://github.com/nix-community/nh)
+Build and deployment feedback uses structured activities; raw log tails alone
+are insufficient.
 
 Browser, TUI, and interactive CLI must show:
 
@@ -521,17 +496,23 @@ nixmox deploy install cedar --wait
 nixmox deploy install cedar --preparation prep_01 --builder birch --wait
 ```
 
-The first command submits `host.enter_installer` with method `reboot`. Install
-submits `deployment.install` with `host_id`, `method` (default `auto`), and optional
-`installer_id`, `configuration_id`, `preparation_id`, `builder_id`, and review
-acknowledgements on resumption. A preparation must belong to this host, match any
-explicit configuration, and reference a committed source; revalidate observations before
-effects. Without a preparation, guide the user through the shared onboarding forms.
-With no assigned configuration, require selection/creation before target preparation
-and installation; entering the installer and preparing its media need no assignment.
-`--task task_01` supplies optional `task_id` to resume that same installation with
-new review input rather than create another task. Check that the task awaits the
-submitted review and its bindings still hold; changed effects require a new review.
+Reboot into installer submits `host.enter_installer` with `method: reboot`.
+Install accepts the following payload; CLI flags map to the corresponding fields:
+
+| Field | Default / constraint |
+| --- | --- |
+| `host_id` | Required; matches envelope target |
+| `method` | `auto`; CLI `--method auto\|reboot\|kexec` |
+| `configuration_id` | `--configuration`; defaults to assigned configuration's latest ref, otherwise require selection/creation |
+| `preparation_id` | `--preparation`; committed source for this host, matching any explicit configuration |
+| `installer_id`, `builder_id` | Optional `--installer`, `--builder` choices |
+| `task_id` | Optional `--task` resumes the existing task |
+| `review_id`, `acknowledgements` | On resumption: current review and `{confirm_host?, typed_device_paths?}` |
+
+Without a preparation, use shared onboarding forms. Pin chosen source before
+building and revalidate observations before effects. Entry/media preparation
+requires no assigned configuration.
+
 Submission without confirmation is valid and cannot enter a destructive phase.
 Task detail contains the current review. Interactive waiting displays it and
 submits its ID with the prompted acknowledgement. Scripts resume with:
@@ -540,26 +521,14 @@ submits its ID with the prompted acknowledgement. Scripts resume with:
 nixmox deploy install cedar --task task_01 --review review_01 --confirm-device /dev/disk/by-id/nvme-EXAMPLE --wait
 ```
 
-`--review` supplies the ID of the review embedded in that task. Resume succeeds
-only while the task awaits that review and its relevant bindings hold; unrelated
-host/progress versions do not require new approval. Boot reviews instead
-require `--confirm-host`; the two review kinds cannot authorize each other.
-Device/host flags without a current matching review do not grant advance approval.
-Resuming with `--task` and no acknowledgement regenerates a stale review of the
-same pinned intent and pauses again; it never changes source or repeats effects.
-Use `--confirm-host` for entry approval and the bound preparation/device confirmation
-for erasure. Browser/TUI submit these same resumptions with unique command IDs.
-`--method reboot|kexec|auto`
-overrides selection; `--installer` selects a registered installer. The parent task
-pauses for disruptive boot approval and, later, fresh disk confirmation using the
-onboarding contract. Interactive `--wait` guides these reviews; noninteractive
-waiting returns `APPROVAL_REQUIRED`/exit 4 with the pending review and task IDs.
-Configuration defaults are suggestions; pin the chosen revision before building.
-`--configuration <configuration-id>` overrides configuration selection; it must
-match any supplied preparation. Install payload fields are `host_id`, optional
-`task_id`, `method`, `installer_id`, `configuration_id`, `preparation_id`, `builder_id`,
-`review_id`, and `acknowledgements: {confirm_host?, typed_device_paths?}`.
-The server records verified acknowledgements as the bound `confirmation` evidence.
+The embedded review binds the task's intent. Boot reviews require `--confirm-host`;
+erase reviews require every `--confirm-device`. Neither grants approval for the other.
+Resume only the awaited review; changed effects require a new one. Resuming with
+`--task` and no acknowledgement regenerates a stale review of the same pinned intent
+and pauses, without changing source or repeating effects. Store verified acknowledgements
+as bound `confirmation` evidence. Browser/TUI use the same resumptions with unique
+command IDs; noninteractive waiting returns exit 4.
+
 `host.enter_installer` takes `host_id`, `method` (CLI reboot uses `reboot`), optional
 `installer_id`, `task_id`, `review_id`, and `acknowledgements: {confirm_host}` at entry
 review. Standalone `hosts reboot --into installer` follows the same pause/resume
@@ -722,13 +691,6 @@ checkpoint on preserved storage and its standalone bootstrap path; if that canno
 be prepared, block before reboot/erasure rather than lose the only cluster state.
 After successful installation/adoption, restore full membership through verification.
 
-Acceptance: x86 kexec and normal reboot routes; Pi SD installer → NVMe install →
-SD installer → NVMe reinstall; unsupported bootloader; missing media; stale handoff;
-no wipe on entry; quorum preflight; single-node recovery; connection loss at every
-handoff; no repeated partitioning; retained recovery survives apply/rollback/GC.
-Verify the same install command from USB/SD, kexec, and an installed system; reject
-unsupported entry without fallback/effects; Apply must never invoke formatting.
-
 ## V1 deployment scope
 
 Deployments target one host. Multi-host rollouts, canaries, and automatic rollout
@@ -736,18 +698,3 @@ rollback are future work; no rollout command is exposed in v1. Host and cluster
 [health status](host-inventory-and-lifecycle.md#health-status) is included in v1.
 After activation, refresh and display health alongside exact running-output
 verification. Report degraded health separately; it does not trigger automatic rollback.
-
-Acceptance: unpublished remote build; preview without activation; source pinned
-during rebase; boot staging without changing running output; observed reboot;
-rollback with/without retained output; executor interruption after activation;
-concurrent apply rejection; removal of network path during deployment.
-Verify Apply latest from host list/detail, default pause versus `--yes`, resumed
-approval after console/worker restart, noninteractive exit 4, stale diff rejection,
-auto-approved diff refresh, and source changes during a build without retargeting.
-Verify bare `nixmox apply` on cedar targets cedar's assigned configuration, defaults
-to switch and foreground review, matches its long-form alias, and requires an
-explicit host when connected to a remote gateway.
-Also verify cache source and speed, simultaneous builds/downloads, changing totals,
-cache fallback/retries, target-transfer progress, stale/reconnected progress, and
-matching browser/TUI/CLI displays. A finished byte bar must not mark a deployment
-successful before activation/observation completes.

@@ -17,12 +17,9 @@ secret contents into the store. UI-created settings are persisted by Nixmox.
 }
 ```
 
-This node starts unjoined, advertises discovery, and serves its console on the
-selected management interface. It can create a cluster, register a public remote
-repository, pull its base, and generate local changes without Git write/SOPS
-credentials. Private repositories need read access. It remains pending after
-cluster approval until deployment is verified. Local-only repositories are not
-supported.
+The node starts unjoined and exposes discovery and its console on the selected
+management interface. Joining requires cluster approval; full membership requires
+verified deployment or adoption.
 
 ## Configured cluster and repositories
 
@@ -129,24 +126,14 @@ credential-dependent operations. Git remote configuration never triggers a push.
 Repository entries require `remoteUrl`, default to `upstreamBranch = "main"`, and
 have no credential by default. A module declaration registers repository settings;
 import/fetch tasks populate each node's local checkout from the remote as needed.
-JetStream replication settings belong to cluster storage, not individual Git
-repositories. There is no full-Git replica count or placement option.
-Installer media enables install and discovery, selects identity using the
-[fresh-boot/handoff rules](identity-and-trust.md#reusable-installer-identity), starts
-the browser gateway, and automatically launches `nixmox tui --installer` on the local
-console. Its network profile attempts wired DHCP; connected Ethernet and explicitly
-connected Wi-Fi become management interfaces automatically, enabling headless access.
-This is the media profile; installed nodes retain the explicit interface policy above.
-The daemon starts independently of the TUI and network setup. No shared identity
-or repository-write token is embedded in the image. See
-[installer startup](host-onboarding.md#installer-startup-and-network-setup).
-Media/reboot and kexec variants use the same installer module and accept a protected
-identity handoff instead of generating a replacement identity. `capabilities.install`
-permits installation effects; actual availability also requires a verified
-installer environment or supported kexec/reboot entry. Reboot entry includes a
-compatible boot adapter plus existing installer media or a safely formattable spare
-device; enable scoped media-write capability for its confirmed preparation. Otherwise expose
-`INSTALLATION_UNSUPPORTED`, even when this option is enabled.
+
+Installer media automatically enables connected Ethernet/explicitly connected Wi-Fi
+as management interfaces; installed nodes retain the explicit policy above.
+See [installer startup](host-onboarding.md#installer-startup-and-network-setup) and
+[identity handoff](identity-and-trust.md#reusable-installer-identity).
+`capabilities.install` permits effects but still requires a verified installer
+or [supported entry route](deployment-and-rollback.md#reboot-into-installer-and-fresh-install).
+Preparing spare boot media also requires scoped media-write capability.
 
 ## Service ports
 
@@ -179,17 +166,8 @@ machine routes, never the console or general administrative API. Machine-only ro
 are absent from the HTTP console listener. Advertisements identify each service,
 transport, and actual port; listeners never multiplex plaintext HTTP and TLS.
 
-This block is in IANA's private-use range (49152–65535), which has no assigned
-standard services. It is a Nixmox default, not an exclusive registered allocation;
-other software can still choose it.
-[IANA port ranges](https://www.iana.org/assignments/service-names-port-numbers/)
-
-Linux's default automatic source-port range ends at 60999. The NixOS module must
-also reserve configured listener ports in `net.ipv4.ip_local_reserved_ports`, merging
-with other reservations rather than overwriting them, so a widened ephemeral range
-does not allocate these ports automatically. Reservation does not prevent another
-application from explicitly binding them.
-[Linux port allocation](https://docs.kernel.org/networking/ip-sysctl.html#ip-variables)
+Reserve configured listener ports in `net.ipv4.ip_local_reserved_ports`, merging
+with other services' reservations. This does not prevent explicit bind conflicts.
 
 Validate ports as integers 1–65535 and reject overlapping Nixmox TCP listeners.
 Bind required listeners before reporting ready; on conflict, report the listener,
@@ -207,27 +185,6 @@ Firewall rules use configured ports and management interfaces, never the loopbac
 client port. Advertise actual console/machine/route/leaf endpoints; peers must not assume
 the remote node uses their own port settings. A custom discovery port must match
 across discovering peers; explicit address enrollment remains available.
-
-Override example:
-
-```nix
-{
-  services.nixmox = {
-    http.port = 63270;
-    machine.port = 63275;
-    nats = {
-      clientPort = 63271;
-      routePort = 63272;
-      leafPort = 63273;
-    };
-    discovery.port = 63274;
-  };
-}
-```
-
-Acceptance: an occupied listener fails clearly without port hopping; custom ports
-flow through CLI defaults, discovery, enrollment, and firewall rules; reservations
-preserve other services' entries; an unrelated NATS instance can coexist.
 
 ## Ownership and reconciliation
 
@@ -289,17 +246,8 @@ preventing the entire console from starting. UI writes cannot override a declare
 secret source. Secrets entered through the UI are stored privately on a selected
 credential-capable full member, never echoed back.
 
-## Equivalent UI operations
+## Settings UI
 
-| CLI | Browser | TUI |
-| --- | --- | --- |
-| `nixmox settings show` | Settings → Runtime | Settings → Runtime → Enter |
-| `nixmox repositories remote set lab --url https://github.com/example/nixos-config.git` | Repositories → lab → Settings → Remote | Same screen → Remote → Enter |
-| `nixmox credentials import github-writer --kind git-http-token --node alder --file /run/keys/token` | Settings → Credentials → Add → storage node | Settings → Credentials → Add; hidden input |
-| `nixmox repositories credential set lab github-writer` | Repositories → lab → Credentials | lab → Settings → Credentials |
-
-Credential import reads the local file without logging its contents and sends it
-to the selected console over HTTP. If the storage replica is another node, the
-daemon forwards the value over the managed machine TLS connection before admitting
-the secret-free command. Never put tokens in command arguments. Application-secret
-replicas are provisioned independently; machine certificates are issued automatically.
+`nixmox settings show` and browser/TUI Settings → Runtime show effective values and
+declaration ownership. Repository settings are under Repositories → Settings;
+credential operations follow [identity and trust](identity-and-trust.md#credential-record-and-operations).

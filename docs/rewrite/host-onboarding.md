@@ -62,32 +62,10 @@ bootstrap resumes its receipt rather than creating a second host identity.
 
 ## Bootable media workflow
 
-Use [installer profiles](installer-images.md) for x86 PCs, Raspberry Pi 5, and
-custom hardware. A profile selects architecture, boot support, and image format;
-USB and SD writing share the same flow.
-Build on the writing node by default when capable; another builder is a fallback
-or explicit override. SD cards in built-in and USB readers are supported targets.
-
-```sh
-nixmox media build --profile pc-x86_64 --host alder --wait
-nixmox media devices --host alder
-nixmox media plan --image media_01 --host alder --device /dev/disk/by-id/usb-EXAMPLE --wait
-nixmox media write --plan media_plan_01 --confirm-device /dev/disk/by-id/usb-EXAMPLE --wait
-```
-
-`media.plan` captures image digest, observed device identity, size, and eligibility.
-`media.write` verifies that plan again, writes, then performs readback verification.
-The device must be attached to the writing node, which need not serve the console.
-A mount, identity change, or conflicting task invalidates the plan. Never select
-an arbitrary disk automatically or embed shared machine credentials in the image.
-Reboot-based installation can invoke this flow on the target itself, including a
-pending SSH-bootstrap agent. Reject media required by the running system even if
-its boot partition is currently unmounted; stage handoff only after image writing.
-
-Browser: Media → Create installer → profile + node alder/device → Build → review
-model/serial/capacity → type exact device → Write. TUI follows the same Media screens
-and requires the same typed confirmation. A task shows build/write/readback phases,
-plus transfer when another node built the image.
+Build/fetch, plan, confirm, write, and read back media through
+[installer images](installer-images.md#build-and-write). Reboot installation can
+run these tasks on a pending bootstrap agent. Reject media required by the running
+system; stage identity handoff only after writing.
 
 ### Example: Pi NVMe boot to SD U-Boot / NVMe root
 
@@ -160,13 +138,7 @@ nixmox network wifi connect --network wifi_01 --wait
 nixmox tui --installer
 ```
 
-Reads: `/network/status`, `/network/wifi/networks`. Commands: `network.check`,
-`network.wifi.scan`, `network.wifi.connect` (network ID and optional local
-credential reference). `POST /api/v1/network/wifi/credentials` stages a password
-using the same HTTP submission and redaction rules as credential import and returns
-an opaque, short-lived reference. No cluster membership or quorum is required for
-these node-local bootstrap operations. All interfaces use the same status/events.
-`network.check` refreshes local link/address state; it sends no internet probe.
+Reads: `/network/status`, `/network/wifi/networks`. All interfaces share status/events.
 
 | Command type | Payload / result |
 | --- | --- |
@@ -176,7 +148,7 @@ these node-local bootstrap operations. All interfaces use the same status/events
 | discovery.search | `{}`; bounded search result with discovery IDs |
 
 All four use [node-local admission](api-and-interfaces.md#operation-registry-and-scope).
-The Wi-Fi ingress accepts `{network_id, password}` over the installer's HTTP console,
+`POST /api/v1/network/wifi/credentials` accepts `{network_id, password}` over the installer's HTTP console,
 redacts it before middleware, and returns `{credential_ref, expires_at}`
 with a five-minute staging lifetime. Connect binds the reference to that network;
 open networks omit it. Credentials never enter the ordinary command payload.
@@ -303,32 +275,15 @@ Build/download and target-transfer stages must expose the same structured
 [progress feedback](deployment-and-rollback.md#required-build-and-deployment-progress)
 as ordinary deployments, including cache sources, rates, active builds, and bars.
 
-Preparation uses the configuration's compatible hardware/disk template lists.
-Auto-select each stage when it has one choice; with multiple choices, show a
-selector or accept `--hardware-template` / `--disk-template`. Thus the example
-auto-selects `linux-hardware` and explicitly selects the binding-only disk template.
-To generate a layout instead, select `--disk-template ext4-layout`; the preparation
-diff includes pinned layout assets and the rendered device binding.
+Use the configuration's compatible [hardware/disk templates](configuration-generation.md#dedicated-hardware-template).
+Auto-select a sole template; otherwise prompt or accept `--hardware-template` /
+`--disk-template`. Values are typed fields containing observed device IDs.
+Without a disk renderer, require one or an explicitly selected complete layout
+whose evaluated devices match the selected disks.
 
-Both stages use the output paths and formatting defined by the repository.
-See [dedicated templates](configuration-generation.md#dedicated-hardware-template)
-for manifests and renderers. Disk selectors are ordinary `type: "disk"` form fields;
-their values are observed IDs, resolved to device records by the service.
-No configured disk renderer means the user must provide one or explicitly use an
-already complete layout whose evaluated devices match the selected disks; do not
-silently choose a partitioning scheme.
-
-| Stage | Browser | TUI |
-| --- | --- | --- |
-| Connect | Discovery → cedar → Add | Discovery → cedar → Add |
-| Bind | cedar → Set up → select lab/cedar or Create | Hosts → cedar → Set up → same selector |
-| Prepare | Hardware template/form → disk template and its device fields → optional Secrets; skip sole-template selectors | Preparation tabs: Hardware / Disks / Secrets, with the same selection rules |
-| Commit | Combined diff → Commit locally | Review diff → Commit locally |
-| Install | Builder birch → disk review → typed confirmation | Install review → same builder/confirmation |
-| Finish | Task → waiting for reboot → verified full member | Task → Result, then host membership badge |
-
-If the configuration is created during this flow, return to preparation after the
-standalone generation flow; do not duplicate its forms or validation logic.
+Browser/TUI: Hosts → Set up → select/create configuration → Hardware / Disks /
+optional Secrets → combined diff → Commit locally → Install review → task result.
+Reuse generation forms when creating a configuration during setup.
 
 ## Confirmation and checkpoints
 
@@ -354,28 +309,9 @@ Initial Install submission may omit confirmation and pause. Every erase target
 must be acknowledged at destructive review; missing acknowledgements at that step
 are an error. Interactive waiting prompts; noninteractive waiting returns exit 4.
 
-```text
-Set up cedar                      Pending • installer
-Configuration   lab / cedar       Local commit 1111111
-Builder         birch             x86_64-linux
-System disk     Example NVMe       512 GB • serial EXAMPLE
-Secrets         Skipped            No update rules configured
-Network         LAN → tailscale0   Handoff must be verified
-
-[Review changes]  [Commit locally]  [Review installation]
-```
-
-Browser panels and the TUI detail screen show these same values. Install stays
-disabled with a specific reason until preparation is ready and the reviewed commit
-is available to the chosen executor.
-
-```text
-inspect → prepare → review → commit → confirm
-                                      ↓
-verify → build/transfer → partition → install → preserve identity/network → reboot
-                                                                           ↓
-                                                       observe same ID/output → full
-```
+Show configuration/commit, builder, selected disks (model, serial, capacity),
+secret-update status, and network handoff in review. Enable installation only when
+preparation is ready and the reviewed source is available to the executor.
 
 Persist effect intents/checkpoints. Loss of connection after partition/install
 enters reconciliation. A completed installation proceeds to reboot/observation,
@@ -403,15 +339,11 @@ are mandatory before selecting the installed system and rebooting. A shell exit
 code alone cannot establish readiness. Each phase has a durable receipt and
 reconciles its actual effects after interruption; never blindly rerun Disko.
 
-Handoff is common to every installation: preserve Nixmox node identity, scoped
-enrollment/recovery evidence, and transferable network settings. Copy active Wi-Fi
-credentials locally with restrictive permissions when the target supports that
-network backend; otherwise require a working alternative before entry. Keep values
-out of Git, JetStream, logs, and traces; SOPS setup is not required. Stage the minimal
-handoff outside erase targets and remove consumed transient copies. Preserve any
-required host/decryption keys explicitly, not the entire old root or credential store.
-The canonical paths, permissions, and preserve/delete rules are in the
-[security state inventory](identity-and-trust.md#generated-and-preserved-state).
+Preserve identity, scoped enrollment evidence, required host/decryption keys, and
+network settings using the [state inventory](identity-and-trust.md#generated-and-preserved-state).
+Copy Wi-Fi profiles only to a compatible target backend; otherwise require working
+alternative connectivity before entry. Keep handoff outside erase targets and
+remove consumed copies; never copy the whole old root or credential store.
 
 For the `rpi-uboot-sd` layout, preparation separates **erase NVMe** from **preserve
 SD partitions/update boot files**. Verify observed partition identifiers, mount the
@@ -491,14 +423,10 @@ selectors, and allowed paths. It replaces the YAML-edit step and returns affecte
 encrypted paths and a structured result. Nixmox retains credential handling,
 `updatekeys`, review, and commit ownership. Select it with `prepare.sops.updaterRef`.
 
-## API and acceptance
+## API
 
-Commands: `host.bootstrap`, `media.build`, `media.plan`, `media.write`,
-`onboarding.inspect`, `onboarding.prepare`, `onboarding.commit`. Installation uses
-the single `deployment.install` command defined in the deployment spec. Payloads
-match the CLI selections above; commit uses expected preparation/repository versions,
-and installation resumes with the bound review acknowledgement. Reads: `/media/{id}`,
-`/hosts/{id}/disks`, `/observations/{id}`, `/preparations/{id}` and its `/diff`.
+Reads: `/hosts/{id}/disks`, `/observations/{id}`, `/preparations/{id}` and its `/diff`.
+Installation uses [deployment.install](deployment-and-rollback.md#reboot-into-installer-and-fresh-install).
 
 | Command type | Required payload / optional fields |
 | --- | --- |
@@ -520,17 +448,5 @@ omitted IDs using the single-template rule and persist both IDs and source revis
 in preparation. API callers cannot replace service-collected hardware or disk facts
 with template values.
 
-Acceptance: USB write/readback; swapped disk rejection; no-host configuration reuse;
-no-SOPS install; failed optional updater; install using remote builder and unpublished
-commit; reboot on a different interface with the same ID; interruption after disk
-effects; fresh preparation after hardware changes without accidental installation.
-Also test template auto-selection, disk-layout generation versus binding-only,
-and confirmation of every selected device in a multi-disk form. CLI installation
-accepts one `--confirm-device` per selected device at erase review; initial submission
-without those flags pauses safely. Neither boot approval nor `apply --yes` authorizes erasure.
-Also test automatic installer TUI startup, wired headless setup, absent/hotplugged
-Wi-Fi adapters, scan/password errors, link/address readiness, discovery
-timeout/retry/late results, joining from either side, and browser/TUI state parity.
-SSH bootstrap acceptance: supported Linux without Nix, insufficient privilege,
-host-key mismatch, duplicate request, cleanup, agent handoff over NATS, and preserved
-identity across boot. Reject installation-incompatible hosts before boot/erase.
+CLI erase review requires one `--confirm-device` per selected device. Initial
+submission may pause without them; boot approval and `apply --yes` never authorize erasure.

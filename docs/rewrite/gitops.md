@@ -115,9 +115,8 @@ A restart reconciles by command/artifact ID. Quorum loss blocks ref mutation.
 Read-only cached source remains available; admission of new work still follows
 cluster quorum rules.
 
-Nodes watch accepted refs and materialize changes when needed. Creating an accepted
-change does not wait for a chosen number of Git checkouts. Each builder independently
-fetches the remote prerequisites before importing the retained change artifacts.
+Nodes watch accepted refs and materialize changes on demand; acceptance does not
+wait for a chosen number of checkouts.
 
 ## CLI and interface flows
 
@@ -137,13 +136,8 @@ access for each fetching node. Write credentials are needed only for publication
 Remote failures do not disable local work whose pinned base is cached or operations
 on unrelated repositories.
 
-| User action | Browser | TUI |
-| --- | --- | --- |
-| Add second repository | Repositories → Add → Import | Repositories → Add → Import |
-| Inspect changes | lab → Changes → new-cedar → Diff | lab → Refs → Enter → Diff |
-| Inspect retained changes | Artifact art_01 → Storage and retention | Artifacts → art_01 → Retention |
-| Update against main | Change → Rebase → review pinned upstream | Ref → Actions → Rebase → review |
-| Publish later | Change → Publish → choose writer → PR | Ref → Publish → same form |
+Browser/TUI: Repositories → Add/Import; repository detail → Changes/Refs →
+Diff, Rebase, or Publish. Artifact detail shows storage and retention.
 
 Repository list shows remote URL, upstream freshness, and pending refs.
 Detail shows ahead/behind counts with fetch time, not an assertion
@@ -257,11 +251,3 @@ Retain small audit records after payload deletion, including publication evidenc
 or deletion reason. Retire affected change refs explicitly. Never display a deleted
 unpublished revision as rebuildable. Node-local Git cache GC is separate and must
 not remove objects pinned by running tasks.
-
-Acceptance: two repositories with same configuration name; unpublished generation
-on a public remote base without write credentials;
-build on another node after writer loss; missing bundle base; concurrent edits;
-restart after upload/before CAS; conflict abort; delayed publication; no credentials
-in artifacts; old commit pinned during rebase and garbage collection; upstream
-inclusion versus PR push; reviewed unpublished deletion; missing remote base;
-no full repository/base transfer through JetStream.

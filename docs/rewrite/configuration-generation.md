@@ -60,8 +60,6 @@ Resolve templates from the selected repository revision and stage:
 An explicitly supplied ID must be available for that stage. Record the resolved ID
 and source commit in the draft/preparation, even when selected automatically.
 A later catalog change must not switch the template for an in-progress task.
-Counting only configuration templates means one configuration template plus several
-hardware/disk templates still skips selection on Generate.
 
 Template proposal: Go-style templates with one `nix` serializer for strings,
 booleans, integers, and lists. Values are raw typed values until serialized.
@@ -82,8 +80,6 @@ The Username field becomes a quoted Nix attribute, not raw code. Do not treat
 arbitrary field values as Nix code. The serializer must escape Nix interpolation `${...}`.
 The example emits a host module; the repository's flake must export the declared
 attribute. Templates may emit additional files to provide that wiring.
-Here the repository supplies `modules/base.nix` and `modules/development.nix`;
-enumerated Modules values select those imports.
 
 ## Selecting configurations without generation
 
@@ -105,10 +101,8 @@ Repositories with other layouts provide `.nixmox/configurations.json`:
 
 These descriptors replace automatic enumeration for that repository, so display
 names remain stable across internal layout changes. Generation must update the
-descriptor when needed and validate the resulting exported attribute. The files
-describe how to find a configuration; they do not make Nixmox depend on flake-parts.
-`nixmox configurations list --repository lab` and the browser/TUI configuration
-picker use the same catalog, with the inspected commit displayed.
+descriptor when needed and validate the resulting exported attribute.
+`nixmox configurations list --repository lab` and the browser/TUI configuration picker use the same catalog, with the inspected commit displayed.
 
 `configurations list` lists across repositories; `--repository` filters it.
 Each configuration defaults to its tracked ref; names found only in the upstream
@@ -209,15 +203,10 @@ cursor/limit bounds with the requested draft version pinned for the whole listin
 
 ## Browser and TUI
 
-| Step | Browser | TUI |
-| --- | --- | --- |
-| Generate | Configurations → New → lab → form directly when Server is the only template | Configurations → New → lab → same form without a template prompt |
-| Enter values | Name=cedar, Username=admin, Modules=base | Same fields; Tab through controls, Space toggles choices |
-| Review | Preview files and validation panel | Review → files list → Enter opens diff |
-| Save | Commit locally | Commit locally → Enter |
-
-Both show “Saved locally; needs hardware preparation” rather than “Ready to install”.
-A saved unassigned configuration remains selectable from any console once replicated.
+Configurations → New → repository → template/form → file diff and validation → Commit locally.
+Use the same template selection and validation as CLI. An incomplete saved configuration
+shows “Saved locally; needs hardware preparation” and becomes selectable on any console
+once replicated.
 
 ## Validation and failures
 
@@ -236,12 +225,6 @@ conflict and retain the draft. Template/schema errors identify a field or file.
 Hardware and disk rendering use dedicated templates, specified below. Onboarding
 owns observations, user selections, and execution; these templates own file layout
 and formatting.
-
-Acceptance: generate without a host or credentials; render the same values in all
-interfaces; reject traversal/interpolation mistakes; commit incomplete hardware
-state; preserve a draft after validation/conflict failure; later prepare that exact
-configuration through onboarding; skip selection only when exactly one compatible
-template exists; preserve the selected template when the catalog changes.
 
 ## Dedicated hardware template
 
@@ -335,8 +318,7 @@ again before destructive execution. Two rendering modes are supported.
 ### Generate from disko templates
 
 The repository opts into a named template from a pinned disko-templates revision.
-The source below is a structural fixture: replace the sample revision with a real
-immutable commit during setup. Review the selected source before installing.
+Example revisions are fixtures; configure a real immutable commit.
 
 ```json
 {
@@ -425,29 +407,8 @@ of whether the configuration was generated or selected from an existing reposito
 
 ### Two disk example
 
-A repository layout defines `main` for the operating system and `data` for storage.
-The form asks for both devices; the renderer supplies only their bindings.
-
-```json
-{
-  "schema_version": 1,
-  "id": "system-and-data",
-  "kind": "disk",
-  "label": "System and data disks",
-  "mode": "bind",
-  "fields": [
-    {"name": "SystemDisk", "label": "System disk", "type": "disk", "required": true},
-    {"name": "DataDisk", "label": "Data disk", "type": "disk", "required": true}
-  ],
-  "outputs": [{
-    "path": "generated/hosts/{{ .Name }}/disk.nix",
-    "template": "two-disks.nix.gotmpl",
-    "format": "nix"
-  }]
-}
-```
-
-`two-disks.nix.gotmpl`:
+Add two required `disk` fields, `SystemDisk` and `DataDisk`, to a binding template
+listed in the configuration's compatible templates. The repository supplies the layout:
 
 ```gotemplate
 { ... }: {
@@ -456,46 +417,13 @@ The form asks for both devices; the renderer supplies only their bindings.
 }
 ```
 
-CLI:
-
 ```sh
 nixmox onboarding prepare cedar --configuration cfg_cedar --observation obs_01 \
   --disk-template system-and-data \
   --set disk.SystemDisk=disk_01 --set disk.DataDisk=disk_02 --wait
 ```
 
-Browser/TUI: Preparation → Disks → System and data disks → select System disk and
-Data disk → Review. If this is the only compatible disk template, open the two
-fields directly. Include `system-and-data` in the configuration's compatible disk
-template list to make it available.
-
-The corresponding `onboarding.prepare` payload includes:
-
-```json
-{
-  "host_id": "n_cedar",
-  "configuration_id": "cfg_cedar",
-  "observation_id": "obs_01",
-  "disk_template_id": "system-and-data",
-  "template_values": {
-    "disk": {"SystemDisk": "disk_01", "DataDisk": "disk_02"}
-  }
-}
-```
-
-Given observed paths `/dev/disk/by-id/nvme-EXAMPLE` and
-`/dev/disk/by-id/ata-DATA`, the rendered assignments are:
-
-```nix
-{ ... }: {
-  disko.devices.disk.main.device = "/dev/disk/by-id/nvme-EXAMPLE";
-  disko.devices.disk.data.device = "/dev/disk/by-id/ata-DATA";
-}
-```
-
-The selected repository layout supplies partitions/filesystems for both named
-disks. Review and confirm both devices before installation. The same field pattern
-can bind two members of a mirror when the chosen layout defines one.
+Browser/TUI show both selectors; installation review must confirm both devices.
 
 ## Output paths and imports
 
@@ -522,8 +450,3 @@ preparation history. On regeneration, compare against both the previous generate
 content and the file at the selected commit. Manual edits require explicit merge
 or replacement review. Path changes show additions and proposed removals together;
 never delete an obsolete generated file or leave a stale import silently.
-
-Acceptance: hardware with/without filesystems; imported vendor layout versus
-binding-only; single- and two-disk forms; duplicate/stale disk selection rejection;
-conflicting disk option; optional imports before preparation; repeated preparation
-preserving manual edits.
