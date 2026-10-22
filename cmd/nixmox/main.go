@@ -18,14 +18,13 @@ import (
 	"syscall"
 	"time"
 
-	"nixmox/internal/broker"
 	"nixmox/internal/client"
+	"nixmox/internal/cluster"
 	"nixmox/internal/config"
 	"nixmox/internal/domain"
 	"nixmox/internal/httpapi"
 	"nixmox/internal/machine"
 	"nixmox/internal/network"
-	"nixmox/internal/pki"
 	"nixmox/internal/presentation"
 	"nixmox/internal/service"
 	"nixmox/internal/storage"
@@ -117,6 +116,15 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	group, verb := args[0], args[1]
 	rest := args[2:]
+	clusterName := ""
+	if group == "cluster" && verb == "create" {
+		if len(rest) == 0 {
+			fmt.Fprintln(errOut, "A cluster name is required.")
+			return 2
+		}
+		clusterName = rest[0]
+		rest = rest[1:]
+	}
 	id := ""
 	if (group == "tasks" && verb != "list") || group == "commands" {
 		if len(rest) == 0 {
@@ -132,7 +140,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	f := flags(group+" "+verb, errOut)
 	asJSON := f.Bool("json", false, "JSON output")
-	mutation := (group == "network" && verb == "check") || (group == "tasks" && (verb == "cancel" || verb == "retry"))
+	mutation := (group == "network" && verb == "check") || (group == "tasks" && (verb == "cancel" || verb == "retry")) || (group == "cluster" && verb == "create")
 	var wait bool
 	var commandID string
 	var version int64
@@ -169,6 +177,9 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 			commandID = domain.NewID("cmd_")
 		}
 		cmd := domain.Command{ID: commandID, Type: group + "." + verb, TargetID: identity.NodeID, ExpectedVersions: map[string]int64{}, Payload: json.RawMessage(`{}`)}
+		if group == "cluster" {
+			cmd.Payload, _ = json.Marshal(map[string]string{"name": clusterName})
+		}
 		if group == "tasks" {
 			if version <= 0 {
 				fmt.Fprintln(errOut, "--version must be the reviewed task version.")
@@ -212,6 +223,12 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return 0
 	}
 	switch group + " " + verb {
+	case "cluster status":
+		v, err := c.Cluster(ctx)
+		if err != nil {
+			return exitError(errOut, err)
+		}
+		printJSON(out, v)
 	case "identity show":
 		v, err := c.Identity(ctx)
 		if err != nil {
@@ -320,20 +337,16 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 		return exitError(errOut, err)
 	}
 	defer store.Close()
-	svc, err := service.Open(store, network.Inspector{Config: cfg})
+	clusters, err := cluster.Open(store, cfg)
+	if err != nil {
+		return exitError(errOut, err)
+	}
+	defer clusters.Close()
+	svc, err := service.Open(store, network.Inspector{Config: cfg}, clusters.Operations()...)
 	if err != nil {
 		return exitError(errOut, err)
 	}
 	defer svc.Close()
-	keys, err := pki.Open(store)
-	if err != nil {
-		return exitError(errOut, err)
-	}
-	b, err := broker.Start(broker.Config{NodeID: svc.Identity().NodeID, DataDir: cfg.DataDir, Keys: keys, ClientPort: cfg.NATS.ClientPort, RoutePort: cfg.NATS.RoutePort, LeafPort: cfg.NATS.LeafPort})
-	if err != nil {
-		return exitError(errOut, err)
-	}
-	defer b.Close()
 	addresses, err := network.BindAddresses(cfg)
 	if err != nil {
 		return exitError(errOut, err)
@@ -351,7 +364,7 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 		}
 		listeners = append(listeners, l)
 	}
-	handler := httpapi.New(svc)
+	handler := httpapi.New(svc, clusters)
 	servers := []*http.Server{}
 	handlers := make([]http.Handler, len(listeners))
 	for i := range handlers {
@@ -370,7 +383,7 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 		if err != nil {
 			return exitError(errOut, fmt.Errorf("machine listener %s (machine.port): %w", machineAddress, err))
 		}
-		listeners = append(listeners, tls.NewListener(l, pki.EnrollmentServer(keys.Daemon)))
+		listeners = append(listeners, tls.NewListener(l, clusters.TLS()))
 		handlers = append(handlers, machine.New(nil))
 		if host == "127.0.0.1" {
 			continue

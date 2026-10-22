@@ -1,0 +1,191 @@
+// Package cluster owns membership, enrollment and durable control-plane state.
+package cluster
+
+import (
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"nixmox/internal/broker"
+	"nixmox/internal/config"
+	"nixmox/internal/domain"
+	"nixmox/internal/pki"
+	"nixmox/internal/storage"
+)
+
+type Membership struct {
+	SchemaVersion     int    `json:"schema_version"`
+	ClusterID         string `json:"cluster_id"`
+	Name              string `json:"name"`
+	NodeID            string `json:"node_id"`
+	IssuerNodeID      string `json:"issuer_node_id"`
+	Epoch             int    `json:"membership_epoch"`
+	Replicas          int    `json:"replicas"`
+	Provisional       bool   `json:"provisional"`
+	GenesisCommandID  string `json:"genesis_command_id"`
+	CA                string `json:"ca"`
+	DaemonCertificate string `json:"daemon_certificate"`
+	BrokerCertificate string `json:"broker_certificate"`
+}
+type Genesis struct {
+	SchemaVersion int    `json:"schema_version"`
+	Version       int64  `json:"version"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	IssuerNodeID  string `json:"issuer_node_id"`
+	CommandID     string `json:"command_id"`
+	Replicas      int    `json:"replicas"`
+	Creator       struct {
+		NodeID     string `json:"node_id"`
+		Membership string `json:"membership"`
+		Epoch      int    `json:"membership_epoch"`
+		DaemonKey  string `json:"daemon_key"`
+		BrokerKey  string `json:"broker_key"`
+	} `json:"creator"`
+}
+type Manager struct {
+	mu         sync.RWMutex
+	store      *storage.Store
+	config     config.Config
+	identity   domain.Identity
+	keys       pki.Keys
+	membership *Membership
+	broker     *broker.Broker
+	stores     *broker.Stores
+}
+
+func Open(st *storage.Store, c config.Config) (*Manager, error) {
+	id, err := st.Identity()
+	if err != nil {
+		return nil, err
+	}
+	keys, err := pki.Open(st)
+	if err != nil {
+		return nil, err
+	}
+	m := &Manager{store: st, config: c, identity: id, keys: keys}
+	if id.ClusterID != nil {
+		var membership Membership
+		if st.Read("trust/membership.json", &membership) != nil || membership.ClusterID != *id.ClusterID || membership.NodeID != id.NodeID {
+			return nil, errors.New("cluster trust unavailable or inconsistent")
+		}
+		m.membership = &membership
+	}
+	if err := m.startBroker(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+func (m *Manager) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.broker != nil {
+		m.broker.Close()
+		m.broker = nil
+	}
+}
+func (m *Manager) Certificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	pair := m.keys.Daemon
+	return &pair, nil
+}
+func (m *Manager) TLS() *tls.Config {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	c := pki.EnrollmentServer(m.keys.Daemon)
+	c.Certificates = nil
+	c.GetCertificate = m.Certificate
+	return c
+}
+func (m *Manager) startBroker() error {
+	c := broker.Config{NodeID: m.identity.NodeID, DataDir: m.config.DataDir, Keys: m.keys, ClientPort: m.config.NATS.ClientPort, RoutePort: m.config.NATS.RoutePort, LeafPort: m.config.NATS.LeafPort}
+	if membership := m.membership; membership != nil {
+		block, _ := pem.Decode([]byte(membership.CA))
+		if block == nil {
+			return errors.New("invalid cluster authority")
+		}
+		ca, err := x509.ParseCertificate(block.Bytes)
+		if err != nil || !ca.IsCA {
+			return errors.New("invalid cluster authority")
+		}
+		if membership.SchemaVersion != 1 || membership.Epoch < 1 || membership.Replicas != 1 || !membership.Provisional || membership.IssuerNodeID != m.identity.NodeID {
+			return errors.New("unsupported or invalid membership topology")
+		}
+		if m.identity.ClusterFingerprint != nil && *m.identity.ClusterFingerprint != pki.Fingerprint(ca.PublicKey) {
+			return errors.New("cluster trust pin mismatch")
+		}
+		c.ClusterID = membership.ClusterID
+		c.Roots = pki.Pool(ca)
+		c.ControlPlane = true
+		c.Provisional = true
+		c.FullBrokers = map[string]bool{pki.Fingerprint(m.keys.Broker.Leaf.PublicKey): true}
+	}
+	b, err := broker.Start(c)
+	if err != nil {
+		return err
+	}
+	m.broker = b
+	if c.ControlPlane {
+		m.stores, err = b.Stores(m.membership.Replicas)
+		if err != nil {
+			b.Close()
+			m.broker = nil
+			return err
+		}
+	}
+	return nil
+}
+func (m *Manager) Status() (domain.ClusterStatus, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	now := time.Now().UTC()
+	if m.membership == nil {
+		return domain.ClusterStatus{Membership: "unjoined", ObservedAt: now, Freshness: "live", BrokerRole: "standalone"}, nil
+	}
+	if m.stores == nil {
+		return domain.ClusterStatus{}, unavailable()
+	}
+	if m.identity.ClusterID == nil {
+		return domain.ClusterStatus{}, unavailable()
+	}
+	entry, err := m.stores.State.Get("cluster")
+	if err != nil {
+		return domain.ClusterStatus{}, unavailable()
+	}
+	var genesis Genesis
+	if json.Unmarshal(entry.Value(), &genesis) != nil {
+		return domain.ClusterStatus{}, unavailable()
+	}
+	return domain.ClusterStatus{ClusterID: &genesis.ID, Name: &genesis.Name, Membership: "pending", ObservedAt: now, Freshness: "live", Quorum: true, BrokerRole: "provisional", IssuerNodeID: &genesis.IssuerNodeID}, nil
+}
+func unavailable() *domain.Error {
+	return domain.Err("QUORUM_UNAVAILABLE", "Authenticated cluster quorum is unavailable.", 503)
+}
+func persistExact(kv nats.KeyValue, key string, value any) error {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if _, err = kv.Create(key, b); err == nil {
+		return nil
+	}
+	entry, readErr := kv.Get(key)
+	if readErr != nil {
+		return unavailable()
+	}
+	if string(entry.Value()) != string(b) {
+		return domain.Err("IDENTITY_CONFLICT", "Durable cluster identity differs from the pinned genesis.", 409)
+	}
+	return nil
+}
+func (m *Manager) prepareTrustDirectory() error {
+	return os.MkdirAll(filepath.Join(m.store.Root, "trust"), 0700)
+}

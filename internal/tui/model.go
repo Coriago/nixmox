@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,9 +18,11 @@ import (
 )
 
 type snapshot struct {
-	network domain.NetworkStatus
-	tasks   []domain.Task
-	err     error
+	network    domain.NetworkStatus
+	tasks      []domain.Task
+	err        error
+	cluster    domain.ClusterStatus
+	clusterErr error
 }
 type submitted struct {
 	receipt domain.Receipt
@@ -41,10 +44,19 @@ type Model struct {
 	selected     int
 	fetching     bool
 	refreshAgain bool
+	cluster      domain.ClusterStatus
+	clusterError string
+	clusterFocus bool
+	creating     bool
+	nameInput    textinput.Model
 }
 
 func New(ctx context.Context, c *client.Client) Model {
-	return Model{client: c, ctx: ctx, events: c.Events(ctx), viewport: viewport.New(76, 18), width: 80, notice: "Connecting…", fetching: true}
+	name := textinput.New()
+	name.Placeholder = "Cluster name"
+	name.CharLimit = 64
+	name.Width = 40
+	return Model{client: c, ctx: ctx, events: c.Events(ctx), viewport: viewport.New(76, 18), width: 80, notice: "Connecting…", fetching: true, nameInput: name}
 }
 func (m Model) Init() tea.Cmd { return tea.Batch(m.fetch(), m.waitEvent()) }
 func (m Model) refresh() (Model, tea.Cmd) {
@@ -62,7 +74,8 @@ func (m Model) fetch() tea.Cmd {
 			return snapshot{err: err}
 		}
 		p, err := m.client.Tasks(m.ctx, "?limit=100")
-		return snapshot{network: n, tasks: p.Items, err: err}
+		cluster, clusterErr := m.client.Cluster(m.ctx)
+		return snapshot{network: n, tasks: p.Items, err: err, cluster: cluster, clusterErr: clusterErr}
 	}
 }
 func (m Model) waitEvent() tea.Cmd {
@@ -79,6 +92,29 @@ func (m Model) waitEvent() tea.Cmd {
 	}
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok && m.creating {
+		switch key.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.creating = false
+			m.nameInput.Blur()
+			return m, nil
+		case "enter":
+			if m.cluster.Membership != "unjoined" || m.clusterError != "" {
+				m.notice = "Cluster creation requires a current unjoined node."
+				return m, nil
+			}
+			payload, _ := json.Marshal(map[string]string{"name": m.nameInput.Value()})
+			m.creating = false
+			m.nameInput.Blur()
+			return m.submit(domain.Command{ID: domain.NewID("cmd_"), Type: "cluster.create", TargetID: m.network.NodeID, Payload: payload, ExpectedVersions: map[string]int64{}})
+		default:
+			var cmd tea.Cmd
+			m.nameInput, cmd = m.nameInput.Update(msg)
+			return m, cmd
+		}
+	}
 	switch v := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = max(20, v.Width)
@@ -102,6 +138,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			selectedID = m.tasks[m.selected].ID
 		}
 		m.network = v.network
+		m.cluster = v.cluster
+		m.clusterError = ""
+		if v.clusterErr != nil {
+			m.clusterError = v.clusterErr.Error()
+		}
 		m.tasks = v.tasks
 		m.selected = 0
 		for index, task := range m.tasks {
@@ -141,9 +182,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
 		case "?":
-			m.notice = "Tab: Network/Tasks · Enter/r: check · ↑/↓: select task · c: cancel · r: retry · p: retry uncertain submission · PgUp/PgDn: scroll · q: close"
+			m.notice = "Tab: Network/Tasks · g: Cluster · Enter/r: check · ↑/↓: select task · c: cancel/create · r: retry · p: retry uncertain submission · PgUp/PgDn: scroll · q: close"
+			return m, nil
+		case "g":
+			m.clusterFocus = !m.clusterFocus
+			m.taskFocus = false
+			m.content()
+			m.viewport.GotoTop()
 			return m, nil
 		case "tab", "shift+tab":
+			m.clusterFocus = false
 			m.taskFocus = !m.taskFocus
 			m.content()
 			m.viewport.GotoTop()
@@ -171,6 +219,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.pending != nil {
 				m.notice = "An uncertain submission is pending. Press p to retry its exact command."
 				return m, nil
+			}
+			if m.clusterFocus {
+				if v.String() != "c" {
+					return m, nil
+				}
+				if m.cluster.Membership != "unjoined" || m.clusterError != "" {
+					m.notice = "Create cluster is disabled: this node must be unjoined with current status."
+					return m, nil
+				}
+				m.creating = true
+				return m, m.nameInput.Focus()
 			}
 			cmd := domain.Command{ID: domain.NewID("cmd_"), Type: "network.check", TargetID: m.network.NodeID, ExpectedVersions: map[string]int64{}, Payload: json.RawMessage(`{}`)}
 			if m.taskFocus {
@@ -209,6 +268,24 @@ func (m Model) submit(cmd domain.Command) (tea.Model, tea.Cmd) {
 func (m *Model) content() {
 	offset := m.viewport.YOffset
 	lines := []string{"Connection", presentation.Network(m.network), "Freshness: " + m.network.Freshness, "", "Recent tasks"}
+	if m.clusterFocus {
+		lines = []string{"Cluster", "Membership: " + m.cluster.Membership}
+		if m.clusterError != "" {
+			lines = append(lines, m.clusterError)
+		}
+		if m.cluster.Name != nil {
+			lines = append(lines, "Name: "+*m.cluster.Name)
+		}
+		if m.cluster.ClusterID != nil {
+			lines = append(lines, "ID: "+*m.cluster.ClusterID, "Broker: "+m.cluster.BrokerRole, fmt.Sprintf("Quorum available: %t", m.cluster.Quorum), fmt.Sprintf("Full members: %d", m.cluster.FullMembers))
+		}
+		if m.cluster.Membership == "unjoined" && m.clusterError == "" {
+			lines = append(lines, "c: Create cluster")
+		} else {
+			lines = append(lines, "Create cluster disabled: requires an unjoined node")
+		}
+		lines = append(lines, "", "Recent tasks")
+	}
 	if m.taskFocus && len(m.tasks) > 0 {
 		task := m.tasks[m.selected]
 		lines = []string{"Selected task", presentation.Task(task), fmt.Sprintf("Reviewed version: %d", task.Version)}
@@ -235,12 +312,19 @@ func (m *Model) content() {
 	m.viewport.SetYOffset(offset)
 }
 func (m Model) View() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render("Nixmox · Local network")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render("Nixmox")
 	hint := "Network · Enter/r: Check network"
 	if m.taskFocus {
 		hint = "Tasks · ↑/↓: select · c: Cancel · r: Retry"
 	}
-	return title + "\n\n" + m.viewport.View() + "\n\n" + lipgloss.NewStyle().Width(m.width).Render(m.notice) + "\n" + hint + " · Tab: switch · ?: help · q: close\n"
+	if m.clusterFocus {
+		hint = "Cluster · c: Create cluster"
+	}
+	input := ""
+	if m.creating {
+		input = "\nCreate cluster: " + m.nameInput.View() + "\nEnter: submit · Esc: cancel"
+	}
+	return title + "\n\n" + m.viewport.View() + input + "\n\n" + lipgloss.NewStyle().Width(m.width).Render(m.notice) + "\n" + hint + " · Tab: switch · g: Cluster · ?: help · q: close\n"
 }
 func Run(ctx context.Context, c *client.Client) error {
 	ctx, cancel := context.WithCancel(ctx)

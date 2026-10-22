@@ -30,6 +30,18 @@ type Execution struct {
 }
 
 func (e *Execution) Snapshot() (domain.Task, error) { return e.service.Task(e.TaskID) }
+func (e *Execution) RefreshIdentity() error {
+	s := e.service
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, err := s.store.Identity()
+	if err != nil {
+		return err
+	}
+	s.identity = id
+	s.notify()
+	return nil
+}
 func (e *Execution) Checkpoint(phase string, value any, cancellable bool) error {
 	s := e.service
 	s.mu.Lock()

@@ -87,6 +87,11 @@ func (c *Client) Network(ctx context.Context) (domain.NetworkStatus, error) {
 	err := c.Read(ctx, "/api/v1/network/status", &v)
 	return v, err
 }
+func (c *Client) Cluster(ctx context.Context) (domain.ClusterStatus, error) {
+	var v domain.ClusterStatus
+	err := c.Read(ctx, "/api/v1/cluster/status", &v)
+	return v, err
+}
 func (c *Client) Task(ctx context.Context, id string) (domain.Task, error) {
 	var v domain.Task
 	if !domain.SafeID.MatchString(id) {

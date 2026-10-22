@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"nixmox/internal/domain"
@@ -28,6 +29,32 @@ func TestSharedPresentationAndResize(t *testing.T) {
 	m = updated.(Model)
 	if m.viewport.YOffset != 5 {
 		t.Fatal("live update lost scroll position")
+	}
+}
+
+func TestClusterCreatePreservesEnteredPayloadOnUncertainRetry(t *testing.T) {
+	m := Model{viewport: viewport.New(80, 20), width: 80, network: domain.UnknownNetwork("n_test"), cluster: domain.ClusterStatus{Membership: "unjoined"}, nameInput: textinput.New()}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	m = updated.(Model)
+	if !m.creating {
+		t.Fatal("create form unavailable")
+	}
+	m.nameInput.SetValue("homelab")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.pending == nil || m.pending.Type != "cluster.create" || string(m.pending.Payload) != `{"name":"homelab"}` {
+		t.Fatal("invalid create request", m.pending)
+	}
+	command := *m.pending
+	updated, _ = m.Update(submitted{err: domain.Err("OUTCOME_UNKNOWN", "Unknown outcome.", 503)})
+	m = updated.(Model)
+	m.nameInput.SetValue("another")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	if m.pending.ID != command.ID || string(m.pending.Payload) != string(command.Payload) {
+		t.Fatal("retry changed request")
 	}
 }
 

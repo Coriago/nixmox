@@ -1,0 +1,16 @@
+{{define "cluster-content"}}
+<h1>Cluster</h1><p id="stream-state" role="status">Connecting to live updates…</p>
+{{template "cluster-status" .}}
+{{if .Cluster}}{{if eq .Cluster.Membership "unjoined"}}
+<h2>Create cluster</h2><form data-command method="post" action="/ui/commands" hx-post="/ui/commands" hx-target="#receipt" hx-swap="innerHTML">
+<input type="hidden" name="id" value="{{.CommandID}}"><input type="hidden" name="target_id" value="{{.TargetID}}"><input type="hidden" name="type" value="cluster.create">
+<label>Cluster name <input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}"></label>
+<button type="submit">Create cluster</button></form>
+{{else}}<p>Cluster creation is unavailable while this node is joined.</p>{{end}}{{end}}
+<div id="receipt" aria-live="polite">{{template "receipt" .}}</div>
+{{end}}
+{{define "cluster-status"}}<section id="cluster-status" hx-get="/ui/cluster/status" hx-trigger="refresh" hx-swap="outerHTML" hx-sync="this:replace">
+{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
+{{if .Cluster}}<p>Membership: {{.Cluster.Membership}}</p>{{if .Cluster.Name}}<h2>{{.Cluster.Name}}</h2>{{end}}
+{{if .Cluster.ClusterID}}<p>Cluster ID: {{.Cluster.ClusterID}}</p><p>Broker: {{.Cluster.BrokerRole}}</p><p>Quorum: {{if .Cluster.Quorum}}available{{else}}unavailable{{end}}</p><p>{{if eq .Cluster.FullMembers 0}}No full members. Deploy or adopt a verified configuration to become a full member.{{else}}Full members: {{.Cluster.FullMembers}}{{end}}</p>{{end}}
+<p>Freshness: {{.Cluster.Freshness}}</p>{{end}}</section>{{end}}

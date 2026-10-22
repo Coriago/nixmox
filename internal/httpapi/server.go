@@ -27,11 +27,26 @@ var assets embed.FS
 type Server struct {
 	service   *service.Service
 	templates *template.Template
+	cluster   ClusterReader
+}
+type ClusterReader interface {
+	Status() (domain.ClusterStatus, error)
 }
 
-func New(s *service.Service) http.Handler {
+func New(s *service.Service, clusters ...ClusterReader) http.Handler {
 	a := &Server{service: s, templates: template.Must(template.New("network.html").Funcs(template.FuncMap{"networkText": presentation.Network, "taskText": presentation.Task}).ParseFS(assets, "assets/*.html"))}
+	if len(clusters) > 0 {
+		a.cluster = clusters[0]
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/cluster/status", func(w http.ResponseWriter, r *http.Request) {
+		if a.cluster == nil {
+			writeError(w, domain.Err("UNAVAILABLE", "Cluster status unavailable.", 503), "")
+			return
+		}
+		v, err := a.cluster.Status()
+		respond(w, v, err)
+	})
 	mux.HandleFunc("GET /api/v1/identity", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, s.Identity()) })
 	mux.HandleFunc("GET /api/v1/network/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, s.Network()) })
 	mux.HandleFunc("POST /api/v1/commands", a.command)
@@ -45,6 +60,8 @@ func New(s *service.Service) http.Handler {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/logs/download", a.downloadLogs)
 	mux.HandleFunc("GET /api/v1/events", a.events)
 	mux.HandleFunc("GET /ui/network", a.networkPage)
+	mux.HandleFunc("GET /ui/cluster", a.clusterPage)
+	mux.HandleFunc("GET /ui/cluster/status", a.clusterFragment)
 	mux.HandleFunc("GET /ui/network/status", a.networkFragment)
 	mux.HandleFunc("GET /ui/tasks/{id}", a.taskPage)
 	mux.HandleFunc("GET /ui/tasks/{id}/status", a.taskFragment)
@@ -286,14 +303,16 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 }
 
 type view struct {
-	CommandID string
-	TargetID  string
-	Network   domain.NetworkStatus
-	Tasks     []domain.Task
-	Receipt   *domain.Receipt
-	Error     string
-	Task      *domain.Task
-	Controls  []controlView
+	CommandID   string
+	TargetID    string
+	Network     domain.NetworkStatus
+	Tasks       []domain.Task
+	Receipt     *domain.Receipt
+	Error       string
+	Task        *domain.Task
+	Controls    []controlView
+	Cluster     *domain.ClusterStatus
+	ClusterPage bool
 }
 
 type controlView struct {
@@ -323,6 +342,27 @@ func (a *Server) networkPage(w http.ResponseWriter, r *http.Request) {
 }
 func (a *Server) networkFragment(w http.ResponseWriter, r *http.Request) {
 	a.render(w, r, "status", 200, a.view())
+}
+func (a *Server) clusterView() view {
+	v := a.view()
+	v.ClusterPage = true
+	if a.cluster == nil {
+		v.Error = "Cluster status is unavailable."
+		return v
+	}
+	c, err := a.cluster.Status()
+	if err != nil {
+		v.Error = err.Error()
+		return v
+	}
+	v.Cluster = &c
+	return v
+}
+func (a *Server) clusterPage(w http.ResponseWriter, r *http.Request) {
+	a.render(w, r, "network.html", 200, a.clusterView())
+}
+func (a *Server) clusterFragment(w http.ResponseWriter, r *http.Request) {
+	a.render(w, r, "cluster-status", 200, a.clusterView())
 }
 func (a *Server) taskView(id string) (view, error) {
 	task, err := a.service.Task(id)
@@ -362,12 +402,18 @@ func (a *Server) formCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range r.PostForm {
-		if (k != "id" && k != "target_id" && k != "type" && k != "task_id" && k != "expected_version") || len(v) != 1 {
+		if (k != "id" && k != "target_id" && k != "type" && k != "task_id" && k != "expected_version" && k != "name") || len(v) != 1 {
 			a.render(w, r, "receipt", 422, view{Error: "Invalid command fields."})
 			return
 		}
 	}
 	c := domain.Command{ID: r.PostForm.Get("id"), TargetID: r.PostForm.Get("target_id"), Type: r.PostForm.Get("type"), Payload: json.RawMessage(`{}`)}
+	if c.Type == "cluster.create" {
+		c.Payload, _ = json.Marshal(map[string]string{"name": r.PostForm.Get("name")})
+	} else if r.PostForm.Has("name") {
+		a.render(w, r, "receipt", 422, view{Error: "Unexpected cluster fields."})
+		return
+	}
 	if c.Type == "task.cancel" || c.Type == "task.retry" {
 		version, err := strconv.ParseInt(r.PostForm.Get("expected_version"), 10, 64)
 		if err != nil || version <= 0 {

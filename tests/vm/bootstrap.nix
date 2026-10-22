@@ -68,5 +68,17 @@ pkgs.testers.runNixOSTest {
     birch.fail("nc -z -w 1 alder 63201")
     for port in (63202, 63203, 63205):
         birch.succeed("nc -z -w 1 alder " + str(port))
+    genesis = json.loads(alder.succeed("nixmox cluster create homelab --command-id cmd_vm_genesis --wait --json"))
+    assert genesis["state"] == "succeeded", genesis
+    cluster = json.loads(alder.succeed("nixmox cluster status --json"))
+    assert cluster["membership"] == "pending" and cluster["full_members"] == 0 and cluster["quorum"]
+    alder.succeed("systemctl kill --signal=KILL nixmox.service")
+    alder.wait_for_unit("nixmox.service")
+    alder.wait_until_succeeds("nixmox cluster status --json")
+    recovered = json.loads(alder.succeed("nixmox cluster status --json"))
+    assert recovered["cluster_id"] == cluster["cluster_id"]
+    replayed = json.loads(alder.succeed("nixmox cluster create homelab --command-id cmd_vm_genesis --wait --json"))
+    assert replayed["id"] == genesis["id"]
+    assert alder.succeed("curl --noproxy '*' --silent --cacert /var/lib/nixmox/trust/ca.pem --resolve daemon.nixmox:63205:127.0.0.1 -o /dev/null -w '%{http_code}' https://daemon.nixmox:63205/api/v1/enrollment/requests/join_test") == "401"
   '';
 }

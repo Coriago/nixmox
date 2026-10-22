@@ -78,7 +78,7 @@ func Open(store *storage.Store, inspector Inspector, operations ...Operation) (*
 	return s, nil
 }
 func (s *Service) Close()                    { s.cancel(); <-s.done }
-func (s *Service) Identity() domain.Identity { return s.identity }
+func (s *Service) Identity() domain.Identity { s.mu.Lock(); defer s.mu.Unlock(); return s.identity }
 func taskID(commandID string) string {
 	h := sha256.Sum256([]byte(commandID))
 	return "task_" + hex.EncodeToString(h[:])

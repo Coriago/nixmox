@@ -145,6 +145,36 @@ func TestCompiledDaemonRestartAndPortConflict(t *testing.T) {
 	if response.StatusCode != 200 {
 		t.Fatal(response.StatusCode)
 	}
+	cli = exec.CommandContext(ctx, binary, "--endpoint", endpoint, "cluster", "create", "homelab", "--wait", "--json", "--command-id", "cmd_genesis_e2e")
+	cli.Env = append(os.Environ(), "XDG_STATE_HOME="+filepath.Join(root, "client"))
+	b, err = cli.Output()
+	if err != nil {
+		t.Fatal("cluster create", string(b), err)
+	}
+	var genesis domain.Task
+	if json.Unmarshal(b, &genesis) != nil || genesis.State != "succeeded" {
+		t.Fatal("cluster genesis", string(b))
+	}
+	clusterIdentity, err := c.Identity(ctx)
+	if err != nil || clusterIdentity.ClusterID == nil || clusterIdentity.NodeID != identity.NodeID || clusterIdentity.KeyID != identity.KeyID {
+		t.Fatal("cluster identity continuity", clusterIdentity, err)
+	}
+	stop(true)
+	start()
+	status, err := c.Cluster(ctx)
+	if err != nil || status.ClusterID == nil || *status.ClusterID != *clusterIdentity.ClusterID || status.Membership != "pending" || !status.Quorum {
+		t.Fatal("cluster restart", status, err)
+	}
+	cli = exec.CommandContext(ctx, binary, "--endpoint", endpoint, "cluster", "create", "homelab", "--wait", "--json", "--command-id", "cmd_genesis_e2e")
+	cli.Env = append(os.Environ(), "XDG_STATE_HOME="+filepath.Join(root, "client"))
+	b, err = cli.Output()
+	if err != nil {
+		t.Fatal(string(b), err)
+	}
+	var replayed domain.Task
+	if json.Unmarshal(b, &replayed) != nil || replayed.ID != genesis.ID {
+		t.Fatal("duplicate genesis", string(b))
+	}
 	stop(false)
 	occupied, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
