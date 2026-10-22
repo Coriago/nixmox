@@ -1,15 +1,24 @@
 # Technical architecture and acceptance
 
-Implement one domain/service layer consumed by CLI, browser, and TUI. Long-running
-operations use the task engine; cluster-scoped durable mutations use NATS/JetStream.
-The explicit [node-local operations](api-and-interfaces.md#operation-registry-and-scope)
-reuse durable local receipt/task storage before enrollment and during quorum loss. Native
-protocols handle discovery, remote Git fetches, closure transfer, SSH, and disk I/O.
+CLI, browser, and TUI share one domain/service layer and task engine. Cluster
+mutations use JetStream; [node-local operations](api-and-interfaces.md#operation-registry-and-scope)
+reuse local receipts/tasks before enrollment and during quorum loss.
 
-Backend ownership: [deployment](deployment-and-rollback.md#execution-contract),
-[installer execution](host-onboarding.md#installation-backend-and-handoff), and
-[cache transfer](cache-gateway.md). NATS carries control/progress; native protocols
-carry Git, SSH bootstrap, and Nix output bytes.
+## Communication boundaries
+
+NATS carries inter-node commands, queries, state, logs, telemetry, Git increments,
+and secret delivery. These paths stay outside NATS:
+
+| Communication | Transport |
+| --- | --- |
+| Console API, forms, SSE, assets, uploads, log/media/diagnostic downloads | HTTP |
+| Initial CSR/certificate enrollment and signed removal retrieval | HTTP on `machine.port` |
+| Nix cache lookup/downloads | HTTP; Nix verifies signatures/hashes |
+| LAN discovery | UDP |
+| Initial agent bootstrap | SSH |
+| Remote Git fetch/push, PR APIs, release images, external Nix caches | Provider's native HTTP(S)/SSH transport |
+| Optional telemetry export | Configured OTLP transport |
+| Local tools, Nix daemon, network backend, devices | Process/OS IPC and I/O |
 
 ## Component contracts
 
@@ -94,6 +103,7 @@ must use those configured ports rather than its conventional defaults.
 | --- | --- | --- |
 | `nx.<cluster>.command.<node>` | Command ID/type/target, expiry, payload, trace context | JetStream, explicit ack, per-executor durable consumer |
 | `nx.<cluster>.query.<node>` | Request ID, typed query, chunked reply address | Core request/reply, bounded timeout |
+| `nx.<cluster>.secret.<node>` | Secret import to the selected holder | Core request/reply only; restricted grants, no persistence or payload logging |
 | `nx.<cluster>.activity.<node>` | Latest host telemetry sample, stream ID/sequence | Core, no persistence/ack/replay; latest-value delivery |
 | `nx.<cluster>.result.<node>` | Command/task ID, executor, versioned outcome | JetStream, deduped by task/command receipt |
 | `nx.<cluster>.log.<task>` | Absolute offset, bytes, owner ID | Core; recover from persisted logs |
@@ -122,11 +132,10 @@ Subscribe before reading a snapshot/log tail, then merge by resource version or
 byte offset. Reconnection starts a fresh snapshot; safety refresh catches missed
 final updates. Telemetry never renews membership by itself.
 
-Enrollment uses a limited TLS bootstrap exchange on the machine listener outside NATS; unapproved nodes
-have no cluster broker connection. After cluster approval/Add, commands and control
-queries use authenticated NATS. Topology changes may interrupt
-the transport carrying a result; look up the durable receipt, never rerun effects
-through an unqueued fallback.
+Enrollment exchanges public CSRs/certificates over HTTP; approval enables authenticated
+NATS access. Secret values use the [restricted Core path](identity-and-trust.md#secret-delivery-over-nats),
+not JetStream. After a lost result, query the durable receipt before retrying;
+never bypass admission or repeat uncertain effects through another transport.
 
 ## Nix progress adapter
 
@@ -138,7 +147,7 @@ and activity types tested explicitly rather than assumed to be a stable wire API
 
 Collect download/cache activity, byte counters, derivation builds, and remote
 executor information from actual events; supplement with bounded plan/store queries
-when needed. Capture target-copy and activation activities from their own adapters.
+when needed. Capture each host's build and activation activities at its executor.
 Unsupported fields/events produce an explicit unavailable/degraded telemetry state
 and retain sanitized logs; they must not crash or alter the underlying task outcome.
 Do not infer completed work from text fragments or terminal cursor movement.
@@ -146,7 +155,7 @@ Do not infer completed work from text fragments or terminal cursor movement.
 Use the shared presentation core for percentage/rate/unknown-state formatting.
 Coalesce progress up to 250 ms while delivering terminal/failure transitions
 promptly. Bound active previews and paginate detailed lists. Test adapter fixtures
-for supported Nix versions plus actual cache download/build/copy operations in E2E.
+for supported Nix versions plus actual cache substitution and local fallback in E2E.
 
 ## Package diff adapter
 
@@ -221,21 +230,11 @@ formats and schedules. OTLP aggregation/export may omit intermediate gauge sampl
 
 ### Application diagnostics
 
-```json
-{
-  "service.name": "nixmox",
-  "nixmox.node_id": "n_alder",
-  "nixmox.cluster_id": "c_lab",
-  "nixmox.command_id": "cmd_apply_cedar_01",
-  "nixmox.task_id": "task_01",
-  "event": "deployment.phase",
-  "phase": "transferring"
-}
-```
+Structured logs include service name, node/cluster/command/task IDs, event, and phase.
 
 Propagate standard trace context through command/query envelopes and child tasks.
 Example span chain: `command.admit → task.execute → git.materialize → nix.build →
-closure.transfer → deployment.activate → deployment.observe`. Async work links to
+deployment.activate → deployment.observe`. Async work links to
 its originating command; traces do not determine task success.
 
 Metrics: command admission latency, queue depth, phase duration, failures by error
@@ -282,15 +281,15 @@ Physical boot/media claims require disposable-device evidence; VMs alone are ins
 | Admission/recovery | Interrupt every admission boundary; retry resolves the same task; restart queued/running/cancelling work; uncertain effects reconcile without destructive replay |
 | Local scope/quorum | Network/discovery/join intent survive restart without quorum; cluster mutations block; stale reads stay labeled; no fallback or lease-only takeover |
 | Cluster stress | Three-node concurrent command/artifact load with repeated broker restarts, leader loss, and network partition/heal; majority continues, minority rejects durable mutations; recovery preserves acknowledged data and receipt identity without duplicate effects; bounded queues/memory; record workload, duration, and results |
-| Enrollment | Create with no full members; approve/reject/expire and cluster Add; conflicting keys/clusters; promotion, removal, fresh rejoin, authenticated removal notices |
-| Trust/secrets | Deny anonymous broker access, unapproved nodes, pending route peers, and unauthorized leaf subjects; rotation/removal reconcile grants; preserve issuer; no secrets in Git, commands, logs, or diagnostics |
-| Transport | HTTP console/secret submission without certificates; machine-only routes absent there; managed backend TLS; custom ports, firewall, reservations, occupied listeners |
+| Enrollment | HTTP CSR/approval/issuance retries; pinned cluster trust; promotion/removal/rejoin; signed removal over NATS or HTTP; reject invalid signatures and old epochs |
+| Trust/secrets | Broker/leaf grants, rotation/revocation, issuer preservation; scoped Core secret delivery and lost replies; no raw secrets in JetStream, Git, logs, or diagnostics |
+| Transport | Plain HTTP console/enrollment/cache; NATS-only TLS; secret delivery through NATS; custom ports, firewall, reservations, occupied listeners |
 | Installer bootstrap | Linux SSH bootstrap without Nix; privileges/host keys/cleanup; automatic TUI, headless Ethernet, Wi-Fi hotplug/errors, discovery timeout/retry/late results, joining from either side |
 | Installation | USB/SD, kexec, and reboot converge; incompatible entry fails before effects; media/boot/erase approvals separate; same identity/output returns; single-node/issuer state survives; no repeated partitioning |
 | Preparation/SOPS | Reuse unassigned configuration; reject swapped/duplicate disks; confirm every erase target; no-SOPS install; updater failures; exact rule selection, all key groups, shared aliases, idempotent recipient edits |
-| Media/recovery | Physical profile validation, compressed image capacity/readback, writer preference/emulation/overrides, remote transfer failure; recovery survives Apply/rollback/GC |
+| Media/recovery | Physical profiles, compressed image capacity/readback, selected builders/emulation, cache failure/local fallback; recovery survives Apply/rollback/GC |
 | Apply | Local/default/remote-target rules; unpublished remote build; pinned source through rebase; manual/auto approval and restart; changed baseline; boot staging; activation interruption and target exclusion |
 | Rollback/health | Retained/missing outputs; desired/running drift; exact output verification and separately reported health; no automatic rollback |
 | Diff/progress | Added/removed/version/output/ambiguous changes; target baseline; changing/unknown totals, cache sources/rates, retries, simultaneous builds/downloads, reconnect; byte completion never implies deployment success |
-| Cache | Split-peer closures; bounded streaming/failure; signatures, pins/GC, cancellation, pending access; missing/invalid signer keeps serving offline and gateway responsive; config/runtime credential activation; cross-host build gating and key-loss recovery |
+| Cache | Signed HTTP substitution; streaming/cancellation/GC; unauthenticated readers; key loss/recovery; builder offline with target fallback; same pinned source; unsupported-system misses |
 | Git | Independent repositories; writer loss; missing base/artifact; concurrent edits and upload/CAS restart; conflict abort; pinned old commits; PR push versus upstream inclusion; reviewed deletion; no full base in JetStream |

@@ -4,8 +4,10 @@ One administrator role operates all interfaces. Network access to the management
 console grants that authority; there are no human accounts or role hierarchy.
 Machine authentication is separate from that interface access model.
 CLI, TUI, and browser use HTTP, including secret submission; no human client needs
-certificates. Console traffic is unencrypted. Automated TLS protects backend
-daemon-to-daemon and NATS connections only.
+certificates. Console, enrollment, and cache HTTP traffic is unencrypted.
+Within Nixmox, TLS protects only daemon-to-NATS and NATS server-to-server connections.
+Cross-node secret delivery uses those protected NATS connections, not HTTP forwarding.
+External Git, SSH, cache-provider, and telemetry transports retain their own protocols.
 V1 requires no preseeded enrollment secret or manually managed NATS credentials.
 The [state inventory](#generated-and-preserved-state) owns security paths and
 preservation rules; other documents reference it.
@@ -120,81 +122,57 @@ or excluded by policy. Discovery is not assumed to cross virtual networks.
 ## Enrollment and trust boundary
 
 ```text
-Node → request join → awaiting cluster approval → approve → pending leaf
-Cluster → discover unjoined node → Add ────────────────────┘
-pending leaf → verified install/deploy/adoption → full member
+Node sends CSR over HTTP → administrator approves → cluster issues certificates
+→ node trusts cluster key → authenticated NATS leaf connection
+→ verified deployment/adoption → full member
 ```
 
-Configured address/name submits a join request; it never approves one. Awaiting
-approval is a request state: the node remains unjoined, with no cluster broker or
-data access. Cluster-side Add supplies approval immediately; no node-side permission
-is required. Joined nodes cannot be claimed by another cluster. Cluster creation
-authorizes its creator's provisional standalone control plane.
+The node generates its daemon and broker keys locally and sends signed CSRs.
+Private keys never leave it. Approval trusts those exact public keys; the cluster
+chooses certificate identity/permissions. A changed key requires new approval.
+Cluster-side Add uses the same flow, approving the reviewed discovery fingerprint.
 
-```json
-{
-  "id": "join_01", "version": 1, "node_id": "n_cedar",
-  "name": "cedar", "observed_address": "192.168.1.32",
-  "key_fingerprint": "SHA256_DAEMON_KEY_FIXTURE",
-  "state": "awaiting_approval", "expires_at": "2026-10-20T12:10:00Z"
-}
-```
+Until approval, the node is unjoined and has no cluster NATS access. Pending nodes
+receive only onboarding permissions. Cluster creation authorizes its creator's
+provisional control plane; joining another cluster requires leaving first.
 
-Approve the exact request/version/key after proof of possession; name/address are
-display hints. Bind issuance to its node ID, cluster ID, membership epoch, and
-approved key. Nixmox chooses certificate roles/names; never sign caller-selected
-privileges. Requests expire after ten minutes; bound request sizes/rates and dedupe
-retries. A changed key or expired/rejected request requires a new explicit attempt.
-
-Bootstrap uses a limited TLS exchange with locally generated keys and first-contact
-trust; it supports request submission/status and certificate provisioning only.
-No preinstalled token, CA secret, Git credential, or SOPS setup is needed. Pin the
-accepted cluster identity after admission. Approval controls admission but does
-not defeat an active attacker intercepting first contact on the management network.
-
-Pending nodes receive scoped credentials for onboarding, not full membership.
-Full membership requires verified deployment/adoption; see
-[host lifecycle](host-inventory-and-lifecycle.md).
-The unrestricted management API remains administrative authority, including join
-approval. Broker restrictions do not stop someone using that API; restrict its
-listeners to management interfaces. Human/interface authentication is outside v1.
+Enrollment deliberately trusts the management network: HTTP does not protect
+against interception or initial key substitution. CSRs and certificates are public.
+Downloading another node's certificate does not give access without its private key.
+Console/cache HTTP access is network-based, not controlled by NATS membership.
 
 ### Enrollment HTTP exchange
 
-These machine-only bootstrap routes use `machine.port` (default 63175) with
-automated TLS. Administrative `/api/v1/commands` and `/cluster/requests` reads stay
-on the HTTP console; the CLI/TUI/browser asks its daemon to perform enrollment.
-Before admission the server uses its generated daemon certificate; first-contact
-trust has the limitation above. After admission pin the cluster CA and peer identity.
+Use plain HTTP on `machine.port` (63175). Administration remains on the console.
 
-| Endpoint | Request / response |
+| Endpoint | Purpose |
 | --- | --- |
-| `POST /api/v1/enrollment/requests` | Node identity, expected cluster name, and daemon/broker CSRs → own request record; stable request ID deduplicates retries |
-| `GET /api/v1/enrollment/requests/{id}` | Request-owner read of state, expiry, cluster ID/fingerprint, and decision; no cluster inventory |
-| `POST /api/v1/enrollment/requests/{id}/certificates` | Retrieve approved certificates, CA chain, membership epoch, and scoped grants |
+| `POST /api/v1/enrollment/requests` | Submit node ID, expected cluster name, daemon/broker CSRs, and stable request ID |
+| `GET /api/v1/enrollment/requests/{id}` | Poll public status, expiry, cluster identity/fingerprint, and decision |
+| `POST /api/v1/enrollment/requests/{id}/certificates` | After approval, retrieve issued certificates, cluster CA, membership epoch, and grants |
 
-Use standard TLS/CSR facilities for key possession and request-owner authentication;
-do not define a custom HTTP signing format. Bind approval to the node ID and exact
-daemon/broker keys. Changed keys need new approval; request IDs alone grant no
-access. Cluster-side persistence/approval/issuance requires quorum. The joining
-node retains its task locally while waiting. Certificate retrieval is idempotent
-for the approved membership; revoked nodes cannot obtain fresh credentials.
-Add verifies the discovered key and uses this same enrollment flow without a
-node-side prompt. Certificates never contain private keys or caller-selected roles.
+Requests expire after ten minutes. Bound sizes/rates, validate CSR signatures,
+and deduplicate by request ID and keys. Approval binds the exact request version;
+rejected/expired requests need an explicit new attempt. Names/addresses are hints.
+Persistence, approval, and issuance require quorum.
 
-**Implementation gate:** a small TLS/enrollment prototype must demonstrate key
-possession before admission, request-owner isolation, CSR/approval binding, and
-safe retries before freezing authentication details. The separate
-[machine listener](runtime-configuration.md#service-ports) requires no browser trust setup.
-The routes above define operation boundaries, not a validated authentication wire format.
+The node keeps its local join task while waiting. After approval it retrieves
+certificates and pins cluster trust; repeated retrieval returns the same issuance.
+Request IDs are not passwords, and HTTP status/certificate reads are not private.
+NATS TLS then proves possession of the approved private keys. Later renewal/key
+rotation uses authenticated NATS, not a new HTTP trust exchange.
+
+**Implementation gate:** verify CSR/approval binding, idempotent issuance, cluster
+pinning, and rejection of NATS access without the approved private key.
 
 ## Managed TLS and NATS permissions
 
 Nixmox generates a cluster CA and separate daemon/client and broker TLS keys.
 Use standard X.509/TLS libraries and certificate-to-user mapping; v1 requires no
 NKeys, JWT hierarchy, shared broker password, or manual certificate configuration.
-Daemon keys also identify agent machine links. All private keys are generated
-locally; enrollment exchanges public keys/CSRs and certificates only.
+Daemon keys authenticate NATS clients; broker keys authenticate routes/leaves.
+All private keys are generated locally; enrollment exchanges public CSRs and
+certificates only.
 Before enrollment, the local daemon/broker trust only their locally provisioned
 keys; this permits standalone operation without granting cluster access.
 
@@ -205,7 +183,8 @@ Full daemon ── mTLS, loopback :63171 ── Full broker
                                           ⇅ mTLS :63173, scoped leaf permissions
 Pending daemon ─ mTLS, loopback :63171 ─ Pending broker
 
-Daemon ── managed mTLS :63175 ── Peer daemon (cache/credential transfers)
+Daemon ── plain HTTP :63175 ── Peer daemon (enrollment/signed removal record)
+Nix    ── plain HTTP :63170 ── Peer cache (signed Nix outputs)
 ```
 
 | Connection | Authentication and authorization |
@@ -213,7 +192,7 @@ Daemon ── managed mTLS :63175 ── Peer daemon (cache/credential transfers
 | Daemon → local broker | Require daemon certificate; no anonymous publish, subscribe, or JetStream access, even on loopback |
 | Full broker ↔ full broker | Verify TLS peer and explicit full-broker public-key allowlist in both directions; CA signature alone is insufficient |
 | Pending broker → cluster | Map leaf certificate to that node's scoped account/permissions; enforce limits at the accepting cluster broker |
-| Agent machine links | Verify pinned cluster trust, peer identity, current membership, and operation scope |
+| Cross-node secret delivery | Core NATS request/reply, full-member subject grants, TLS on every NATS hop; no secret values in JetStream |
 
 Configure TLS independently for clients, routes, and leaves; reject plaintext and
 verification bypasses. Disable unused monitoring, profiling, WebSocket, MQTT, and
@@ -241,7 +220,8 @@ on assignment/completion. Validate task ownership in the service as well.
 
 Logs/progress use Core NATS with snapshot/offset recovery; commands use durable
 delivery. Required Git increments are exposed through scoped application requests;
-Nix outputs stream directly through the authorized cache gateway. Backpressure and
+Nix obtains signed outputs through ordinary HTTP cache substitution; cache readers
+are not authorized through leaf grants. Backpressure and
 reconnect behavior follow [NATS durability](technical-requirements.md#nats-namespace-and-durability).
 [NATS permissions](https://docs.nats.io/learn/security/authorization)
 
@@ -269,24 +249,19 @@ replace trust pins. Planned installation handoff still preserves existing keys/s
 
 ### Authenticated removal response
 
-After broker rejection, a node may query a known cluster peer's machine listener over HTTPS:
-`GET /api/v1/membership-status?node_id=n_cedar&membership_epoch=2` endpoint.
-Authenticate the server against the node's already pinned cluster trust and
-authorized peer identity. Never learn replacement trust from a removal message,
-discovery broadcast, redirect, or changed cluster name/address.
+Removal is committed through NATS/JetStream. The cluster issuer signs the removal
+record: `{cluster_id, node_id, membership_epoch, status: "removed", removal_version}`.
+Deliver it through NATS, or retrieve the same record over plain HTTP on `machine.port`:
+`GET /api/v1/membership-status?node_id=n_cedar&membership_epoch=2`.
 
-Return only `{cluster_id, node_id, membership_epoch, status, removal_version}`;
-`removed` requires a durable quorum-committed removal record. Unknown/unavailable
-state is not removal. This narrowly scoped read remains available without valid
-client membership credentials, so a revoked node can learn its status; it grants
-no NATS access or other cluster reads/mutations. Use a fresh TLS request, no cached
-HTTP response. The node checks all identity/epoch fields before clearing membership;
-an old response cannot remove a later enrollment. Unsolicited notices are hints
-to perform this check, never authority to leave.
+The node verifies the signature using cluster trust saved at enrollment, then
+checks its node ID and current membership epoch. Old-epoch notices, invalid
+signatures, unknown status, and connection failures cannot remove a node.
+Duplicate delivery is harmless. Never accept a replacement trust key from a notice.
 
-Persist confirmed removal and autojoin suppression before stopping old broker
-participation and returning to unjoined state. Keep identity and the installed OS;
-rejoining requires explicit enrollment and new authorization.
+Persist verified removal and autojoin suppression before leaving NATS. Preserve
+node identity and the installed OS; rejoin requires fresh approval. Without a
+signed committed record, removal confirmation remains pending.
 
 ## Generated and preserved state
 
@@ -314,7 +289,7 @@ Cluster-wide describes ownership, not replication of every value to every node.
 | Value | Created or supplied | Stored / preserved |
 | --- | --- | --- |
 | `cluster_id` | Generated once when creating the cluster | Cluster records and each joined node's `D/trust/`; unchanged across node reinstall/rejoin |
-| Cluster CA | Generated at cluster creation; signs machine certificates | CA private key/certificate and issuance ledger in issuer-only `D/pki/issuer/`; public CA and trust pin in members' `D/trust/` |
+| Cluster CA | Generated at cluster creation; signs NATS certificates and committed removal records | CA private key/certificate and issuance ledger in issuer-only `D/pki/issuer/`; public CA and trust pin in members' `D/trust/` |
 | Membership and authorization | Recorded on approval/Add, promotion, rotation, and removal | Cluster records hold node IDs, membership epochs, approved public keys, and grants; local trust projection in `D/trust/` and enrollment receipt in `D/enrollment/` |
 
 Preserve each node's cluster association/trust alongside its node values during
@@ -416,8 +391,9 @@ nixmox credentials remove unused-token --wait
 Browser: Settings → Credentials → Add → select storage node → hidden value field
 → Save → Test access. TUI mirrors these controls with hidden input. Module-managed
 credentials show their source and cannot be overwritten by UI. Import uses the
-same HTTP console as other operations; daemon forwarding to another storage node
-uses automated mTLS. No browser/client certificate setup is involved.
+same HTTP console as other operations; cross-node delivery uses the
+[Core NATS secret path](#secret-delivery-over-nats). No daemon HTTP forwarding or
+browser/client certificate setup is involved.
 
 Cache signing and SOPS update keys use the same import/storage rules as Git tokens.
 Select them in Settings → Cache → Signing credential or Settings → Onboarding →
@@ -470,6 +446,27 @@ A replica is not a permanently designated leader.
 On leave, clear managed credential copies and revoke membership. Provider-side
 rotation is needed for copies on lost/unreachable machines. Nixmox cannot guarantee
 erasure on a disconnected host.
+
+### Secret delivery over NATS
+
+Send secret values to the selected holder using Core NATS request/reply on
+`nx.<cluster>.secret.<node>`. TLS protects every NATS link; subject permissions
+allow authorized full members to send and only the selected holder to receive.
+Pending leaves cannot access this path. There is no HTTP forwarding or offline queue.
+
+The holder stores the value privately and submits `credential.import` through
+JetStream with only a staging reference. Reply with the normal command receipt.
+Same-node imports use the same handler locally. A lost reply is an unknown outcome:
+query the receipt and retry with the same ID, never create a second import.
+
+Use bounded requests/reply permissions and disable reconnect buffering. Exclude
+secret subjects from all JetStream streams and payload logging/tracing. No raw
+secrets enter durable messages, diagnostics, or replies. Full brokers remain
+trusted; this is TLS transport protection, not end-to-end encryption. The original
+user-to-console HTTP hop remains unencrypted.
+
+Follow NATS [request/reply](https://docs.nats.io/concepts/request-reply) and
+[subject permissions](https://docs.nats.io/learn/security/authorization).
 
 ## V1 scope
 

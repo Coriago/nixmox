@@ -269,9 +269,8 @@ Preparation collects hardware, disk choices, and optional SOPS updates together.
 Commit hands the reviewed diff to GitOps, pins the accepted commit, and replicates
 it. No remote push is required. Installation checks target identity, config export,
 Nixmox enablement, network handoff, and evaluated disk layout before effects.
-Build on birch and install on cedar; source/output transfer never requires giving
-the installer administrative repository credentials.
-Build/download and target-transfer stages must expose the same structured
+Build on birch if desired; cedar builds the same pinned source using signed caches
+or local compilation, without repository write credentials. Builds expose the same
 [progress feedback](deployment-and-rollback.md#required-build-and-deployment-progress)
 as ordinary deployments, including cache sources, rates, active builds, and bars.
 
@@ -325,13 +324,13 @@ Re-running preparation later generates a new diff/commit; it does not reinstall.
 uses this flow for both first installation and replacement of an existing system,
 after Nixmox has entered and authenticated the installer. Nixmox owns boot selection,
 source/candidate pinning, confirmations, progress, and recovery. Verified build
-outputs can originate on another builder and must be available before destructive
-execution. The installer pulls exact outputs through its local
-[cache gateway](cache-gateway.md). Required outputs and handoff state must remain
-available outside the erase targets. Cluster orchestration remains over NATS.
+outputs must be local before destructive execution. The installer builds the pinned
+source through normal [Nix substitution/building](cache-gateway.md), reusing remote
+builds where available. Keep required outputs and handoff state outside erase
+targets. Cluster orchestration remains over NATS.
 
 The Nixmox installer agent runs Disko/Nix installation tools; nixos-anywhere is
-excluded. Artifact pulls follow the cache gateway contract. Installer entry uses
+excluded. There is no separate output-transfer mechanism. Installer entry uses
 `kexec-tools` or the profile's [reboot adapter](deployment-and-rollback.md#reboot-adapters).
 
 Phase receipts, actual filesystems, firmware population, and boot-entry verification

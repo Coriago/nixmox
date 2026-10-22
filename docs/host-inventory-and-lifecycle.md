@@ -23,7 +23,7 @@ not mean fully managed.
   "pending_reasons": ["configuration_not_deployed"],
   "endpoints": [
     {"service": "api", "transport": "http", "address": "192.168.1.32:63170", "interface": "enp1s0", "priority": 20, "verified": true},
-    {"service": "machine", "transport": "https", "address": "192.168.1.32:63175", "interface": "enp1s0", "priority": 20, "verified": true}
+    {"service": "machine", "transport": "http", "address": "192.168.1.32:63175", "interface": "enp1s0", "priority": 20, "verified": true}
   ],
   "capabilities": {"build": true, "install": true, "media_write": false},
   "broker_role": "leaf",
@@ -43,11 +43,10 @@ pending member. Request records and approval bindings live in
 [identity and trust](identity-and-trust.md#enrollment-and-trust-boundary).
 
 Endpoint records use `service: api|machine|nats_route|nats_leaf` and
-`transport: http|https|tls`: `api` uses `http`, `machine` uses `https`, and NATS uses
-`tls`. Console access and the local cache use `api`; enrollment, peer transfers,
-and membership status use `machine`, subject to each route's access rules. Advertise actual
-configured ports; no client infers a service from its port. Verification is scoped
-to the endpoint/service and observed peer identity. `hosts endpoints <host>` reads
+`transport: http|tls`: `api` and `machine` use HTTP; NATS uses TLS.
+Console and caches use `api`; enrollment and signed removal records use `machine`.
+Advertise actual ports. HTTP reachability is not cryptographic peer authentication;
+NATS verifies peer keys, caches verify output signatures, and removal verifies its payload. `hosts endpoints <host>` reads
 `GET /api/v1/hosts/{id}`: its `connectivity` list contains
 `{peer_id, service, selected_address, state, reason}`; address/reason may be null.
 
@@ -260,8 +259,8 @@ and reconcile routes/replicas without contacting the target. Preserve historical
 configuration/task records; do not claim the absent machine's disks were cleaned.
 Force removal retains the sole-issuer restriction above.
 
-A returning node becomes unjoined only after verifying an authenticated removal
-response for its cluster, node ID, and current membership epoch. Suppress configured
+A returning node becomes unjoined only after verifying a cluster-signed removal
+record for its cluster, node ID, and current membership epoch. Suppress configured
 autojoin until explicit Join/Add; re-enrollment gets fresh credentials and begins
 pending. Preserve local node identity, configuration intent, and installed system;
 quarantine old cluster storage so it cannot rejoin broker replication. A timeout,

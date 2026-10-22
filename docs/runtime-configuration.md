@@ -94,8 +94,8 @@ credential-dependent operations. Git remote configuration never triggers a push.
 | --- | --- | --- |
 | enable | bool / false | Install CLI and daemon service |
 | dataDir | string / /var/lib/nixmox | Persistent identity, tasks, repositories, receipts |
-| http.port | integer / 63170 | HTTP console API for CLI/TUI/browser and local cache gateway |
-| machine.port | integer / 63175 | Automated TLS listener for daemon enrollment, peer transfers, and membership status |
+| http.port | integer / 63170 | Plain HTTP console API, local cache gateway, and peer store cache |
+| machine.port | integer / 63175 | Plain HTTP bootstrap enrollment and signed membership-status records |
 | nats.clientPort | integer / 63171 | Embedded broker client listener, loopback only |
 | nats.routePort | integer / 63172 | Permanent broker routes on management interfaces |
 | nats.leafPort | integer / 63173 | Pending-node leaf connections on management interfaces |
@@ -145,17 +145,18 @@ do not inherit the broker's conventional ports.
 
 | Port | Transport | Listener |
 | --- | --- | --- |
-| 63170 | TCP / HTTP | Browser, CLI/TUI API, and local cache gateway |
+| 63170 | TCP / HTTP | Browser, CLI/TUI API, local cache gateway, and peer store cache |
 | 63171 | TCP / TLS | NATS clients; loopback only |
 | 63172 | TCP / TLS | Permanent NATS routes |
 | 63173 | TCP / TLS | Pending-node NATS leaf connections |
 | 63174 | UDP | Discovery |
-| 63175 | TCP / TLS | Daemon enrollment, peer cache/credential transfers, and membership status |
+| 63175 | TCP / HTTP | Enrollment and public signed membership-status records |
 
-`/cache/` is local-only on `http.port`; `/store-cache/` serves authorized cluster
-peers on `machine.port`. Derive the local Nix substituter URL from `http.port` and
-advertise actual machine endpoints. Store serving is embedded in Nixmox using the
-Go NAR library; no companion service is required. See
+Both cache namespaces use plain HTTP on `http.port`: `/cache/` is local-only,
+and `/store-cache/` exposes signed local outputs to machines on the management
+network without per-reader authentication. Derive the local Nix substituter URL
+from `http.port` and advertise actual cache endpoints. Store serving is embedded
+in Nixmox using the Go NAR library; no companion service is required. See
 [cache gateway](cache-gateway.md) for configuration and streaming semantics.
 
 CLI, TUI, and browser use HTTP for all console operations, including credential
@@ -163,11 +164,10 @@ and Wi-Fi submission. No console HTTPS listener, certificate setup, or TLS redir
 is required or provided in v1. Console requests and submitted secrets are unencrypted
 on that connection; access is limited to the configured management network.
 
-TLS is automatic and backend-only: daemon-to-daemon links and NATS clients/routes/
-leaves. The separate machine listener uses HTTP over managed TLS; it exposes only
-machine routes, never the console or general administrative API. Machine-only routes
-are absent from the HTTP console listener. Advertisements identify each service,
-transport, and actual port; listeners never multiplex plaintext HTTP and TLS.
+Nixmox serves no HTTPS. TLS protects NATS clients/routes/leaves only.
+The machine HTTP listener serves enrollment and signed removal records, separate
+from console/cache routes. Secrets travel between daemons through Core NATS.
+External services retain their own transports. Advertise actual services and ports.
 
 Reserve configured listener ports in `net.ipv4.ip_local_reserved_ports`, merging
 with other services' reservations. This does not prevent explicit bind conflicts.
@@ -178,7 +178,7 @@ address, port, and configuration key. Do not kill the owning process or silently
 choose another port. Broker monitoring/WebSocket listeners are disabled unless
 separately designed and configured.
 
-Machine TLS/authentication is mandatory and managed automatically, including the
+NATS TLS/authentication is mandatory and managed automatically, including the
 loopback client listener; there is no anonymous NATS mode or user-supplied broker
 password. Configure each client/route/leaf TLS block independently. See
 [machine permissions](identity-and-trust.md#managed-tls-and-nats-permissions) and
@@ -247,7 +247,7 @@ Credential references are cluster metadata, but secretFile paths are local to th
 configured replica. A missing file marks that capability unavailable rather than
 preventing the entire console from starting. UI writes cannot override a declared
 secret source. Secrets entered through the UI are stored privately on a selected
-credential-capable full member, never echoed back.
+credential-capable full member, never echoed back; remote delivery uses Core NATS.
 
 ## Settings UI
 

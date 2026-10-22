@@ -40,7 +40,9 @@ that enables the permanent agent. Installer-entry incompatibility does not block
 ```
 
 Store paths/hashes are fixture values. An actual candidate records verified output
-metadata and all source dependencies; branch names alone are insufficient.
+and closure metadata and all source dependencies; branch names alone are insufficient.
+`builder_id` records the host that built/verified this candidate. A build may
+substitute outputs rather than compile them.
 
 ```json
 {
@@ -65,15 +67,15 @@ binding, built candidate, active generation, and boot generation separately.
 
 **Apply latest** is the primary action on each host-list row and host detail page.
 It runs one task: resolve and pin source → validate → build → diff → approve →
-transfer → activate/stage → observe. Users do not need to manage candidates or
-navigate between screens. Builder selection and Now/Next boot mode are options.
+activate/stage → observe. Builder selection and Now/Next boot mode are options.
+The target uses normal Nix substitution/building, not a separate transfer phase.
 
 ```sh
 # On cedar: latest configuration → build → preview/diff → confirm → switch.
 nixmox apply
 # Same workflow without the confirmation pause.
 nixmox apply --yes
-# Explicit target and remote builder, when needed.
+# Build on birch first; cedar then builds the same source using available caches.
 nixmox apply cedar --builder birch
 ```
 
@@ -82,7 +84,7 @@ nixmox apply cedar --builder birch
 | Host | Current node, identified through the local daemon's stable node ID |
 | Repository/configuration/ref | Target's assigned configuration and tracked GitOps ref |
 | Candidate | Build the pinned latest revision; reuse valid available build outputs |
-| Builder | Target if build-capable and available; otherwise an eligible available cluster builder |
+| Builder | Target; an explicit different host builds the same source first |
 | Mode | `switch`: activate now and select for subsequent boot |
 | Approval | Show preview/diff and ask for confirmation; `--yes` auto-approves |
 | Wait | Apply follows progress through review and completion; `--detach` returns task IDs immediately |
@@ -90,14 +92,11 @@ nixmox apply cedar --builder birch
 Resolve an omitted host only through the local daemon, never the shell hostname,
 working directory, or a remote gateway's identity. When using a remote endpoint
 or without a local daemon, require an explicit host. Print resolved target,
-configuration, pinned revision, builder, and mode before build progress. An explicit
-builder is honored or fails clearly; if automatic selection finds none, report
-`BUILDER_UNAVAILABLE`. The preview concerns the exact built candidate that will
-be switched. Declining confirmation cancels before activation.
-
-Builders producing outputs for another host must meet
-[cache readiness](cache-gateway.md#serving-readiness-and-cross-host-builds).
-An offline store cache disables that builder's cross-host option, not same-host Apply.
+configuration, pinned revision, builder, and mode before build progress.
+An unavailable explicit builder fails selection clearly; never silently choose
+another remote host. If it disappears after admission, the target can still build
+the pinned source. The review uses the actual target-local output; declining
+confirmation cancels before activation. See [cache behavior](cache-gateway.md).
 
 Browser/TUI: Hosts → cedar row or detail → Apply latest → options with
 **Auto-approve** toggle (off by default) → Start. The same panel shows build
@@ -112,24 +111,16 @@ show that revision throughout execution. A failed fetch is an error, not permiss
 to silently deploy a cached upstream revision. Later Git changes do not retarget
 the task. Missing configuration bindings direct the user to configuration selection.
 
-Omitting both `candidate_id` and `source` selects the host's latest binding. Supplying a candidate uses that
-exact built candidate and skips building; combining it with `builder_id` or a
-source override is invalid.
+Omitting both `candidate_id` and `source` selects the host's latest binding.
+An explicit candidate fixes its source/output evidence and cannot be combined with
+a source or builder override. If absent locally, build its pinned source normally.
+Changed output/closure evidence returns `CANDIDATE_CHANGED` for a new review;
+never silently change an existing candidate.
 `auto_approve` defaults to false; `--yes`
 sets it to true for this invocation only. It approves deployment of the pinned
 candidate to this target in the selected mode, not future Git changes, conflict
 overrides, installation disk erasure, or USB writes. Validation, output trust,
 compatibility, target exclusion, and observation gates still apply.
-
-```json
-{
-  "id": "cmd_apply_latest_01",
-  "type": "deployment.apply",
-  "target_id": "n_cedar",
-  "expected_versions": {"host:n_cedar": 7},
-  "payload": {"builder_id": "n_birch", "mode": "switch", "auto_approve": true}
-}
-```
 
 Persist approval policy with the task; manual review blocks with `APPROVAL_REQUIRED`.
 Any console can resume it. Waiting/prompt/exit behavior follows the
@@ -158,16 +149,16 @@ nixmox hosts reboot cedar --confirm-host cedar --wait
 ```
 
 Preview performs source diff and evaluation without a full system build. Build
-produces an output without activation and enables package/generated-configuration
-comparison. It cannot predict all activation effects. Invalidate comparisons when
+runs on the selected host without activation and returns a candidate for comparison.
+It does not automatically build again on another host. It cannot predict all activation effects. Invalidate comparisons when
 the candidate or observed target generation changes.
 
 | Command type | Payload |
 | --- | --- |
 | deployment.preview | host_id, optional source selector; expected host version |
-| deployment.build | host_id, optional source selector, optional builder_id; expected host version |
+| deployment.build | host_id, optional source selector, optional builder_id selecting the build host; expected host version |
 | deployment.diff | host_id, candidate_id, optional baseline_generation_id |
-| deployment.apply | optional source selector or candidate_id, optional builder_id for builds, mode (default switch), auto_approve (default false); target_id on envelope, expected host version |
+| deployment.apply | optional source selector or candidate_id, optional builder_id, mode (default switch), auto_approve (default false); target_id on envelope, expected host version |
 | deployment.approve | task_id, diff_id, diff_version; resumes the original task after checking its approval evidence |
 | deployment.rollback | generation_id, mode (default switch); target_id, expected host version |
 | host.reboot | host_id, confirm_host |
@@ -181,7 +172,8 @@ ref, never the old host ref. No usable binding means required selection, not a
 guess. Resolve the selector once using Apply's latest/fetch rules; explicit commits
 remain pinned. Overrides do not reassign the host.
 `deploy preview <host>` and `deploy build <host>` therefore need no source flags
-when the host is bound. Build uses Apply's automatic builder rule unless overridden.
+when the host is bound. Build defaults to that host; `--builder` selects another
+executor without changing the configuration/source.
 Preview performs no build and has no builder flag. Rollback defaults to `switch`;
 `--mode boot` explicitly stages it for reboot.
 
@@ -199,8 +191,8 @@ Before Apply, show structured package additions, removals, and old → new versi
 in all interfaces.
 
 Compare the target's observed running system closure with the exact candidate
-closure, even when another node built it. Do not compare with the builder's own
-system or assume the previous Git commit describes what is actually running.
+closure. Do not compare with the builder's running system or assume the previous
+Git commit describes the target. Apply verifies its candidate locally before review.
 Offer an explicit recorded-generation baseline for historical comparisons and
 use the same diff for rollback review.
 
@@ -323,7 +315,6 @@ Browser, TUI, and interactive CLI must show:
 | Plan | Known downloads, derivations to build, already available paths, and whether totals are still being discovered |
 | Downloads | Package/path name, queued/active/completed/failed, actual cache/source, transferred bytes, known total, measured speed, retry/fallback |
 | Builds | Derivation/package name, queued/running/completed/failed, executing node, elapsed time, reported build phase, per-build log link |
-| Target transfer | Builder/source and target, paths and bytes copied, known total, measured speed, verification status |
 | Activation | Named activation/service steps when reported, elapsed time, errors, and running versus boot-staged outcome |
 | Observation | Waiting for agent/reboot, elapsed time, last report, and verified expected system |
 
@@ -363,7 +354,6 @@ friendly package names are labels and are not guaranteed to map one-to-one.
     "active_derivations": 2,
     "failed_derivations": 0
   },
-  "target_transfer": null,
   "active_activity_ids": ["activity_download_01", "activity_build_01"]
 }
 ```
@@ -393,22 +383,23 @@ paginated activity endpoint. An activity detail example:
 
 Build activities use `kind: "build"`, their derivation path, executing node, reported
 phase, and `log_ref`. Unknown totals/rates/phases are null, not invented zeroes.
-Distinguish download bytes from unpacked NAR sizes and builder-to-target transfer;
-do not combine unlike byte totals into one percentage.
+Keep each host's build counters separate and distinguish download bytes from
+unpacked NAR sizes. There is no separate output-transfer counter.
 
 ### Bars and interface behavior
 
 ```text
-Build cedar on birch                         00:42 elapsed
+Build on birch                              completed / unavailable
+Build cedar on cedar                        00:42 elapsed
 Downloads  [#####---------------] 25%        256 MiB / 1 GiB known • 8 MiB/s
-  example-package   cache.nixos.org         32 / 64 MiB • 4 MiB/s
+  example-package   birch cache             32 / 64 MiB • 4 MiB/s
 Builds     [###-----------------] 2 / 12     2 running • discovering dependencies
-  linux             birch                   building • 00:31
-Transfer → Activation → Observe              waiting
+  linux             cedar                   building • 00:31
+Diff → Approval → Activation → Observe       waiting
 [Activity] [Logs] [Cancel]
 ```
 
-Show download/transfer bars from comparable byte counters and build bars from
+Show download bars from comparable byte counters and build bars from
 completed/known derivation counts. Label build counts as work items, not elapsed-time
 estimates. Discovered work may increase totals; recompute and mark the revised plan.
 Unknown totals use indeterminate bars with measured counts/speed. Do not assign
@@ -428,23 +419,27 @@ deployment summaries show the same aggregate. `deploy build/apply --wait` render
 this view interactively; `nixmox tasks watch task_build_01` attaches later.
 `nixmox tasks progress task_build_01 --json` returns the snapshot for automation.
 
-These requirements also apply to build/transfer stages in installation, media
+These requirements also apply to builds in installation, media
 creation, and rebuilds for rollback. Missing telemetry must be labeled explicitly;
 raw logs alone do not satisfy progress acceptance on supported Nix versions.
 
 ## Execution contract
 
 ```text
-pin source → validate → build → verify output → diff → approval
-  → acquire target lock → recheck baseline/approval → transfer → activate/stage → observe
+pin source → validate → build → verify local output → diff → approval
+  → acquire target lock → recheck baseline/output/approval → activate/stage → observe
 ```
 
-The builder materializes the pinned repository, evaluates the named configuration,
-and consults the [cache gateway](cache-gateway.md) before building missing outputs.
-The target pulls the exact candidate closure through its own local gateway from
-available holders; Nix verifies integrity/trust. No SSH push is required. Record
-the intended generation before activation. Serialize
-apply, rollback, and installation effects on a target.
+Build runs on the chosen host. Apply may first request that same operation on a
+remote builder, whose signed outputs become available through its HTTP cache.
+The target then builds the same pinned commit, locked inputs, attribute, and system.
+Nix substitutes cached outputs or compiles missing ones locally. Record remote
+build failures separately; an unavailable cache does not prevent local compilation.
+
+Review and pin the target's actual verified output. Changed output evidence
+invalidates approval, even for the same source commit. Record the intended
+generation before activation and serialize target effects. No closure-transfer
+task, SSH push, or Nixmox-specific output-copy protocol is used.
 
 Use standard Nix build/rebuild tooling for ordinary deployment: `nix build` for
 the pinned system output and the NixOS activation/bootloader tools for that exact

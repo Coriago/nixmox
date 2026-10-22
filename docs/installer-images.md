@@ -60,7 +60,7 @@ nixmox media profiles
 nixmox media build --profile pc-x86_64 --host alder --wait
 nixmox media plan --image media_01 --host alder --device /dev/disk/by-id/usb-EXAMPLE --wait
 nixmox media write --plan media_plan_01 --confirm-device /dev/disk/by-id/usb-EXAMPLE --wait
-# Optional: build a Pi image elsewhere, then transfer it to alder for writing.
+# Optional: build a Pi image on another host; alder can use its signed cache.
 nixmox media build --profile raspberry-pi-5 --host alder --builder arm-builder --wait
 nixmox media plan --image media_02 --host alder --device /dev/disk/by-id/usb-SD_READER --wait
 nixmox media write --plan media_plan_02 --confirm-device /dev/disk/by-id/usb-SD_READER --wait
@@ -84,33 +84,25 @@ A pending bootstrap agent may be the writer for its own installation media, with
 scoped media-write authorization and device confirmation. No permanent agent or
 assigned host configuration is required to prepare the media.
 
-Builder selection: honor an explicit `--builder`; otherwise prefer the writer
-when it can execute the recipe's required build system, natively or through already
-configured, capability-checked emulation. Label emulated builds as potentially
-slower. Only fall back to another eligible node when the writer cannot build or is
-unavailable, and show the reason and selected node. Do not silently replace an
-explicit builder. Changing the writer later does not rebuild a valid image.
-Do not automatically configure emulation or assume cross-compilation works for an
-arbitrary NixOS image. Explicitly supported cross-build recipes must declare their
-build and target systems separately. No compatible builder returns
-`BUILDER_UNAVAILABLE` with the missing system/capability.
+Build runs on the chosen host. Default to the writer if it can execute the recipe;
+otherwise select an eligible builder and show why. Honor an explicit `--builder`
+or fail clearly. Do not silently configure emulation or assume cross-compilation;
+recipes declare supported build/target systems and emulated builds are labeled.
 
-When builder and writer differ, apply the
-[cache readiness rules](cache-gateway.md#serving-readiness-and-cross-host-builds).
-Show unavailable remote builders disabled with the cache reason; same-host builds
-and verified local image writes do not require a signing key.
+Before Plan/Write, the writer must have the verified image locally. For built
+images it runs Nix on the same pinned recipe, substituting signed cached outputs
+or compiling missing ones if capable. An x86 writer can use a cached ARM image,
+but an unsupported-system cache miss fails clearly. No separate transfer task is
+needed. Changing writers does not change the selected image identity; a rebuilt
+image with a different digest requires a new media record and review.
 
-For a remote build, the writer pulls the completed image's Nix store output through
-its local [cache gateway](cache-gateway.md) and verifies its digest before writing.
-Build, transfer, write, and readback have separate task
-phases/progress. Build failure or interrupted transfer must not start a device write.
-JetStream carries metadata and progress, not image bytes. There is no transfer step
-when the verified artifact is already available on the writer.
+Show cache readiness separately from build capability: building needs no signing
+key, but peers need a signed cache to reuse its outputs. Verify local image bytes
+before device effects; Build, Write, and readback remain separate phases.
 
-Built-in profiles should offer release images with verified digests/provenance for
-Download/Write without requiring an ARM builder to bootstrap the first Pi. Building
-customizations still requires a compatible builder. Image bytes are downloaded or
-transferred directly, not stored as Git changes in JetStream.
+Built-in profiles should offer verified release images for Download/Write without
+an ARM builder. Custom images still need a compatible build or cached output.
+Image downloads use HTTP, not JetStream.
 CLI: `nixmox media fetch --profile raspberry-pi-5 --release latest --wait`.
 `--release` is optional and defaults to `latest`; `--profile` uses the same
 single-profile/interactive-selection rule as Build. Custom profiles without release
@@ -262,4 +254,4 @@ Advertise board/boot support only after physical validation: x86 USB and Pi 5 SD
 Ethernet/Wi-Fi, enrollment, separate-target installation, and reboot. Pi USB/NVMe
 boot claims need separate evidence. Test custom and compressed images, capacity/
 readback, both SD reader types, writer preference/emulation, explicit builders,
-remote transfer failure, and identity reuse rules across media/kexec variants.
+cache failure/local fallback, and identity reuse rules across media/kexec variants.

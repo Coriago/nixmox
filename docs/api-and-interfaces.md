@@ -3,7 +3,8 @@
 All examples define the proposed rewrite API. The CLI, browser, and TUI submit
 the same command objects; no interface may bypass validation or task admission.
 All three connect to the console over HTTP, including secret submission. Automated
-TLS is reserved for backend daemon/NATS links; see [listeners](runtime-configuration.md#service-ports).
+TLS protects NATS only; enrollment/cache access uses HTTP. Cross-node secrets use
+Core NATS. See [listeners](runtime-configuration.md#service-ports).
 
 ## Values and references
 
@@ -42,9 +43,10 @@ only a secret-free reference through this command path.
 Rebase uploads stage bytes through the draft resolution ingress; accepting those
 files still requires a typed command. Enrollment has its own limited machine
 exchange. These exceptions do not expose arbitrary resource mutations.
-Membership-status reads use the narrow authenticated-server exception defined in
-[identity and trust](identity-and-trust.md#authenticated-removal-response), allowing
-revoked nodes to confirm removal without restoring membership access.
+Membership-status reads return the signed removal evidence defined in
+[identity and trust](identity-and-trust.md#authenticated-removal-response) over
+plain HTTP. Revoked nodes verify the payload against pinned cluster trust without
+restoring NATS access or authenticating the HTTP server.
 
 ```json
 {
@@ -339,12 +341,10 @@ command type and payload schema in the operation registry.
 
 `POST /api/v1/credentials/import` accepts credential metadata, storage node ID,
 and a sensitive value stream over the same HTTP connection as other console calls.
-For another storage node, the receiving daemon forwards this request to that node's
-machine listener over mTLS. That listener accepts imports only from authorized full
-members, only for its own storage node, and never forwards them again. Both ingress
-paths apply the same redaction and retry rules. The storage node durably stages
-the value in its private credential store and submits
-`credential.import` containing only that staging reference. Return the normal
-command receipt; retain the same request ID across uncertain retries. Expire and
-erase unclaimed staged values. Redact request bodies at this endpoint before any
-logging/tracing middleware. Ordinary commands reject raw secret fields.
+Remote delivery uses the [Core NATS secret path](identity-and-trust.md#secret-delivery-over-nats),
+not HTTP forwarding. The holder privately stages the value, then submits
+`credential.import` through JetStream with only `staging_ref`. Same-node imports
+use that handler locally. Return the normal receipt; after a timeout, query it
+before retrying the same ID. Erase expired unclaimed staging, not accepted work.
+Never log/trace secret bodies or include them in ordinary commands. The initial
+user-to-console HTTP hop remains unencrypted.

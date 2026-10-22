@@ -13,7 +13,7 @@ phases. The service, not the requesting UI connection, owns execution lifetime.
   "command_id": "cmd_apply_cedar_01",
   "kind": "deployment.apply",
   "state": "running",
-  "phase": "transferring",
+  "phase": "building",
   "coordinator_id": "n_alder",
   "builder_id": "n_birch",
   "target_id": "n_cedar",
@@ -24,7 +24,7 @@ phases. The service, not the requesting UI connection, owns execution lifetime.
   },
   "progress": {"completed": 1048576, "total": 4194304, "unit": "bytes"},
   "cancellation": {"allowed": true, "requested": false},
-  "effects": {"candidate_transferred": false, "activation_started": false},
+  "effects": {"candidate_realized": false, "activation_started": false},
   "log": {"node_id": "n_alder", "next_offset": 8192},
   "result": null,
   "error": null
@@ -41,10 +41,10 @@ Retain final activity/result summaries after completion.
 Normalize on the executor and stream through NATS. Deduplicate by task/activity/attempt
 and version; child aggregation and recovery must not double-count work. Logs are separate.
 
-Build substitution and output transfer use the [cache gateway](cache-gateway.md).
-Pin required source outputs and report actual serving peers, bytes, and retries.
-Transfer retry preserves candidate identity and never repeats activation or disk
-effects. Cancellation releases requests and task pins after safe reconciliation.
+Build runs on the selected host; Apply builds on its target using
+[Nix cache substitution](cache-gateway.md) or local compilation. No transfer task.
+Pin source/outputs and report cache fallback. Retries cannot change source or
+repeat effects. Changed outputs invalidate approval; cancellation releases safe pins.
 
 ## State machine
 
@@ -85,12 +85,12 @@ an operation reaches a non-interruptible phase; show that reason in every UI.
 | --- | --- | --- | --- |
 | repository.fetch | fetch, verify, import | repository ref update | Retry idempotent fetch; CAS metadata |
 | configuration.commit | render, validate, store artifact, accept | repository mutation | Reconcile JetStream artifact and accepted head |
-| deployment.build | resolve, build, register | builder capacity | Inspect output; rebuild if no verified output |
+| deployment.build | resolve, build, register | selected host's build capacity | Inspect output; rebuild pinned source if no verified output |
 | deployment.diff | observe baseline, compare, record | bounded metadata reads | Recompute from pinned output metadata |
-| deployment.apply | resolve, validate, build, diff, review, transfer, activate, observe | builder capacity during build; target system after review | Preserve approval; inspect running/profile state before retry |
+| deployment.apply | resolve, validate, build, diff, review, activate, observe | build capacity; target system after review | Preserve applicable approval; inspect local output and running/profile state before retry |
 | deployment.rollback | select, activate, observe | target system | Same as apply |
 | host.enter_installer | preflight, stage handoff, arm boot/kexec, observe installer | target boot/power and membership transition | Inspect handoff/boot receipt; never repeat an uncertain transition |
-| deployment.install | preflight, enter installer if needed, prepare, review, build/transfer, partition, install, reboot, observe | target disks/system; coordinate child exclusions | Resume persisted phases/children; fresh confirmation for destructive retry |
+| deployment.install | preflight, enter installer if needed, prepare, build, review, partition, install, reboot, observe | target disks/system; coordinate child exclusions | Resume recorded phases; all outputs local before erasure; fresh confirmation for destructive retry |
 | host.bootstrap | verify SSH target, stage agent, start, observe enrollment | SSH target/bootstrap identity | Reconcile temporary service and receipt; never duplicate identity |
 | media.write | verify, write, readback | writing node + device identity | Never resume a partial write automatically |
 | host.shutdown | schedule, observe | target power | Inspect receipt; do not reschedule an uncertain action |
