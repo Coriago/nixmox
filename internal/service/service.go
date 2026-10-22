@@ -19,41 +19,56 @@ type Inspector interface {
 	Inspect(context.Context, string) (domain.NetworkStatus, error)
 }
 type admission struct {
-	SchemaVersion int            `json:"schema_version"`
-	Fingerprint   string         `json:"fingerprint"`
-	Command       domain.Command `json:"command"`
-	Receipt       domain.Receipt `json:"receipt"`
-	CreatedAt     time.Time      `json:"created_at"`
-	Complete      bool           `json:"complete"`
-	ParentID      *string        `json:"parent_id,omitempty"`
+	SchemaVersion int             `json:"schema_version"`
+	Fingerprint   string          `json:"fingerprint"`
+	Command       domain.Command  `json:"command"`
+	Receipt       domain.Receipt  `json:"receipt"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Complete      bool            `json:"complete"`
+	ParentID      *string         `json:"parent_id,omitempty"`
+	Kind          string          `json:"kind"`
+	Scope         string          `json:"scope"`
+	Resolved      json.RawMessage `json:"resolved"`
+	Reconcile     bool            `json:"-"`
+	Exclusions    []string        `json:"exclusions,omitempty"`
 }
 type Service struct {
-	mu           sync.Mutex
-	store        *storage.Store
-	inspector    Inspector
-	identity     domain.Identity
-	admissions   map[string]admission
-	tasks        map[string]domain.Task
-	network      domain.NetworkStatus
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wake         chan struct{}
-	done         chan struct{}
-	activeCancel context.CancelFunc
-	activeID     string
-	fatal        bool
-	subscribers  map[chan struct{}]struct{}
+	mu          sync.Mutex
+	store       *storage.Store
+	inspector   Inspector
+	operations  map[string]Operation
+	identity    domain.Identity
+	admissions  map[string]admission
+	tasks       map[string]domain.Task
+	network     domain.NetworkStatus
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wake        chan struct{}
+	done        chan struct{}
+	active      map[string]context.CancelFunc
+	workers     sync.WaitGroup
+	fatal       bool
+	subscribers map[chan struct{}]struct{}
 	// Crash-boundary injection is used only by storage recovery tests.
 	checkpoint func(string) error
 }
 
-func Open(store *storage.Store, inspector Inspector) (*Service, error) {
+func Open(store *storage.Store, inspector Inspector, operations ...Operation) (*Service, error) {
 	id, err := store.Identity()
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{store: store, inspector: inspector, identity: id, admissions: map[string]admission{}, tasks: map[string]domain.Task{}, network: domain.UnknownNetwork(id.NodeID), ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{}), subscribers: map[chan struct{}]struct{}{}}
+	s.operations = map[string]Operation{"network.check": networkOperation(inspector)}
+	s.active = make(map[string]context.CancelFunc)
+	for _, op := range operations {
+		if _, exists := s.operations[op.Kind]; exists || op.Kind == "" || op.Validate == nil || op.Run == nil || op.Timeout <= 0 || (op.Scope != "node_local" && op.Scope != "cluster") {
+			cancel()
+			return nil, errors.New("invalid or duplicate operation registration")
+		}
+		s.operations[op.Kind] = op
+	}
 	if err := s.recover(); err != nil {
 		cancel()
 		return nil, err
@@ -106,17 +121,18 @@ func (s *Service) recover() error {
 		if err := s.store.Read("jobs/"+n, &t); err != nil {
 			return err
 		}
-		if t.SchemaVersion != 1 || n != t.ID+".json" || !domain.SafeID.MatchString(t.ID) || t.OwnerNodeID != s.identity.NodeID || t.Scope != "node_local" || t.Kind != "network.check" {
+		_, registered := s.operations[t.Kind]
+		if t.SchemaVersion != 1 || n != t.ID+".json" || !domain.SafeID.MatchString(t.ID) || t.OwnerNodeID != s.identity.NodeID || t.Scope != "node_local" || !registered {
 			return errors.New("unsupported task record")
 		}
 		switch t.State {
-		case "queued", "running", "reconciling", "cancelling", "succeeded", "failed", "cancelled":
+		case "queued", "running", "blocked", "reconciling", "cancelling", "succeeded", "failed", "cancelled":
 		default:
 			return errors.New("invalid persisted task state")
 		}
 		s.tasks[t.ID] = t
-		if t.State == "succeeded" && t.Result != nil && t.Result.ObservedAt != nil && (s.network.ObservedAt == nil || t.Result.ObservedAt.After(*s.network.ObservedAt)) {
-			s.network = *t.Result
+		if result := t.NetworkResult(); t.State == "succeeded" && result != nil && result.ObservedAt != nil && (s.network.ObservedAt == nil || result.ObservedAt.After(*s.network.ObservedAt)) {
+			s.network = *result
 		}
 	}
 	names, err = s.store.Names("receipts")
@@ -151,9 +167,20 @@ func (s *Service) recover() error {
 			return errors.New("task has no admission record")
 		}
 		if t.State == "running" {
-			if err := t.Transition("reconciling", "inspect"); err != nil {
+			if err := t.Transition("reconciling", t.Phase); err != nil {
 				return err
 			}
+			if err := s.persistTask(t); err != nil {
+				return err
+			}
+		}
+		log, err := s.store.ReadLog(t.ID)
+		if err != nil || log.End() < t.Log.NextOffset {
+			return errors.New("task log is corrupt or missing")
+		}
+		if log.End() != t.Log.NextOffset {
+			t = s.tasks[t.ID]
+			t.Log.NextOffset = log.End()
 			if err := s.persistTask(t); err != nil {
 				return err
 			}
@@ -166,9 +193,6 @@ func (s *Service) Admit(c domain.Command) (domain.Receipt, error) {
 	defer s.mu.Unlock()
 	if !domain.SafeID.MatchString(c.ID) || !domain.SafeID.MatchString(c.TargetID) || c.Type == "" {
 		return domain.Receipt{}, domain.Err("INVALID_COMMAND", "id, type and target_id are required.", 422)
-	}
-	if c.TargetID != s.identity.NodeID {
-		return domain.Receipt{}, domain.Err("TARGET_UNREACHABLE", "This unjoined daemon can address only its own node.", 503)
 	}
 	if len(c.Payload) == 0 || string(c.Payload) == "null" {
 		return domain.Receipt{}, domain.Err("INVALID_PAYLOAD", "An object payload is required.", 422)
@@ -202,15 +226,14 @@ func (s *Service) Admit(c domain.Command) (domain.Receipt, error) {
 		}
 		return a.Receipt, nil
 	}
+	if c.TargetID != s.identity.NodeID {
+		return domain.Receipt{}, domain.Err("TARGET_UNREACHABLE", "This unjoined daemon can address only its own node.", 503)
+	}
 	if s.fatal || s.ctx.Err() != nil {
 		return domain.Receipt{}, domain.Err("UNAVAILABLE", "Admission is unavailable.", 503)
 	}
-	a := admission{SchemaVersion: 1, Fingerprint: fingerprint, Command: c, CreatedAt: time.Now().UTC(), Receipt: domain.Receipt{CommandID: c.ID, Admission: "accepted", TaskID: taskID(c.ID)}}
+	a := admission{SchemaVersion: 1, Kind: c.Type, Scope: "node_local", Resolved: c.Payload, Fingerprint: fingerprint, Command: c, CreatedAt: time.Now().UTC(), Receipt: domain.Receipt{CommandID: c.ID, Admission: "accepted", TaskID: taskID(c.ID)}}
 	switch c.Type {
-	case "network.check":
-		if len(object) != 0 || len(c.ExpectedVersions) != 0 {
-			return domain.Receipt{}, domain.Err("INVALID_PAYLOAD", "network.check accepts an empty payload and no expected versions.", 422)
-		}
 	case "task.cancel", "task.retry":
 		var p struct {
 			TaskID string `json:"task_id"`
@@ -226,22 +249,59 @@ func (s *Service) Admit(c domain.Command) (domain.Receipt, error) {
 			return domain.Receipt{}, domain.Err("VERSION_CONFLICT", "Task changed after this review.", 409)
 		}
 		if c.Type == "task.cancel" {
-			if t.Terminal() {
-				return domain.Receipt{}, domain.Err("INVALID_STATE", "Terminal tasks cannot be cancelled.", 409)
+			if t.Terminal() || !t.Cancellation.Allowed {
+				return domain.Receipt{}, domain.Err("INVALID_STATE", "Cancellation is unavailable in this phase.", 409)
 			}
 			a.Receipt.TaskID = t.ID
 		} else {
 			if !t.Terminal() {
 				return domain.Receipt{}, domain.Err("INVALID_STATE", "Only terminal tasks can be retried.", 409)
 			}
+			if !s.operations[t.Kind].SafeRetry {
+				return domain.Receipt{}, domain.Err("CONFIRMATION_REQUIRED", "This operation requires a fresh review before retry.", 409)
+			}
 			a.ParentID = &t.ID
+			a.Resolved = s.admissions[t.CommandID].Resolved
+			a.Exclusions = s.admissions[t.CommandID].Exclusions
 		}
+		a.Kind = t.Kind
+		a.Scope = t.Scope
 	default:
-		// There is deliberately no local fallback for cluster mutations.
-		if clusterOperation(c.Type) {
+		op, registered := s.operations[c.Type]
+		if registered {
+			if err := op.Validate(c); err != nil {
+				return domain.Receipt{}, err
+			}
+		}
+		if (registered && op.Scope == "cluster") || (!registered && clusterOperation(c.Type)) {
 			return domain.Receipt{}, domain.Err("QUORUM_UNAVAILABLE", "Cluster admission requires enrollment and authenticated JetStream quorum.", 503)
 		}
-		return domain.Receipt{}, domain.Err("UNSUPPORTED_CAPABILITY", "Operation is not implemented on this node.", 503)
+		if !registered {
+			return domain.Receipt{}, domain.Err("UNSUPPORTED_CAPABILITY", "Operation is not implemented on this node.", 503)
+		}
+		a.Scope = op.Scope
+		if op.Resolve != nil {
+			ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
+			resolved, err := op.Resolve(ctx, c)
+			cancel()
+			if err != nil {
+				return domain.Receipt{}, err
+			}
+			if len(resolved) > domain.MaxCommandBytes || !json.Valid(resolved) {
+				return domain.Receipt{}, domain.Err("INVALID_STATE", "Resolved request exceeds its encoding bounds.", 422)
+			}
+			a.Resolved = resolved
+		}
+		if op.Exclusions != nil {
+			keys, err := op.Exclusions(c, a.Resolved)
+			if err != nil {
+				return domain.Receipt{}, err
+			}
+			if err := validateExclusions(keys); err != nil {
+				return domain.Receipt{}, err
+			}
+			a.Exclusions = append([]string(nil), keys...)
+		}
 	}
 	active := 0
 	for _, t := range s.tasks {
@@ -293,11 +353,11 @@ func (s *Service) finishAdmission(a admission) error {
 				return err
 			}
 		}
-		if s.activeID == t.ID && s.activeCancel != nil {
-			s.activeCancel()
+		if cancel := s.active[t.ID]; cancel != nil {
+			cancel()
 		}
 	} else if _, ok := s.tasks[a.Receipt.TaskID]; !ok {
-		t := domain.Task{SchemaVersion: 1, ID: a.Receipt.TaskID, Version: 1, CommandID: a.Command.ID, Kind: "network.check", State: "queued", Phase: "inspect", Scope: "node_local", OwnerNodeID: s.identity.NodeID, CoordinatorID: s.identity.NodeID, TargetID: a.Command.TargetID, ParentID: a.ParentID, CreatedAt: a.CreatedAt, UpdatedAt: a.CreatedAt, Cancellation: domain.Cancellation{Allowed: true}, Effects: map[string]bool{}}
+		t := domain.Task{SchemaVersion: 1, ID: a.Receipt.TaskID, Version: 1, CommandID: a.Command.ID, Kind: a.Kind, State: "queued", Phase: "queued", Scope: a.Scope, OwnerNodeID: s.identity.NodeID, CoordinatorID: s.identity.NodeID, TargetID: a.Command.TargetID, ParentID: a.ParentID, CreatedAt: a.CreatedAt, UpdatedAt: a.CreatedAt, Cancellation: domain.Cancellation{Allowed: true}, Effects: map[string]bool{}}
 		t.Log.NodeID = s.identity.NodeID
 		if err := s.persistTask(t); err != nil {
 			return err
@@ -320,6 +380,7 @@ func (s *Service) signal() {
 }
 func (s *Service) work() {
 	defer close(s.done)
+	defer s.workers.Wait()
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -328,13 +389,20 @@ func (s *Service) work() {
 		}
 		for {
 			s.mu.Lock()
-			if s.fatal || s.ctx.Err() != nil {
+			if s.fatal || s.ctx.Err() != nil || len(s.active) >= 4 {
 				s.mu.Unlock()
 				break
 			}
 			var selected *domain.Task
 			for _, t := range s.tasks {
-				if t.Terminal() {
+				if t.State == "blocked" && t.Error != nil && t.Error.Code == "RESOURCE_BUSY" && len(t.WaitingFor) > 0 && s.exclusionsAvailable(t.ID, t.WaitingFor) {
+					_ = t.Transition("reconciling", t.Phase)
+					t.Error = nil
+					if s.persistTask(t) != nil {
+						break
+					}
+				}
+				if t.Terminal() || t.State == "blocked" || s.active[t.ID] != nil || (t.State == "queued" && !s.exclusionsAvailable(t.ID, s.admissions[t.CommandID].Exclusions)) {
 					continue
 				}
 				if selected == nil || t.CreatedAt.Before(selected.CreatedAt) || (t.CreatedAt.Equal(selected.CreatedAt) && t.ID < selected.ID) {
@@ -354,7 +422,12 @@ func (s *Service) work() {
 				s.mu.Unlock()
 				continue
 			}
-			if err := t.Transition("running", "inspect"); err != nil {
+			a := s.admissions[t.CommandID]
+			a.Reconcile = t.State == "reconciling"
+			if t.State == "queued" {
+				t.Exclusions = append([]string(nil), a.Exclusions...)
+			}
+			if err := t.Transition("running", t.Phase); err != nil {
 				s.fatal = true
 				s.mu.Unlock()
 				break
@@ -363,37 +436,55 @@ func (s *Service) work() {
 				s.mu.Unlock()
 				break
 			}
-			ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
-			s.activeID = t.ID
-			s.activeCancel = cancel
+			ctx, cancel := context.WithTimeout(s.ctx, s.operations[t.Kind].Timeout)
+			s.active[t.ID] = cancel
+			s.workers.Add(1)
 			s.notify()
 			s.mu.Unlock()
-			status, err := s.inspector.Inspect(ctx, s.identity.NodeID)
-			cancel()
-			s.mu.Lock()
-			s.activeID = ""
-			s.activeCancel = nil
-			t = s.tasks[t.ID]
-			if s.fatal || s.ctx.Err() != nil {
-				s.mu.Unlock()
-				break
-			}
-			if t.State == "cancelling" {
-				_ = t.Transition("cancelled", "inspect")
-			} else if err != nil {
-				_ = t.Transition("failed", "inspect")
-				t.Error = domain.Err("NETWORK_UNAVAILABLE", "Local network inspection failed.", 503)
-			} else {
-				_ = t.Transition("succeeded", "complete")
-				t.Result = &status
-			}
-			if err := s.persistTask(t); err == nil && t.State == "succeeded" {
-				s.network = status
-			}
-			s.notify()
-			s.mu.Unlock()
+			go s.execute(ctx, cancel, t, a)
 		}
 	}
+}
+func (s *Service) execute(ctx context.Context, cancel context.CancelFunc, t domain.Task, a admission) {
+	defer s.workers.Done()
+	defer s.signal()
+	result, err := s.runOperation(ctx, t, a)
+	cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.active, t.ID)
+	t = s.tasks[t.ID]
+	if s.fatal || s.ctx.Err() != nil {
+		return
+	}
+	if t.State == "cancelling" {
+		_ = t.Transition("cancelled", "inspect")
+	} else if err != nil {
+		var blocked *Blocked
+		if errors.As(err, &blocked) {
+			_ = t.Transition("blocked", blocked.Phase)
+			t.Error = blocked.Reason
+		} else {
+			_ = t.Transition("failed", t.Phase)
+			t.Error = safeOperationError(err)
+		}
+	} else {
+		encoded, encodeErr := json.Marshal(result)
+		if encodeErr != nil || len(encoded) > domain.MaxCommandBytes {
+			_ = t.Transition("failed", t.Phase)
+			t.Error = domain.Err("RESULT_UNAVAILABLE", "Operation result exceeds its encoding bounds.", 500)
+		} else {
+			_ = t.Transition("succeeded", "complete")
+			t.Result = encoded
+			t.Error = nil
+		}
+	}
+	if err := s.persistTask(t); err == nil && t.State == "succeeded" {
+		if result := t.NetworkResult(); result != nil {
+			s.network = *result
+		}
+	}
+	s.notify()
 }
 func (s *Service) Receipt(id string) (domain.Receipt, error) {
 	s.mu.Lock()

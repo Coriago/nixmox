@@ -194,8 +194,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 			printJSON(out, task)
 		} else {
 			fmt.Fprintln(out, presentation.Task(task))
-			if task.Result != nil {
-				fmt.Fprintln(out, presentation.Network(*task.Result))
+			if result := task.NetworkResult(); result != nil {
+				fmt.Fprintln(out, presentation.Network(*result))
 			}
 		}
 		if task.State == "blocked" {

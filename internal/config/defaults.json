@@ -2,5 +2,21 @@
   "schema_version": 1,
   "data_dir": "/var/lib/nixmox",
   "http": {"port": 63170},
-  "network": {"management_interfaces": [], "preferred_interfaces": [], "allow_fallback": true}
+  "machine": {"port": 63175},
+  "nats": {"client_port": 63171, "route_port": 63172, "leaf_port": 63173},
+  "network": {"management_interfaces": [], "preferred_interfaces": [], "allow_fallback": true},
+  "discovery": {"enable": false, "port": 63174},
+  "cluster": {"name": null, "join_address": null},
+  "configuration": null,
+  "repositories": {},
+  "credentials": {},
+  "capabilities": {"build": true, "install": false, "media_write": false, "power": false},
+  "deployment": {"keep_generations": 5},
+  "cache": {"enable": true, "serve": true, "signing_credential_ref": null, "max_concurrent_transfers": 4},
+  "telemetry": {
+    "host": {"fast_interval_ms": 500, "filesystem_interval_ms": 10000},
+    "otlp": {"enable": false, "endpoint": null, "metrics_interval_ms": 5000}
+  },
+  "prepare": {"sops": {"update_rules": [], "updater_ref": null, "credential_ref": null}},
+  "media": {"profiles": {}}
 }

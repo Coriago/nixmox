@@ -104,6 +104,7 @@ func Err(code, message string, status int) *Error {
 
 type Identity struct {
 	SchemaVersion      int     `json:"schema_version"`
+	Version            int64   `json:"version"`
 	NodeID             string  `json:"node_id"`
 	KeyID              string  `json:"key_id"`
 	PublicKey          string  `json:"public_key"`
@@ -160,17 +161,31 @@ type Task struct {
 		NodeID     string `json:"node_id"`
 		NextOffset int    `json:"next_offset"`
 	} `json:"log"`
-	Result    *NetworkStatus `json:"result"`
-	Error     *Error         `json:"error"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	Result     json.RawMessage `json:"result"`
+	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
+	Exclusions []string        `json:"exclusions,omitempty"`
+	WaitingFor []string        `json:"waiting_for,omitempty"`
+	Error      *Error          `json:"error"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+}
+
+func (t Task) NetworkResult() *NetworkStatus {
+	if t.Kind != "network.check" || len(t.Result) == 0 {
+		return nil
+	}
+	var n NetworkStatus
+	if json.Unmarshal(t.Result, &n) != nil {
+		return nil
+	}
+	return &n
 }
 
 func (t Task) Terminal() bool {
 	return t.State == "succeeded" || t.State == "failed" || t.State == "cancelled"
 }
 func (t *Task) Transition(state, phase string) error {
-	allowed := map[string][]string{"queued": {"running", "cancelling"}, "running": {"succeeded", "failed", "cancelling", "reconciling"}, "reconciling": {"running", "failed", "cancelling"}, "cancelling": {"cancelled"}}
+	allowed := map[string][]string{"queued": {"running", "cancelling"}, "running": {"succeeded", "failed", "cancelling", "reconciling", "blocked"}, "blocked": {"running", "cancelling", "reconciling"}, "reconciling": {"running", "succeeded", "failed", "cancelling", "blocked"}, "cancelling": {"cancelled", "reconciling"}}
 	for _, next := range allowed[t.State] {
 		if state == next {
 			t.State = state

@@ -144,7 +144,7 @@ func (a *Server) tasks(w http.ResponseWriter, r *http.Request) {
 	respond(w, v, err)
 }
 func (a *Server) logs(w http.ResponseWriter, r *http.Request) {
-	t, err := a.service.Task(r.PathValue("id"))
+	_, err := a.service.Task(r.PathValue("id"))
 	if err != nil {
 		writeError(w, err, "")
 		return
@@ -172,23 +172,21 @@ func (a *Server) logs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if offset > 0 {
-		writeError(w, domain.Err("RANGE_NOT_SATISFIABLE", "Offset exceeds the log end.", 416), "")
-		return
-	}
-	// Network inspection emits no log bytes. Empty is EOF only for terminal tasks.
-	writeJSON(w, 200, map[string]any{"offset": 0, "data_base64": "", "next_offset": 0, "retained_from": 0, "complete": t.Terminal(), "truncated": false})
+	chunk, err := a.service.Logs(r.PathValue("id"), offset, limit)
+	respond(w, chunk, err)
 }
 func (a *Server) downloadLogs(w http.ResponseWriter, r *http.Request) {
-	if _, err := a.service.Task(r.PathValue("id")); err != nil {
+	log, _, err := a.service.LogSnapshot(r.PathValue("id"))
+	if err != nil {
 		writeError(w, err, "")
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Log-Retained-From", "0")
-	w.Header().Set("X-Log-End-Offset", "0")
-	w.Header().Set("X-Log-Truncated", "false")
+	w.Header().Set("X-Log-Retained-From", strconv.Itoa(log.Start))
+	w.Header().Set("X-Log-End-Offset", strconv.Itoa(log.End()))
+	w.Header().Set("X-Log-Truncated", strconv.FormatBool(log.Start > 0))
 	w.WriteHeader(200)
+	_, _ = w.Write(log.Data)
 }
 func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

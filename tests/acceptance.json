@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "specification": "docs/technical-requirements.md#acceptance-matrix",
+  "raspberry_pi_testing": "deferred_by_user",
+  "areas": {
+    "configuration": {"status":"partial","evidence":["internal/config/config_test.go","tests/vm/bootstrap.nix"],"gates":["remaining_runtime_adapters"]},
+    "interface_parity": {"status":"partial","evidence":["internal/httpapi/server_test.go","internal/tui/model_test.go","cmd/nixmox/main_test.go"]},
+    "browser": {"status":"partial","evidence":["internal/httpapi/server_test.go"],"gates":["real_browser_editor_and_reconnection"]},
+    "host_telemetry": {"status":"pending","evidence":[]},
+    "reviews": {"status":"pending","evidence":[]},
+    "reads": {"status":"partial","evidence":["internal/service/service_test.go","internal/httpapi/server_test.go"]},
+    "admission_recovery": {"status":"partial","evidence":["internal/service/service_test.go","internal/service/operation_test.go","tests/e2e_test.go","tests/vm/bootstrap.nix"],"gates":["cluster_admission","destructive_effect_reconciliation"]},
+    "local_scope_quorum": {"status":"partial","evidence":["internal/service/service_test.go"],"gates":["multi_node_quorum_loss_and_recovery"]},
+    "cluster_stress": {"status":"pending","evidence":[]},
+    "enrollment": {"status":"pending","evidence":[]},
+    "enrollment_authentication": {"status":"pending","evidence":[]},
+    "trust_secrets": {"status":"partial","evidence":["internal/storage/files_test.go"],"gates":["managed_nats_permissions","enrollment","rotation","removal"]},
+    "transport": {"status":"partial","evidence":["tests/e2e_test.go","flake.nix"],"gates":["machine_tls","managed_nats","vm_firewall"]},
+    "installer_bootstrap": {"status":"pending","evidence":[]},
+    "installation": {"status":"pending","evidence":[],"gates":["physical_recovery_path_before_transition"]},
+    "preparation_sops": {"status":"pending","evidence":[]},
+    "media_recovery": {"status":"pending","evidence":[],"gates":["physical_usb_identity_and_readback","physical_boot_and_recovery"]},
+    "apply": {"status":"pending","evidence":[]},
+    "rollback_health": {"status":"pending","evidence":[]},
+    "diff_progress": {"status":"pending","evidence":[]},
+    "cache": {"status":"pending","evidence":[]},
+    "git": {"status":"pending","evidence":[]}
+  }
+}

@@ -23,7 +23,7 @@ func (s *Store) Identity() (domain.Identity, error) {
 	var id domain.Identity
 	err := s.Read("identity.json", &id)
 	if err == nil {
-		if id.SchemaVersion != 1 || !domain.SafeID.MatchString(id.NodeID) || id.ClusterID != nil {
+		if id.SchemaVersion != 1 || !domain.SafeID.MatchString(id.NodeID) {
 			return id, errors.New("unsupported identity state")
 		}
 		pair, err := tls.LoadX509KeyPair(filepath.Join(s.Root, "pki/daemon/cert.pem"), filepath.Join(s.Root, "pki/daemon/key.pem"))
@@ -77,7 +77,7 @@ func (s *Store) Identity() (domain.Identity, error) {
 	}
 	pub := key.Public().(ed25519.PublicKey)
 	sum := sha256.Sum256(pub)
-	id = domain.Identity{SchemaVersion: 1, NodeID: domain.NewID("n_"), KeyID: "key_" + hex.EncodeToString(sum[:]), PublicKey: base64.StdEncoding.EncodeToString(pub)}
+	id = domain.Identity{SchemaVersion: 1, Version: 1, NodeID: domain.NewID("n_"), KeyID: "key_" + hex.EncodeToString(sum[:]), PublicKey: base64.StdEncoding.EncodeToString(pub)}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return id, err

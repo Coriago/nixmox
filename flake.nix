@@ -21,7 +21,7 @@
             pname = "nixmox";
             version = "0.1.0-dev";
             src = self;
-            vendorHash = "sha256-fGJLiaW04OlOvEn5i98K8Ff7+hn0QztKeKKjMJYl8I4=";
+            vendorHash = "sha256-6WFKhTqS478ZjSeVxEvPLNHq1dVm7E1N5YnNwv2uJVA=";
             subPackages = [ "cmd/nixmox" ];
             env.CGO_ENABLED = 0;
             checkPhase = ''
@@ -33,13 +33,9 @@
           };
         }
       );
-      nixosModules.default = { ... }: {
+      nixosModules.default = { lib, pkgs, ... }: {
         imports = [ ./nix/module.nix ];
-        nixpkgs.overlays = [
-          (final: prev: {
-            nixmox = self.packages.${final.stdenv.hostPlatform.system}.default;
-          })
-        ];
+        services.nixmox.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       };
       checks = eachSystem (
         system:
@@ -65,9 +61,19 @@
         in
         {
           package = self.packages.${system}.default;
+          bootstrap-vm = import ./tests/vm/bootstrap.nix {
+            inherit pkgs;
+            module = self.nixosModules.default;
+          };
           module =
             assert c.services.nixmox.http.port == 63200;
-            assert c.networking.firewall.interfaces.eth0.allowedTCPPorts == [ 63200 ];
+            assert
+              c.networking.firewall.interfaces.eth0.allowedTCPPorts == [
+                63200
+                63175
+                63172
+                63173
+              ];
             assert c.networking.firewall.allowedTCPPorts == [ ];
             assert builtins.elem "63200" (
               nixpkgs.lib.splitString "," c.boot.kernel.sysctl."net.ipv4.ip_local_reserved_ports"

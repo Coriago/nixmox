@@ -35,8 +35,10 @@ func (s *Service) ListTasks(f TaskFilter, rawLimit, rawCursor string) (TaskPage,
 	if f.HostID != "" && !domain.SafeID.MatchString(f.HostID) {
 		return page, bad
 	}
-	if f.Kind != "" && f.Kind != "network.check" {
-		return page, bad
+	if f.Kind != "" {
+		if _, ok := s.operations[f.Kind]; !ok {
+			return page, bad
+		}
 	}
 	if f.State != "" {
 		valid := false

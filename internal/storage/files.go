@@ -35,7 +35,7 @@ func Open(root string) (*Store, error) {
 		return nil, errors.New("data directory is already in use")
 	}
 	s := &Store{Root: root, lock: f}
-	for _, d := range []string{"receipts", "jobs", "pki", "pki/daemon"} {
+	for _, d := range []string{"receipts", "jobs", "logs", "pki", "pki/daemon"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0700); err != nil {
 			s.Close()
 			return nil, err
