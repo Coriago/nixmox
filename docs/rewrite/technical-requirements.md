@@ -54,6 +54,17 @@ The service repeats validation at execution. A stale UI cannot authorize an acti
 by hiding its disabled state. Test identical input fixtures through native and WASM
 presentations for identical field errors/actions; rendering need not be identical.
 
+### TUI implementation
+
+Use Charm's [Bubble Tea](https://github.com/charmbracelet/bubbletea) for interaction,
+[Bubbles](https://github.com/charmbracelet/bubbles) for reusable controls, and
+[Lip Gloss](https://github.com/charmbracelet/lipgloss) for styling/layout. Pin compatible
+versions. Keep these dependencies in the terminal adapter, outside the shared core.
+Provide a consistent theme, clear focus/action hints, keyboard-complete navigation,
+responsive layouts for small/resized terminals, and scrollable diffs/logs. Live
+progress must preserve focus and scroll position; status must remain understandable
+without color. Use the same validation, reviews, and task data as the browser.
+
 ## NATS namespace and durability
 
 All interpolated IDs use a canonical subject-safe encoding; no raw hostname/ref.
@@ -130,19 +141,8 @@ schema and share category/count formatting through the presentation core.
 
 ## Persistent state
 
-Proposed local layout under dataDir:
-
-```text
-identity/          private node key, public identity, membership credentials
-receipts/          request fingerprints and admission/results
-jobs/              authoritative local execution records and log files
-repositories/<id>/ fetched remote base, materialized local changes, retained refs
-worktrees/<id>/    draft/rebase/preparation working copies
-credentials/       private app-managed values; never general replication
-observations/      target observations and destructive checkpoints
-deployments/       source/output/generation evidence
-broker/            embedded NATS/JetStream storage
-```
+Use the authoritative [storage layout](identity-and-trust.md#generated-and-preserved-state)
+for identity, credentials, execution records, Git data, and broker state.
 
 Write authoritative files atomically and durably before acknowledging the effect
 boundary they represent. Cluster projections are reconstructable views, not a
@@ -224,5 +224,5 @@ Physical boot/media claims require disposable-device evidence; VMs alone are ins
 | Apply | Local/default/remote-target rules; unpublished remote build; pinned source through rebase; manual/auto approval and restart; changed baseline; boot staging; activation interruption and target exclusion |
 | Rollback/health | Retained/missing outputs; desired/running drift; exact output verification and separately reported health; no automatic rollback |
 | Diff/progress | Added/removed/version/output/ambiguous changes; target baseline; changing/unknown totals, cache sources/rates, retries, simultaneous builds/downloads, reconnect; byte completion never implies deployment success |
-| Cache | Split-peer closures through one URL; bounded streaming/failure; signatures, pins/GC, cancellation, restricted pending access, no recursive serving |
+| Cache | Split-peer closures; bounded streaming/failure; signatures, pins/GC, cancellation, pending access; missing/invalid signer keeps serving offline and gateway responsive; config/runtime credential activation; cross-host build gating and key-loss recovery |
 | Git | Independent repositories; writer loss; missing base/artifact; concurrent edits and upload/CAS restart; conflict abort; pinned old commits; PR push versus upstream inclusion; reviewed deletion; no full base in JetStream |

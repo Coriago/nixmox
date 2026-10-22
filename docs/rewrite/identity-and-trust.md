@@ -290,9 +290,9 @@ rejoining requires explicit enrollment and new authorization.
 
 ## Generated and preserved state
 
-The installation preservation checklist has two scopes below. `D` means
-`services.nixmox.dataDir` (default `/var/lib/nixmox`); `R` means `/run/nixmox`.
-Values may originate in the installer before being preserved into the installed OS.
+This is the authoritative storage layout. `D` means `services.nixmox.dataDir`
+(default `/var/lib/nixmox`); `R` means `/run/nixmox`. Other specs reference these
+paths. Values may originate in the installer before preservation into the installed OS.
 
 ### Persistent node values
 
@@ -303,8 +303,9 @@ Values may originate in the installer before being preserved into the installed 
 | Wi-Fi credentials, when needed | Supplied during network setup | Network backend's connection profiles; preserve the profiles needed after installation |
 | NATS/TLS credentials | Keys generated locally; certificates issued automatically on admission and renewed | `D/pki/daemon/` and `D/pki/broker/`, each containing `key.pem` and `cert.pem`; preserve current credentials through installation |
 
-The SOPS age recipient is derived from the SSH public key; no additional persistent
-age private key is required.
+`D/identity.json` contains the public identity record; private machine keys live
+only under `D/pki/`. The SOPS age recipient is derived from the SSH public key;
+no additional persistent age private key is required.
 
 ### Persistent cluster values
 
@@ -320,14 +321,30 @@ Preserve each node's cluster association/trust alongside its node values during
 installation. Preserve CA issuer/control state when reinstalling the issuer.
 Leaving retires cluster credentials/grants but retains node ID and SSH/SOPS keys.
 
+### Execution and source state
+
+| Path | Contents |
+| --- | --- |
+| `D/receipts/` | Request fingerprints, admission, and results; survives identity reset |
+| `D/jobs/` | Authoritative local execution records and retained logs |
+| `D/repositories/<id>/` | Fetched base, materialized changes, and pinned Git refs |
+| `D/worktrees/<id>/` | Owner-local draft/rebase/preparation worktrees |
+| `D/observations/` | Target observations and destructive checkpoints |
+| `D/deployments/` | Source/output/generation evidence |
+| `D/broker/` | Embedded NATS/JetStream state; quarantine on cluster removal |
+
+Preserve receipts/checkpoints needed to reconcile installation; issuer/single-node
+handoff also preserves required control state. Source caches are rebuildable only
+while their remote bases and retained increments remain available.
+
 ### Other storage
 
 These are outside the base node-install checklist:
 
 - Optional application credentials: external `secretFile` or
   `D/credentials/<credential-id>` on selected holders; independently provisioned,
-  never copied wholesale to installers. Cache signing uses `D/cache/signing/`;
-  its lifecycle remains an implementation gate.
+  never copied wholesale to installers. Cache signing keys use this same store
+  and credential lifecycle; there is no separate cache key directory.
 - Regenerated runtime values: `R/nats/server.conf`, `R/boot-session.json`, and
   sops-nix outputs under `/run/secrets/`. Preserve their inputs, not these files.
 - Temporary input: `R/network/` and durable `D/secret-ingress/<reference>` staging;
@@ -408,12 +425,15 @@ SOPS update credential, identically in browser/TUI. CLI selection commands above
 submit `cache.credential.set` and `onboarding.sops.credential.set`, each with
 `credential_id`; these set `cache.signingCredentialRef` and
 `prepare.sops.credentialRef`. Nix-declared bindings remain read-only in the UI.
+Cache serving requires the selected signing credential on the serving node;
+a copy on another node does not enable local serving. See
+[cache readiness](cache-gateway.md#serving-readiness-and-cross-host-builds).
 The SOPS updater uses its configured age key to authorize recipient changes; host
 SSH-derived recipients remain separate. The bundled anchor updater and optional
 custom updater follow the [preparation contract](host-onboarding.md#optional-sops-contract).
 
 Import uses the [secret ingress](api-and-interfaces.md#secret-ingress); durable
-commands contain only a staging reference. Removal checks repository/updater dependencies.
+commands contain only a staging reference. Removal checks repository, cache, and updater bindings.
 
 | Command type | Payload |
 | --- | --- |
@@ -439,9 +459,10 @@ import alone creates none. Repository credential selection adds its binding.
 Successful Git read checks do not claim write permission; publication checks that
 capability through its provider/transport without changing unrelated branches.
 
-Any console can route a credential-dependent operation to an available full member
-that holds it. If none is available, return `CREDENTIAL_UNAVAILABLE`; local Git and
-builds remain usable if source/dependencies are present. For the first implementation,
+Any console can route movable credential-dependent work to an available full member
+that holds it; store serving signs locally. If none is available, return
+`CREDENTIAL_UNAVAILABLE`; local Git and builds remain usable if source/dependencies
+are present. For the first implementation,
 provision a second replica independently through a runtime-secret reference or UI
 import. This avoids making encrypted cross-node secret distribution a prerequisite.
 A replica is not a permanently designated leader.

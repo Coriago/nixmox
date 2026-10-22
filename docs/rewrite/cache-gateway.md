@@ -76,9 +76,35 @@ Nix verifies hashes and signatures; never disable signature checking to make thi
 work. Supply a `nix-cache-signing-key` credential through a Nix runtime-file
 reference or runtime credential import, like Git credentials, and select it with
 `cache.signingCredentialRef`. Distribute its public key through authenticated cluster
-configuration; private keys stay on their configured credential holders. Missing
-keys disable adding signatures, not serving outputs with existing trusted signatures.
+configuration; private keys stay on their configured credential holders.
 Never treat an unsigned candidate as trusted merely because it came from a member.
+
+## Serving readiness and cross-host builds
+
+`/store-cache/` is online only with `cache.serve`, eligible membership, and a valid,
+locally available selected signing credential. No key is generated automatically.
+Unset, missing, invalid, or unreadable credentials keep serving offline, even for
+outputs with existing signatures. Authorized requests return 503; other machine
+routes remain available. Validate the key and distribute its public trust before
+advertising serving readiness. Credential loss withdraws that readiness.
+
+With `cache.enable`, `/cache/` remains responsive regardless of local serving state.
+It can pull from ready peers; unavailable peers produce bounded failures. Receiving
+nodes need trusted public keys, not private signing credentials. Local builds and
+same-host Apply/media writing remain available subject to their normal prerequisites.
+
+| Operation | Cache prerequisite |
+| --- | --- |
+| Build on the consuming host | No local signing credential required |
+| Build for another deployment target or media writer | Builder serving ready; consumer gateway ready and trusts the signer |
+| Transfer an existing candidate | Exact output available from a ready trusted holder, or already verified locally |
+
+UI builder choices/actions requiring cross-host output transfer stay disabled with
+the missing prerequisite shown. Automatic selection excludes ineligible builders;
+an explicit choice fails with `BUILDER_UNAVAILABLE` and the cache reason before
+building. Recheck readiness at execution. If serving fails after admission, block
+or reconcile the transfer while retaining the pinned candidate; never activate an
+incomplete transfer or rebuild a different output silently.
 
 ## Configuration and observable behavior
 
@@ -87,26 +113,33 @@ Never treat an unsigned candidate as trusted merely because it came from a membe
   services.nixmox = {
     enable = true;
     http.port = 63170;
+    credentials.cache-signer = {
+      kind = "nix-cache-signing-key";
+      secretFile = "/run/credentials/nixmox/cache-key";
+    };
     cache = {
       enable = true;
       serve = true;
+      signingCredentialRef = "cache-signer";
       maxConcurrentTransfers = 4;
     };
   };
 }
 ```
 
-`cache.enable` enables the local gateway and module-managed substituter; `serve`
-independently permits eligible membership to expose local outputs. Defaults are
-true/true/4. Disabling serving does not disable pulls. Derive the local substituter
-from `http.port` (`http://127.0.0.1:63170/cache/` here), preserve external substituters,
-and install the configured signer's public key in Nix trust settings. Keep private signing material in runtime files,
-never the Nix store. Standalone agents must configure the same Nix integration.
+Defaults: gateway enabled, serving permitted, four transfers, no signing credential.
+Serving starts offline until configured; disabling serving does not disable pulls.
+Derive the local substituter from `http.port` (`http://127.0.0.1:63170/cache/` here),
+preserve external substituters, and install authorized peers' public signing keys
+in Nix trust settings. Private keys use the credential store or runtime files,
+never the Nix store. Standalone agents configure the same Nix integration.
 No additional public port, archive directory, disk budget, or replica count is needed.
 `maxConcurrentTransfers` independently bounds incoming exports and outgoing pulls;
 they must not share a semaphore that can deadlock a local pull through the gateway.
 
 ```sh
+nixmox credentials import cache-signer --kind nix-cache-signing-key --node alder --file /run/keys/cache-key
+nixmox cache credential set cache-signer
 nixmox cache status --json
 nixmox cache locate /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example
 nixmox apply cedar
@@ -122,7 +155,9 @@ bounded live lookup; it is not a durable claim of possession. Example status:
   "version": 12,
   "observed_at": "2026-10-21T14:00:00Z",
   "local_url": "http://127.0.0.1:63170/cache/",
+  "gateway_state": "ready",
   "serving": false,
+  "serving_reason": "SIGNING_CREDENTIAL_REQUIRED",
   "active_transfers": 1,
   "peers": [
     {"node_id": "n_alder", "state": "reachable"},
@@ -130,6 +165,12 @@ bounded live lookup; it is not a durable claim of possession. Example status:
   ]
 }
 ```
+
+`gateway_state` is `ready`, `disabled`, or `unavailable`; readiness does not guarantee
+that peers hold a requested output. `serving_reason` is null when serving; otherwise report `SERVING_DISABLED`,
+`MEMBERSHIP_INELIGIBLE`, `SIGNING_CREDENTIAL_REQUIRED`, or
+`SIGNING_CREDENTIAL_UNAVAILABLE` with details. Publish changes after configuration,
+runtime credential selection, and credential loss/recovery; re-evaluate disabled actions.
 
 Browser/TUI: Settings → Cache shows this node's gateway and peer health; Locate
 accepts a store path and lists verified holders or lookup failures. Apply, Install,
@@ -160,4 +201,6 @@ Serving errors are scoped to the request and reported through cache health/telem
 
 Real Nix imports must verify split-peer closures, bounded streaming, trusted
 signatures, mid-stream failure, cancellation/GC safety, and restricted pending access
-and accurate peer progress. Test serving-backend loss independently of console/tasks.
+and accurate peer progress. Test absent/invalid keys, config/runtime credential
+activation, and key loss: serving and cross-host build eligibility change while
+gateway pulls/local builds remain available. Receivers require no signing key.

@@ -95,6 +95,10 @@ builder is honored or fails clearly; if automatic selection finds none, report
 `BUILDER_UNAVAILABLE`. The preview concerns the exact built candidate that will
 be switched. Declining confirmation cancels before activation.
 
+Builders producing outputs for another host must meet
+[cache readiness](cache-gateway.md#serving-readiness-and-cross-host-builds).
+An offline store cache disables that builder's cross-host option, not same-host Apply.
+
 Browser/TUI: Hosts → cedar row or detail → Apply latest → options with
 **Auto-approve** toggle (off by default) → Start. The same panel shows build
 progress, package/configuration diff, and deployment outcome. With the toggle off,

@@ -95,6 +95,11 @@ arbitrary NixOS image. Explicitly supported cross-build recipes must declare the
 build and target systems separately. No compatible builder returns
 `BUILDER_UNAVAILABLE` with the missing system/capability.
 
+When builder and writer differ, apply the
+[cache readiness rules](cache-gateway.md#serving-readiness-and-cross-host-builds).
+Show unavailable remote builders disabled with the cache reason; same-host builds
+and verified local image writes do not require a signing key.
+
 For a remote build, the writer pulls the completed image's Nix store output through
 its local [cache gateway](cache-gateway.md) and verifies its digest before writing.
 Build, transfer, write, and readback have separate task

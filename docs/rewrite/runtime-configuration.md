@@ -113,8 +113,8 @@ credential-dependent operations. Git remote configuration never triggers a push.
 | capabilities.install, mediaWrite, power | bool / false | Permit respective effects on this node |
 | deployment.keepGenerations | positive integer / 5 | Minimum recent outputs retained, in addition to active pins |
 | cache.enable | bool / true | Local streaming gateway and Nix substituter integration |
-| cache.serve | bool / true | Permit eligible member to serve its local store; independent of pulls |
-| cache.signingCredentialRef | nullable string / null | Nix cache signing credential; null disables adding signatures, not serving already trusted outputs |
+| cache.serve | bool / true | Permit serving when membership and local signing credential are ready; independent of pulls |
+| cache.signingCredentialRef | nullable string / null | Selected `nix-cache-signing-key`; unset/unavailable keeps store serving offline while the enabled gateway remains responsive |
 | cache.maxConcurrentTransfers | positive integer / 4 | Independently bound outgoing gateway downloads and incoming store exports |
 | telemetry.otlp.enable | bool / false | Export OTel; local diagnostics still work |
 | telemetry.otlp.endpoint | nullable string / null | Required when export is enabled |
