@@ -35,6 +35,8 @@ Changing the binding does not change tasks or the reported running system.
 `POST /api/v1/commands` is the normal mutation entry point. The operation registry
 validates the typed payload. Reads use resource endpoints. No arbitrary shell
 execution endpoint is exposed.
+The [browser HTML adapter](#browser-html-and-live-updates) translates forms into
+these same command objects and invokes the same admission service.
 Secret import has a dedicated redacted ingress described below; it dispatches
 only a secret-free reference through this command path.
 Rebase uploads stage bytes through the draft resolution ingress; accepting those
@@ -251,6 +253,27 @@ Package diffs are persisted structured resources with paginated changes and a
 complete summary. Emit `resource.updated` for diff completion/invalidation and
 refresh its linked candidate review. Do not transport terminal-rendered diffs as
 the authoritative data model.
+
+### Browser HTML and live updates
+
+| Route | Contract |
+| --- | --- |
+| `GET /ui/...` | Registered console views: full HTML on navigation, fragments for htmx requests; same read services and scope as JSON API |
+| `POST /ui/commands` | Typed form adapter to the command service; HTML receipt/review/errors with the same command/task IDs and status meanings |
+| `GET /api/v1/events` | Shared JSON SSE stream for live browser updates; unchanged API event schema |
+
+Vary full-page/fragment responses by `HX-Request`. Keep `/api/v1` responses in their
+documented formats; never return HTML fragments to JSON clients. HTML forms retain
+command IDs across retries and submit the reviewed expected versions/acknowledgements.
+They cannot bypass admission, change scope, or execute effects directly. Secret
+fields still use the dedicated redacted ingress; no secret enters `/ui/commands`.
+
+Use one SSE connection per browser tab, selecting visible resource topics and
+explicitly watched logs. A small bridge coalesces versioned events into htmx fragment
+refreshes; discard stale events/responses and preserve active form values. Render
+log chunks as text using the existing offset/gap recovery contract. On reconnect,
+refresh snapshots and affected fragments; show stale/disconnected state meanwhile.
+HTML is a presentation of the shared data, not a second authoritative state model.
 
 ## CLI contract
 

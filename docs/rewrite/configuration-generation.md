@@ -181,7 +181,7 @@ noninteractive clients return field validation errors.
 | Operation | Command type / payload |
 | --- | --- |
 | Generate | `configuration.generate` / repository_id, values; optional template_id and mutually exclusive ref_id/base_commit |
-| Edit draft | `configuration.draft.edit` / draft_id, values (typed field patch); expected draft version |
+| Edit draft | `configuration.draft.edit` / draft_id; exactly one of values (typed field patch) or file: {path, content} (UTF-8 replacement); expected draft version |
 | Validate | `configuration.validate` / draft_id or pinned source |
 | Commit | `configuration.commit` / draft_id; expected draft and repository versions |
 
@@ -192,8 +192,10 @@ install, update secrets, or publish.
 Draft detail/diff return the reviewed `expected_versions` for draft and repository;
 commit copies that map and checks `--expected-version` against its draft entry.
 An intervening repository edit requires explicit re-render/review, never automatic
-substitution of its new version. Browser/TUI form edits use the same field-patch
-operation and invalidate validation. Rebase drafts share these read routes:
+substitution of its new version. Form and file edits use the same versioned draft
+operation and invalidate validation. File edits are limited to existing generated
+text outputs in that draft, with the normal safe-path and command-size limits.
+Rebase drafts share these read routes:
 `GET /api/v1/drafts/{id}/files` lists `{path, bytes, sha256}` and
 `GET /api/v1/drafts/{id}/files/content?path=<relative-path>` streams one file at the
 optional `version` (defaults to current). Reject unsafe paths; file-list pages and
@@ -203,10 +205,45 @@ cursor/limit bounds with the requested draft version pinned for the whole listin
 
 ## Browser and TUI
 
-Configurations → New → repository → template/form → file diff and validation → Commit locally.
+Configurations → New → repository → form + live file preview/editor → review/validate → Commit locally.
 Use the same template selection and validation as CLI. An incomplete saved configuration
 shows “Saved locally; needs hardware preparation” and becomes selectable on any console
 once replicated.
+
+### Live preview and quick edits
+
+Browser and TUI both show generated host files as form values change. Edit the
+selected file directly in the same screen for small additions, such as an import
+from an already configured nixos-hardware input or an extra service setting.
+Repository dependencies, flake inputs, and lock files remain repository-editing work.
+
+Use side-by-side form/editor panes when space permits; narrow screens use tabs
+sharing the same live buffer. The TUI has an embedded multiline editor: no external
+editor or separate window is required. Preserve cursor, focus, and scroll position
+through preview updates. Show the current diff and unsaved/saved/validation state.
+
+| Change | Behavior |
+| --- | --- |
+| Form value | Immediately rerender unmodified files from the pinned template |
+| File text | Update the buffer/diff live; mark manually edited; do not reverse-map Nix into form fields |
+| Form change affecting a manually edited file | Keep edits; show regenerated text for explicit merge/replacement review |
+| Save draft | Persist form values, generated baseline, and edited contents under the expected draft version |
+| Commit | Save outstanding edits, validate the exact resulting draft, then commit the reviewed version |
+
+Render locally with the shared Go renderer (browser WASM/native TUI); discard
+outdated preview results. The browser editor is an isolated component within the
+htmx page; surrounding SSE/HTML refreshes must not replace its unsaved buffer.
+Preview is not Nix evaluation or a system build. Invalid
+intermediate text may be saved as a draft; validation blocks committing syntax errors.
+Version conflicts preserve the local buffer for review rather than overwriting it.
+CLI uses the same file-edit operation:
+
+```sh
+nixmox configurations draft edit draft_01 --path hosts/cedar/configuration.nix \
+  --file ./configuration.nix --expected-version 2 --wait
+```
+
+`--path` and `--file` must appear together and cannot be combined with `--set`.
 
 ## Validation and failures
 

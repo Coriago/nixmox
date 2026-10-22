@@ -23,17 +23,21 @@ carry Git, SSH bootstrap, and Nix output bytes.
 | Gateway | API, snapshot/event streams, interface assets, cache routing | Authoritative state in browser sessions or package archive storage |
 | Presentation core | Forms, action availability, state formatting | Secrets or authoritative authorization |
 
-Proposed implementation language: Go for daemon/CLI/TUI and a pure Go presentation
-package compiled to browser WASM. The native TUI links the same package. Browser
-DOM and terminal rendering are adapters. Confirm the compiler/runtime footprint
-with a vertical slice before adopting framework dependencies.
+Use Go for the daemon/CLI/TUI and shared presentation/template logic.
 
-```text
-Browser → WASM presentation ─┐
-TUI → native presentation ───┼→ typed API → durable command → task → adapter
-CLI → typed arguments ───────┘       ↑                         │
-                             snapshots/events ← NATS ← persisted state/logs
-```
+| Interface | Rendering and updates |
+| --- | --- |
+| Browser: ordinary views/forms | Go-rendered HTML + [htmx](https://htmx.org/docs/); SSE drives live refreshes |
+| Browser: host configuration preview/editor | Locally loaded WASM renderer with a browser editor/DOM adapter; same draft API |
+| TUI | Native shared Go logic + Charm, including live configuration preview/editing |
+| CLI | Typed arguments and JSON API; shared events for watching tasks |
+
+Ordinary views include inventory, discovery, repositories, tasks, media, settings,
+and reviews. The server and TUI use the shared presentation core natively; compile
+only the configuration preview logic to browser WASM. All mutations use the same
+command service and task engine. See [browser transport](api-and-interfaces.md#browser-html-and-live-updates).
+Bundle pinned HTML/CSS/JavaScript/WASM assets with the daemon; no CDN or internet
+connection is required to open the console. Load WASM only for the editor.
 
 Example presentation boundary, expressed as Go-like interfaces:
 
@@ -51,8 +55,18 @@ type Presentation interface {
 ```
 
 The service repeats validation at execution. A stale UI cannot authorize an action
-by hiding its disabled state. Test identical input fixtures through native and WASM
-presentations for identical field errors/actions; rendering need not be identical.
+by hiding its disabled state. Test shared field errors/actions across server/TUI,
+and identical template outputs/field validation across native/WASM preview runtimes.
+
+### Browser implementation
+
+Use htmx for navigation, forms, and HTML fragment replacement. A small JavaScript
+bridge consumes the shared JSON SSE stream, triggers affected fragment refreshes,
+and renders log bytes as text. Status and progress use server-rendered fragments;
+no browser-wide WASM application or parallel HTML event stream is required.
+Keep the preview/editor in a stable component outside htmx swap targets (or preserve
+its mount by ID). Surrounding updates must retain unsaved edits, cursor, and focus;
+navigation warns before discarding edits and disposes obsolete subscriptions.
 
 ### TUI implementation
 
@@ -64,6 +78,9 @@ Provide a consistent theme, clear focus/action hints, keyboard-complete navigati
 responsive layouts for small/resized terminals, and scrollable diffs/logs. Live
 progress must preserve focus and scroll position; status must remain understandable
 without color. Use the same validation, reviews, and task data as the browser.
+Host configuration forms include the [live file preview/editor](configuration-generation.md#live-preview-and-quick-edits)
+inside the TUI. Use an embedded multiline control with native shared rendering;
+form edits refresh previews and direct file edits refresh diffs without leaving the screen.
 
 ## NATS namespace and durability
 
@@ -203,13 +220,14 @@ filename, digest, and length. Retain for 24 hours after completion; expiry retur
 ## Acceptance matrix
 
 Run shared contract fixtures across CLI/TUI/browser, plus three-node E2E for
-distributed behavior. Native/WASM checks must agree on validation and actions.
+distributed behavior. Check server/TUI presentation parity and native/WASM preview parity.
 Physical boot/media claims require disposable-device evidence; VMs alone are insufficient.
 
 | Area | Required checks |
 | --- | --- |
-| Configuration | Generate without host/write credentials; template selection/pinning; safe serialization/paths; incomplete commits; hardware with/without filesystems; generated/bound multi-disk layouts; preserve manual edits |
+| Configuration | Generate without host/write credentials; template selection/pinning; safe serialization/paths; incomplete commits; hardware with/without filesystems; multi-disk layouts; browser/TUI live preview and embedded edits; preserve manual edits/buffers through regeneration, resize, and version conflicts; validate exact edited files |
 | Interface parity | Same operations, defaults, validation, reviews, errors, and results; explicit unknown/stale state; every verb maps to a registered operation/read |
+| Browser | htmx pages/fragments and form admission; SSE reconnect/version ordering/log gaps; no network asset dependencies; editor survives surrounding swaps and protects unsaved edits |
 | Reviews | Start without advance erase approval; reject stale bindings/missing acknowledgements; unrelated health/progress does not invalidate approval; duplicate resume cannot repeat effects |
 | Reads | Pagination/filter bounds, revision-pinned catalogs/files, log gaps/per-build logs, download expiry and unavailable owners |
 | Admission/recovery | Interrupt every admission boundary; retry resolves the same task; restart queued/running/cancelling work; uncertain effects reconcile without destructive replay |
