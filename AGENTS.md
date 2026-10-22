@@ -7,12 +7,14 @@ Do not write readme.md files until the end once the application reaches maturity
 Create a flake and use its devshell for any tooling you need.
 
 # FOLLOW THIS ORDER
-- read all docs and understand them.
+1. read all docs and understand them.
+
 2. create a full scaffold of the code base. Only Implementation, no tests.
   - THINK DEEP HERE. THIS NEEDS INTENSE FORWARD PLANNING
   - plan directory structure and files. Keep this focused, do not sprawl.
   - stub out functions and core interfaces. Leave focused comments, full implementation is not necessary.
   - create full data models, try and seperate these into seperate files for easy reference
+
 3. core engine implementations, not full application logic
   - This should focus on mastering the core technologies and how they will be reused throughout nixmox
   - Make a strong foundation here, we want to use the best of these libraries and abstraction. This can heavily reduce the amount we must implement.
@@ -52,7 +54,21 @@ Create a flake and use its devshell for any tooling you need.
     - handle git interactions for cloning, pulling, pushing, publishing etc
     - handle local git store logic
 
-Acceptance validation should be automated as much as possible with virtual machines and integration tests.
+4. Implement the rest of nixmox
+  - implement all other features based on the spec, use the engines
+  - do NOT make any full e2e tests yet that use vms or other heavy testing frameworks, only go tests.
+  - expand existing engines if you find a appropriate logic is reused.
+
+5. Create a comprehensive e2e test suite
+  - use virtual machines configured via nix to do comprehensive tests.
+  - use the real git repo, real credentials, make a sandbox directory in the repo that acts as a gitops repo for testing
+  - make a happy path that you can test large parts of functionality incrementally.
+  - These are not isolated individual tests where you setup and tear down a vm for each test. Test as much as you can while the vm is up and in known states. 
+  - scale the cluster to multiple hosts
+  - after happy path testing is complete (non destructive flow) start failure testing
+  - stress test cluster, make nodes go offline, reconnect etc
+
+6. Test features that can only be truly validated with real hosts
 
 ## Disposable test machine
 validate real functions that can't be virtualized on the test machine. 
