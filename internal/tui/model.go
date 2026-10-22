@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -23,6 +24,7 @@ type snapshot struct {
 	err        error
 	cluster    domain.ClusterStatus
 	clusterErr error
+	requests   []domain.JoinRequest
 }
 type submitted struct {
 	receipt domain.Receipt
@@ -30,25 +32,30 @@ type submitted struct {
 }
 type event struct{ err error }
 type Model struct {
-	client       *client.Client
-	ctx          context.Context
-	events       <-chan error
-	viewport     viewport.Model
-	network      domain.NetworkStatus
-	tasks        []domain.Task
-	notice       string
-	pending      *domain.Command
-	submitting   bool
-	width        int
-	taskFocus    bool
-	selected     int
-	fetching     bool
-	refreshAgain bool
-	cluster      domain.ClusterStatus
-	clusterError string
-	clusterFocus bool
-	creating     bool
-	nameInput    textinput.Model
+	client          *client.Client
+	ctx             context.Context
+	events          <-chan error
+	viewport        viewport.Model
+	network         domain.NetworkStatus
+	tasks           []domain.Task
+	notice          string
+	pending         *domain.Command
+	submitting      bool
+	width           int
+	taskFocus       bool
+	selected        int
+	fetching        bool
+	refreshAgain    bool
+	cluster         domain.ClusterStatus
+	clusterError    string
+	clusterFocus    bool
+	creating        bool
+	nameInput       textinput.Model
+	addressInput    textinput.Model
+	joining         bool
+	requestSelected int
+	requests        []domain.JoinRequest
+	review          *domain.JoinRequest
 }
 
 func New(ctx context.Context, c *client.Client) Model {
@@ -56,7 +63,11 @@ func New(ctx context.Context, c *client.Client) Model {
 	name.Placeholder = "Cluster name"
 	name.CharLimit = 64
 	name.Width = 40
-	return Model{client: c, ctx: ctx, events: c.Events(ctx), viewport: viewport.New(76, 18), width: 80, notice: "Connecting…", fetching: true, nameInput: name}
+	address := textinput.New()
+	address.Placeholder = "Machine address:63175"
+	address.CharLimit = 270
+	address.Width = 40
+	return Model{client: c, ctx: ctx, events: c.Events(ctx), viewport: viewport.New(76, 18), width: 80, notice: "Connecting…", fetching: true, nameInput: name, addressInput: address}
 }
 func (m Model) Init() tea.Cmd { return tea.Batch(m.fetch(), m.waitEvent()) }
 func (m Model) refresh() (Model, tea.Cmd) {
@@ -75,7 +86,15 @@ func (m Model) fetch() tea.Cmd {
 		}
 		p, err := m.client.Tasks(m.ctx, "?limit=100")
 		cluster, clusterErr := m.client.Cluster(m.ctx)
-		return snapshot{network: n, tasks: p.Items, err: err, cluster: cluster, clusterErr: clusterErr}
+		var requests []domain.JoinRequest
+		if clusterErr == nil && cluster.ClusterID != nil && cluster.BrokerRole != "leaf" {
+			page, requestErr := m.client.JoinRequests(m.ctx, url.Values{"state": {"awaiting_approval"}, "limit": {"100"}})
+			requests = page.Items
+			if requestErr != nil {
+				clusterErr = requestErr
+			}
+		}
+		return snapshot{network: n, tasks: p.Items, err: err, cluster: cluster, clusterErr: clusterErr, requests: requests}
 	}
 }
 func (m Model) waitEvent() tea.Cmd {
@@ -98,6 +117,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			m.creating = false
+			m.joining = false
+			m.addressInput.Blur()
 			m.nameInput.Blur()
 			return m, nil
 		case "enter":
@@ -106,12 +127,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			payload, _ := json.Marshal(map[string]string{"name": m.nameInput.Value()})
+			kind := "cluster.create"
+			if m.joining {
+				kind = "cluster.join"
+				payload, _ = json.Marshal(map[string]string{"address": m.addressInput.Value(), "expected_cluster_name": m.nameInput.Value()})
+			}
 			m.creating = false
+			m.joining = false
+			m.addressInput.Blur()
 			m.nameInput.Blur()
-			return m.submit(domain.Command{ID: domain.NewID("cmd_"), Type: "cluster.create", TargetID: m.network.NodeID, Payload: payload, ExpectedVersions: map[string]int64{}})
+			return m.submit(domain.Command{ID: domain.NewID("cmd_"), Type: kind, TargetID: m.network.NodeID, Payload: payload, ExpectedVersions: map[string]int64{}})
+		case "tab", "shift+tab":
+			if m.joining {
+				if m.addressInput.Focused() {
+					m.addressInput.Blur()
+					return m, m.nameInput.Focus()
+				}
+				m.nameInput.Blur()
+				return m, m.addressInput.Focus()
+			}
+			return m, nil
 		default:
 			var cmd tea.Cmd
-			m.nameInput, cmd = m.nameInput.Update(msg)
+			if m.joining && m.addressInput.Focused() {
+				m.addressInput, cmd = m.addressInput.Update(msg)
+			} else {
+				m.nameInput, cmd = m.nameInput.Update(msg)
+			}
 			return m, cmd
 		}
 	}
@@ -139,6 +181,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.network = v.network
 		m.cluster = v.cluster
+		requestID := ""
+		if m.requestSelected < len(m.requests) {
+			requestID = m.requests[m.requestSelected].ID
+		}
+		m.requests = v.requests
+		m.requestSelected = 0
+		for i, r := range m.requests {
+			if r.ID == requestID {
+				m.requestSelected = i
+			}
+		}
 		m.clusterError = ""
 		if v.clusterErr != nil {
 			m.clusterError = v.clusterErr.Error()
@@ -179,7 +232,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tea.KeyMsg:
 		switch v.String() {
-		case "q", "ctrl+c", "esc":
+		case "esc":
+			if m.review != nil {
+				m.review = nil
+				m.content()
+				return m, nil
+			}
+			return m, tea.Quit
+		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "?":
 			m.notice = "Tab: Network/Tasks · g: Cluster · Enter/r: check · ↑/↓: select task · c: cancel/create · r: retry · p: retry uncertain submission · PgUp/PgDn: scroll · q: close"
@@ -197,6 +257,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoTop()
 			return m, nil
 		case "up", "down":
+			if m.clusterFocus && m.review == nil && len(m.requests) > 0 {
+				if v.String() == "up" {
+					m.requestSelected = max(0, m.requestSelected-1)
+				} else {
+					m.requestSelected = min(len(m.requests)-1, m.requestSelected+1)
+				}
+				m.content()
+				return m, nil
+			}
 			if m.taskFocus && len(m.tasks) > 0 {
 				if v.String() == "up" {
 					m.selected = max(0, m.selected-1)
@@ -212,7 +281,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.submit(*m.pending)
 			}
 			return m, nil
-		case "enter", "r", "c":
+		case "enter", "r", "c", "j", "a", "x":
 			if m.submitting || m.network.NodeID == "" {
 				return m, nil
 			}
@@ -221,7 +290,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.clusterFocus {
-				if v.String() != "c" {
+				if m.review != nil && (v.String() == "a" || v.String() == "x") {
+					if m.clusterError != "" || m.cluster.IssuerNodeID == nil || m.review.State != "awaiting_approval" {
+						m.notice = "A current cluster and awaiting request are required."
+						return m, nil
+					}
+					kind := "cluster.request.approve"
+					if v.String() == "x" {
+						kind = "cluster.request.reject"
+					}
+					payload, _ := json.Marshal(map[string]string{"request_id": m.review.ID})
+					return m.submit(domain.Command{ID: domain.NewID("cmd_"), Type: kind, TargetID: *m.cluster.IssuerNodeID, ExpectedVersions: map[string]int64{"join_request:" + m.review.ID: m.review.Version}, Payload: payload})
+				}
+				if v.String() == "enter" && len(m.requests) > 0 {
+					r := m.requests[m.requestSelected]
+					m.review = &r
+					m.content()
+					m.viewport.GotoTop()
+					return m, nil
+				}
+				if v.String() != "c" && v.String() != "j" {
 					return m, nil
 				}
 				if m.cluster.Membership != "unjoined" || m.clusterError != "" {
@@ -229,7 +317,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.creating = true
+				m.joining = v.String() == "j"
+				if m.joining {
+					m.nameInput.Blur()
+					return m, m.addressInput.Focus()
+				}
 				return m, m.nameInput.Focus()
+			}
+			if v.String() == "a" || v.String() == "x" || v.String() == "j" {
+				return m, nil
 			}
 			cmd := domain.Command{ID: domain.NewID("cmd_"), Type: "network.check", TargetID: m.network.NodeID, ExpectedVersions: map[string]int64{}, Payload: json.RawMessage(`{}`)}
 			if m.taskFocus {
@@ -280,9 +376,22 @@ func (m *Model) content() {
 			lines = append(lines, "ID: "+*m.cluster.ClusterID, "Broker: "+m.cluster.BrokerRole, fmt.Sprintf("Quorum available: %t", m.cluster.Quorum), fmt.Sprintf("Full members: %d", m.cluster.FullMembers))
 		}
 		if m.cluster.Membership == "unjoined" && m.clusterError == "" {
-			lines = append(lines, "c: Create cluster")
+			lines = append(lines, "c: Create cluster · j: Join cluster")
 		} else {
 			lines = append(lines, "Create cluster disabled: requires an unjoined node")
+		}
+		if m.review != nil {
+			r := m.review
+			lines = append(lines, "", "Review join request", r.Name, "Node: "+r.NodeID, "Key: "+r.KeyFingerprint, fmt.Sprintf("Reviewed version: %d · %s", r.Version, r.State), "Expires: "+r.ExpiresAt.String(), "a: Approve pending membership · x: Reject · Esc: Back")
+		} else if len(m.requests) > 0 {
+			lines = append(lines, "", "Join requests · ↑/↓: Select · Enter: Review")
+			for i, r := range m.requests {
+				marker := "  "
+				if i == m.requestSelected {
+					marker = "> "
+				}
+				lines = append(lines, marker+r.Name+" · "+r.NodeID)
+			}
 		}
 		lines = append(lines, "", "Recent tasks")
 	}
@@ -318,11 +427,14 @@ func (m Model) View() string {
 		hint = "Tasks · ↑/↓: select · c: Cancel · r: Retry"
 	}
 	if m.clusterFocus {
-		hint = "Cluster · c: Create cluster"
+		hint = "Cluster · c: Create · j: Join · Enter: Review request"
 	}
 	input := ""
 	if m.creating {
 		input = "\nCreate cluster: " + m.nameInput.View() + "\nEnter: submit · Esc: cancel"
+		if m.joining {
+			input = "\nJoin cluster\nAddress: " + m.addressInput.View() + "\nExpected name: " + m.nameInput.View() + "\nTab: switch field · Enter: request join · Esc: cancel"
+		}
 	}
 	return title + "\n\n" + m.viewport.View() + input + "\n\n" + lipgloss.NewStyle().Width(m.width).Render(m.notice) + "\n" + hint + " · Tab: switch · g: Cluster · ?: help · q: close\n"
 }

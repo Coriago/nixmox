@@ -31,6 +31,8 @@ type Server struct {
 }
 type ClusterReader interface {
 	Status() (domain.ClusterStatus, error)
+	Requests(string, string, string) (domain.Page[domain.JoinRequest], error)
+	JoinRequest(string) (domain.JoinRequest, error)
 }
 
 func New(s *service.Service, clusters ...ClusterReader) http.Handler {
@@ -47,6 +49,16 @@ func New(s *service.Service, clusters ...ClusterReader) http.Handler {
 		v, err := a.cluster.Status()
 		respond(w, v, err)
 	})
+	mux.HandleFunc("GET /api/v1/cluster/requests", a.clusterRequests)
+	mux.HandleFunc("GET /api/v1/cluster/requests/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if a.cluster == nil {
+			writeError(w, domain.Err("UNAVAILABLE", "Cluster is unavailable.", 503), "")
+			return
+		}
+		v, err := a.cluster.JoinRequest(r.PathValue("id"))
+		respond(w, v, err)
+	})
+	mux.HandleFunc("GET /ui/cluster/requests/{id}", a.joinRequestPage)
 	mux.HandleFunc("GET /api/v1/identity", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, s.Identity()) })
 	mux.HandleFunc("GET /api/v1/network/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, s.Network()) })
 	mux.HandleFunc("POST /api/v1/commands", a.command)
@@ -214,7 +226,7 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 	selected := map[string]bool{}
 	for _, topic := range strings.Split(topics, ",") {
 		switch topic {
-		case "identity", "network.status", "tasks":
+		case "identity", "network.status", "tasks", "cluster.status", "cluster.requests":
 			selected[topic] = true
 		default:
 			writeError(w, domain.Err("INVALID_QUERY", "Unsupported event topic.", 400), "")
@@ -261,6 +273,22 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 			p, _ := a.service.ListTasks(service.TaskFilter{}, "100", "")
 			v["tasks"] = map[string]any{"items": p.Items, "next_cursor": p.NextCursor, "href": "/api/v1/tasks"}
 		}
+		if a.cluster != nil && selected["cluster.status"] {
+			status, err := a.cluster.Status()
+			if err == nil {
+				v["cluster.status"] = status
+			} else {
+				v["cluster.status"] = map[string]string{"availability": "unavailable"}
+			}
+		}
+		if a.cluster != nil && selected["cluster.requests"] {
+			requests, err := a.cluster.Requests("", "100", "")
+			if err == nil {
+				v["cluster.requests"] = requests
+			} else {
+				v["cluster.requests"] = map[string]string{"availability": "unavailable"}
+			}
+		}
 		return v
 	}
 	if send("snapshot", snapshot()) != nil {
@@ -303,16 +331,20 @@ func (a *Server) events(w http.ResponseWriter, r *http.Request) {
 }
 
 type view struct {
-	CommandID   string
-	TargetID    string
-	Network     domain.NetworkStatus
-	Tasks       []domain.Task
-	Receipt     *domain.Receipt
-	Error       string
-	Task        *domain.Task
-	Controls    []controlView
-	Cluster     *domain.ClusterStatus
-	ClusterPage bool
+	CommandID       string
+	RejectCommandID string
+	JoinCommandID   string
+	TargetID        string
+	Network         domain.NetworkStatus
+	Tasks           []domain.Task
+	Receipt         *domain.Receipt
+	Error           string
+	Task            *domain.Task
+	Controls        []controlView
+	Cluster         *domain.ClusterStatus
+	ClusterPage     bool
+	JoinRequests    []domain.JoinRequest
+	JoinRequest     *domain.JoinRequest
 }
 
 type controlView struct {
@@ -346,6 +378,7 @@ func (a *Server) networkFragment(w http.ResponseWriter, r *http.Request) {
 func (a *Server) clusterView() view {
 	v := a.view()
 	v.ClusterPage = true
+	v.JoinCommandID = domain.NewID("cmd_")
 	if a.cluster == nil {
 		v.Error = "Cluster status is unavailable."
 		return v
@@ -356,7 +389,48 @@ func (a *Server) clusterView() view {
 		return v
 	}
 	v.Cluster = &c
+	if c.ClusterID != nil && c.BrokerRole != "leaf" {
+		requests, err := a.cluster.Requests("awaiting_approval", "100", "")
+		if err == nil {
+			v.JoinRequests = requests.Items
+		} else {
+			v.Error = err.Error()
+		}
+	}
 	return v
+}
+func (a *Server) clusterRequests(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	for key, values := range q {
+		if len(values) != 1 || (key != "state" && key != "limit" && key != "cursor") {
+			writeError(w, domain.Err("INVALID_QUERY", "Invalid request query.", 400), "")
+			return
+		}
+	}
+	if a.cluster == nil {
+		writeError(w, domain.Err("UNAVAILABLE", "Cluster is unavailable.", 503), "")
+		return
+	}
+	page, err := a.cluster.Requests(q.Get("state"), q.Get("limit"), q.Get("cursor"))
+	respond(w, page, err)
+}
+func (a *Server) joinRequestPage(w http.ResponseWriter, r *http.Request) {
+	if a.cluster == nil {
+		writeError(w, domain.Err("UNAVAILABLE", "Cluster is unavailable.", 503), "")
+		return
+	}
+	request, err := a.cluster.JoinRequest(r.PathValue("id"))
+	if err != nil {
+		writeError(w, err, "")
+		return
+	}
+	v := a.clusterView()
+	v.JoinRequest = &request
+	v.RejectCommandID = domain.NewID("cmd_")
+	if v.Cluster != nil && v.Cluster.IssuerNodeID != nil {
+		v.TargetID = *v.Cluster.IssuerNodeID
+	}
+	a.render(w, r, "network.html", 200, v)
 }
 func (a *Server) clusterPage(w http.ResponseWriter, r *http.Request) {
 	a.render(w, r, "network.html", 200, a.clusterView())
@@ -402,7 +476,7 @@ func (a *Server) formCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range r.PostForm {
-		if (k != "id" && k != "target_id" && k != "type" && k != "task_id" && k != "expected_version" && k != "name") || len(v) != 1 {
+		if (k != "id" && k != "target_id" && k != "type" && k != "task_id" && k != "expected_version" && k != "name" && k != "request_id" && k != "address" && k != "expected_cluster_name") || len(v) != 1 {
 			a.render(w, r, "receipt", 422, view{Error: "Invalid command fields."})
 			return
 		}
@@ -414,7 +488,25 @@ func (a *Server) formCommand(w http.ResponseWriter, r *http.Request) {
 		a.render(w, r, "receipt", 422, view{Error: "Unexpected cluster fields."})
 		return
 	}
-	if c.Type == "task.cancel" || c.Type == "task.retry" {
+	if c.Type == "cluster.join" {
+		c.Payload, _ = json.Marshal(map[string]string{"address": r.PostForm.Get("address"), "expected_cluster_name": r.PostForm.Get("expected_cluster_name")})
+	} else if r.PostForm.Has("address") || r.PostForm.Has("expected_cluster_name") {
+		a.render(w, r, "receipt", 422, view{Error: "Unexpected enrollment fields."})
+		return
+	}
+	if c.Type == "cluster.request.approve" || c.Type == "cluster.request.reject" {
+		version, err := strconv.ParseInt(r.PostForm.Get("expected_version"), 10, 64)
+		if err != nil || version <= 0 || r.PostForm.Has("task_id") {
+			a.render(w, r, "receipt", 422, view{Error: "A reviewed request version is required."})
+			return
+		}
+		id := r.PostForm.Get("request_id")
+		c.Payload, _ = json.Marshal(map[string]string{"request_id": id})
+		c.ExpectedVersions = map[string]int64{"join_request:" + id: version}
+	} else if r.PostForm.Has("request_id") {
+		a.render(w, r, "receipt", 422, view{Error: "Unexpected request fields."})
+		return
+	} else if c.Type == "task.cancel" || c.Type == "task.retry" {
 		version, err := strconv.ParseInt(r.PostForm.Get("expected_version"), 10, 64)
 		if err != nil || version <= 0 {
 			a.render(w, r, "receipt", 422, view{Error: "A positive reviewed task version is required."})

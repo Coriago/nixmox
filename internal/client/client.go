@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"nixmox/internal/domain"
-	"nixmox/internal/service"
 )
 
 type Client struct {
@@ -92,6 +91,19 @@ func (c *Client) Cluster(ctx context.Context) (domain.ClusterStatus, error) {
 	err := c.Read(ctx, "/api/v1/cluster/status", &v)
 	return v, err
 }
+func (c *Client) JoinRequests(ctx context.Context, query url.Values) (domain.Page[domain.JoinRequest], error) {
+	var v domain.Page[domain.JoinRequest]
+	err := c.Read(ctx, "/api/v1/cluster/requests?"+query.Encode(), &v)
+	return v, err
+}
+func (c *Client) JoinRequest(ctx context.Context, id string) (domain.JoinRequest, error) {
+	var v domain.JoinRequest
+	if !domain.SafeID.MatchString(id) {
+		return v, domain.Err("INVALID_INPUT", "Invalid request ID.", 422)
+	}
+	err := c.Read(ctx, "/api/v1/cluster/requests/"+id, &v)
+	return v, err
+}
 func (c *Client) Task(ctx context.Context, id string) (domain.Task, error) {
 	var v domain.Task
 	if !domain.SafeID.MatchString(id) {
@@ -100,8 +112,8 @@ func (c *Client) Task(ctx context.Context, id string) (domain.Task, error) {
 	err := c.Read(ctx, "/api/v1/tasks/"+id, &v)
 	return v, err
 }
-func (c *Client) Tasks(ctx context.Context, query string) (service.TaskPage, error) {
-	var v service.TaskPage
+func (c *Client) Tasks(ctx context.Context, query string) (domain.Page[domain.Task], error) {
+	var v domain.Page[domain.Task]
 	err := c.Read(ctx, "/api/v1/tasks"+query, &v)
 	return v, err
 }

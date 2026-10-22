@@ -49,9 +49,12 @@ func (m *Manager) Operations() []service.Operation {
 		if err == nil {
 			err = e.RefreshIdentity()
 		}
+		if err == nil {
+			err = m.activateDispatcher()
+		}
 		return result, err
 	}
-	return []service.Operation{{Kind: "cluster.create", Scope: "node_local", Timeout: 30 * time.Second, SafeRetry: true, Validate: func(c domain.Command) error {
+	return append([]service.Operation{{Kind: "cluster.create", Scope: "node_local", Timeout: 30 * time.Second, SafeRetry: true, Validate: func(c domain.Command) error {
 		var p createPayload
 		if len(c.ExpectedVersions) != 0 || domain.StrictJSON(c.Payload, &p) != nil || !clusterName.MatchString(p.Name) {
 			return domain.Err("INVALID_PAYLOAD", "A cluster name is required; expected versions are not accepted.", 422)
@@ -68,7 +71,7 @@ func (m *Manager) Operations() []service.Operation {
 		return json.Marshal(resolvedCreate{Name: p.Name, ClusterID: domain.NewID("c_")})
 	}, Exclusions: func(c domain.Command, r json.RawMessage) ([]string, error) {
 		return []string{"identity:" + c.TargetID}, nil
-	}, Run: run, Reconcile: run}}
+	}, Run: run, Reconcile: run}, m.joinOperation()}, m.enrollmentOperations()...)
 }
 func (m *Manager) create(ctx context.Context, commandID string, pinned resolvedCreate) (any, error) {
 	m.mu.Lock()
@@ -142,6 +145,14 @@ func (m *Manager) create(ctx context.Context, commandID string, pinned resolvedC
 	m.keys = keys
 	m.membership = &membership
 	if m.broker != nil {
+		if m.querySubscription != nil {
+			m.querySubscription.Unsubscribe()
+			m.querySubscription = nil
+		}
+		if m.dispatcher != nil {
+			m.dispatcher.Close()
+			m.dispatcher = nil
+		}
 		m.broker.Close()
 		m.broker = nil
 		m.stores = nil
@@ -157,6 +168,15 @@ func (m *Manager) create(ctx context.Context, commandID string, pinned resolvedC
 	genesis.Creator.BrokerKey = pki.Fingerprint(keys.Broker.Leaf.PublicKey)
 	if err = persistExact(m.stores.State, "cluster", genesis); err != nil {
 		return nil, err
+	}
+	for role, key := range map[string]string{"daemon": genesis.Creator.DaemonKey, "broker": genesis.Creator.BrokerKey} {
+		claim := struct {
+			NodeID string `json:"node_id"`
+			Role   string `json:"role"`
+		}{m.identity.NodeID, role}
+		if err = persistExact(m.stores.State, "key."+key, claim); err != nil {
+			return nil, err
+		}
 	}
 	identity := m.identity
 	if identity.ClusterID == nil {

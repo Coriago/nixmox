@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
@@ -40,14 +41,18 @@ type Broker struct {
 	Server *server.Server
 	Client *nats.Conn
 	config Config
+	auth   *authentication
 }
 
 type authentication struct {
+	mu      sync.RWMutex
 	config  Config
 	account *server.Account
 }
 
 func (a *authentication) Check(c server.ClientAuthentication) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	s := c.GetTLSConnectionState()
 	if s == nil || len(s.VerifiedChains) == 0 || len(s.PeerCertificates) == 0 {
 		return false
@@ -113,11 +118,20 @@ func Start(c Config) (*Broker, error) {
 	if roots == nil {
 		roots = pki.Pool(c.Keys.Broker.Leaf)
 	}
-	routeAllowed := func(cert *x509.Certificate) bool { return c.FullBrokers[pki.Fingerprint(cert.PublicKey)] }
+	routeAllowed := func(cert *x509.Certificate) bool {
+		auth.mu.RLock()
+		defer auth.mu.RUnlock()
+		return auth.config.FullBrokers[pki.Fingerprint(cert.PublicKey)]
+	}
 	routeTLS := pki.MutualServer(c.Keys.Broker, roots, routeAllowed)
 	routeTLS.RootCAs = roots
 	routeTLS.ServerName = "broker.nixmox"
-	leafTLS := pki.MutualServer(c.Keys.Broker, roots, func(cert *x509.Certificate) bool { _, ok := c.Leaves[pki.Fingerprint(cert.PublicKey)]; return ok })
+	leafTLS := pki.MutualServer(c.Keys.Broker, roots, func(cert *x509.Certificate) bool {
+		auth.mu.RLock()
+		defer auth.mu.RUnlock()
+		_, ok := auth.config.Leaves[pki.Fingerprint(cert.PublicKey)]
+		return ok
+	})
 	cluster := c.ClusterID
 	if cluster == "" || !c.ControlPlane {
 		cluster = "unjoined_" + c.NodeID
@@ -151,7 +165,7 @@ func Start(c Config) (*Broker, error) {
 		return nil, errors.New("broker account unavailable")
 	}
 	auth.account = account
-	b := &Broker{Server: srv, config: c}
+	b := &Broker{Server: srv, config: c, auth: auth}
 	go srv.Start()
 	if !srv.ReadyForConnections(5 * time.Second) {
 		srv.Shutdown()

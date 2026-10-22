@@ -1,36 +1,17 @@
 package service
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
-	"strconv"
-	"time"
-
 	"nixmox/internal/domain"
+	"time"
 )
 
 type TaskFilter struct{ HostID, Kind, State, Since, Until string }
-type TaskPage struct {
-	Items      []domain.Task `json:"items"`
-	NextCursor *string       `json:"next_cursor"`
-}
-type cursor struct {
-	Filter string `json:"filter"`
-	ID     string `json:"id"`
-}
 
-func (s *Service) ListTasks(f TaskFilter, rawLimit, rawCursor string) (TaskPage, error) {
-	page := TaskPage{Items: []domain.Task{}}
+func (s *Service) ListTasks(f TaskFilter, rawLimit, rawCursor string) (domain.Page[domain.Task], error) {
+	page := domain.Page[domain.Task]{Items: []domain.Task{}}
 	bad := domain.Err("INVALID_QUERY", "Invalid task filter, cursor or limit.", 400)
-	limit := 100
-	var err error
-	if rawLimit != "" {
-		limit, err = strconv.Atoi(rawLimit)
-		if err != nil || limit < 1 || limit > 500 {
-			return page, bad
-		}
+	if _, err := domain.PageLimit(rawLimit); err != nil {
+		return page, err
 	}
 	if f.HostID != "" && !domain.SafeID.MatchString(f.HostID) {
 		return page, bad
@@ -42,8 +23,8 @@ func (s *Service) ListTasks(f TaskFilter, rawLimit, rawCursor string) (TaskPage,
 	}
 	if f.State != "" {
 		valid := false
-		for _, v := range []string{"queued", "running", "blocked", "reconciling", "cancelling", "cancelled", "succeeded", "failed"} {
-			if f.State == v {
+		for _, state := range []string{"queued", "running", "blocked", "reconciling", "cancelling", "cancelled", "succeeded", "failed"} {
+			if f.State == state {
 				valid = true
 			}
 		}
@@ -52,6 +33,7 @@ func (s *Service) ListTasks(f TaskFilter, rawLimit, rawCursor string) (TaskPage,
 		}
 	}
 	var since, until time.Time
+	var err error
 	if f.Since != "" {
 		since, err = time.Parse(time.RFC3339Nano, f.Since)
 		if err != nil {
@@ -67,47 +49,12 @@ func (s *Service) ListTasks(f TaskFilter, rawLimit, rawCursor string) (TaskPage,
 	if !since.IsZero() && !until.IsZero() && !since.Before(until) {
 		return page, bad
 	}
-	b, _ := json.Marshal(f)
-	sum := sha256.Sum256(b)
-	binding := hex.EncodeToString(sum[:])
-	after := ""
-	if rawCursor != "" {
-		if len(rawCursor) > 1024 {
-			return page, bad
-		}
-		b, err := base64.RawURLEncoding.DecodeString(rawCursor)
-		if err != nil {
-			return page, bad
-		}
-		var c cursor
-		if domain.StrictJSON(b, &c) != nil || c.Filter != binding || !domain.SafeID.MatchString(c.ID) {
-			return page, bad
-		}
-		after = c.ID
-	}
-	found := after == ""
 	filtered := []domain.Task{}
-	for _, t := range s.Tasks() {
-		if (f.HostID != "" && t.TargetID != f.HostID) || (f.Kind != "" && t.Kind != f.Kind) || (f.State != "" && t.State != f.State) || (!since.IsZero() && t.CreatedAt.Before(since)) || (!until.IsZero() && !t.CreatedAt.Before(until)) {
+	for _, task := range s.Tasks() {
+		if (f.HostID != "" && task.TargetID != f.HostID) || (f.Kind != "" && task.Kind != f.Kind) || (f.State != "" && task.State != f.State) || (!since.IsZero() && task.CreatedAt.Before(since)) || (!until.IsZero() && !task.CreatedAt.Before(until)) {
 			continue
 		}
-		if !found {
-			if t.ID == after {
-				found = true
-			}
-			continue
-		}
-		filtered = append(filtered, t)
+		filtered = append(filtered, task)
 	}
-	if !found {
-		return page, domain.Err("CURSOR_EXPIRED", "Cursor position is no longer available.", 410)
-	}
-	if len(filtered) > limit {
-		b, _ := json.Marshal(cursor{Filter: binding, ID: filtered[limit-1].ID})
-		next := base64.RawURLEncoding.EncodeToString(b)
-		page.NextCursor = &next
-		filtered = filtered[:limit]
-	}
-	page.Items = filtered
-	return page, nil
+	return domain.Paginate(filtered, f, rawLimit, rawCursor, func(t domain.Task) string { return t.ID })
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,6 +10,38 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestJoinAndRequestReviewPreserveExactBindings(t *testing.T) {
+	m := Model{viewport: viewport.New(100, 30), width: 100, network: domain.UnknownNetwork("n_test"), cluster: domain.ClusterStatus{Membership: "unjoined"}, clusterFocus: true, nameInput: textinput.New(), addressInput: textinput.New()}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if !m.joining || !m.creating {
+		t.Fatal("join form unavailable")
+	}
+	m.addressInput.SetValue("issuer:63175")
+	m.nameInput.SetValue("homelab")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	var payload map[string]string
+	json.Unmarshal(m.pending.Payload, &payload)
+	if m.pending.Type != "cluster.join" || payload["address"] != "issuer:63175" || payload["expected_cluster_name"] != "homelab" {
+		t.Fatal("join fields lost")
+	}
+	m.pending = nil
+	m.submitting = false
+	issuer := "n_issuer"
+	m.cluster = domain.ClusterStatus{Membership: "pending", IssuerNodeID: &issuer}
+	m.requests = []domain.JoinRequest{{ID: "join_selected", Version: 3, State: "awaiting_approval", KeyFingerprint: "reviewed_key"}}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(snapshot{network: m.network, cluster: m.cluster, requests: []domain.JoinRequest{{ID: "join_selected", Version: 4, State: "rejected", KeyFingerprint: "changed"}}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(Model)
+	if m.pending == nil || m.pending.Type != "cluster.request.approve" || m.pending.ExpectedVersions["join_request:join_selected"] != 3 || m.review.KeyFingerprint != "reviewed_key" {
+		t.Fatal("live refresh replaced reviewed request binding")
+	}
+}
 
 func TestSharedPresentationAndResize(t *testing.T) {
 	n := domain.UnknownNetwork("n_test")

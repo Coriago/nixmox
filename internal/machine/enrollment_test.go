@@ -1,7 +1,9 @@
 package machine
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,13 +12,40 @@ import (
 	"testing"
 	"time"
 
+	"nixmox/internal/domain"
 	"nixmox/internal/pki"
 	"nixmox/internal/storage"
 )
 
+func TestEnrollmentClientPinsServerAndRejectsKeyChange(t *testing.T) {
+	serverKeys, clientKeys, otherKeys := keys(t), keys(t), keys(t)
+	server := httptest.NewUnstartedServer(New(&ownerEnrollment{}))
+	server.TLS = pki.EnrollmentServer(serverKeys.Daemon)
+	server.StartTLS()
+	defer server.Close()
+	address := strings.TrimPrefix(server.URL, "https://")
+	cert, err := Probe(context.Background(), address, clientKeys.Daemon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pki.Fingerprint(cert.PublicKey) != pki.Fingerprint(serverKeys.Daemon.Leaf.PublicKey) {
+		t.Fatal("probe did not observe actual server")
+	}
+	client, err := EnrollmentClient(address, clientKeys.Daemon, pki.Fingerprint(otherKeys.Daemon.Leaf.PublicKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_, err = client.Read(context.Background(), "join_test")
+	var problem *domain.Error
+	if !errors.As(err, &problem) || problem.Code != "IDENTITY_CONFLICT" {
+		t.Fatal("changed server key was accepted", err)
+	}
+}
+
 type ownerEnrollment struct{ owner string }
 
-func (e *ownerEnrollment) Submit(owner string, r EnrollmentRequest) (any, error) {
+func (e *ownerEnrollment) SubmitEnrollment(owner string, r domain.EnrollmentRequest) (any, error) {
 	e.owner = owner
 	return map[string]string{"owner": owner}, nil
 }

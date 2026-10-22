@@ -2,6 +2,11 @@
 <h1>Cluster</h1><p id="stream-state" role="status">Connecting to live updates…</p>
 {{template "cluster-status" .}}
 {{if .Cluster}}{{if eq .Cluster.Membership "unjoined"}}
+<h2>Join cluster</h2><form data-command method="post" action="/ui/commands" hx-post="/ui/commands" hx-target="#receipt" hx-swap="innerHTML">
+<input type="hidden" name="id" value="{{.JoinCommandID}}"><input type="hidden" name="target_id" value="{{.TargetID}}"><input type="hidden" name="type" value="cluster.join">
+<label>Machine address <input name="address" required maxlength="270" placeholder="192.168.1.10:63175"></label>
+<label>Expected cluster name <input name="expected_cluster_name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}"></label>
+<button type="submit">Request join</button></form><p>Joining waits for approval in the cluster’s Join requests.</p>
 <h2>Create cluster</h2><form data-command method="post" action="/ui/commands" hx-post="/ui/commands" hx-target="#receipt" hx-swap="innerHTML">
 <input type="hidden" name="id" value="{{.CommandID}}"><input type="hidden" name="target_id" value="{{.TargetID}}"><input type="hidden" name="type" value="cluster.create">
 <label>Cluster name <input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}"></label>
@@ -9,8 +14,21 @@
 {{else}}<p>Cluster creation is unavailable while this node is joined.</p>{{end}}{{end}}
 <div id="receipt" aria-live="polite">{{template "receipt" .}}</div>
 {{end}}
-{{define "cluster-status"}}<section id="cluster-status" hx-get="/ui/cluster/status" hx-trigger="refresh" hx-swap="outerHTML" hx-sync="this:replace">
+{{define "cluster-status"}}<section id="cluster-status" data-membership="{{if .Cluster}}{{.Cluster.Membership}}{{end}}" hx-get="/ui/cluster/status" hx-trigger="refresh" hx-swap="outerHTML" hx-sync="this:replace">
 {{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
 {{if .Cluster}}<p>Membership: {{.Cluster.Membership}}</p>{{if .Cluster.Name}}<h2>{{.Cluster.Name}}</h2>{{end}}
 {{if .Cluster.ClusterID}}<p>Cluster ID: {{.Cluster.ClusterID}}</p><p>Broker: {{.Cluster.BrokerRole}}</p><p>Quorum: {{if .Cluster.Quorum}}available{{else}}unavailable{{end}}</p><p>{{if eq .Cluster.FullMembers 0}}No full members. Deploy or adopt a verified configuration to become a full member.{{else}}Full members: {{.Cluster.FullMembers}}{{end}}</p>{{end}}
-<p>Freshness: {{.Cluster.Freshness}}</p>{{end}}</section>{{end}}
+<p>Freshness: {{.Cluster.Freshness}}</p>{{end}}
+{{if .JoinRequests}}<h2>Join requests</h2><ul>{{range .JoinRequests}}<li><a href="/ui/cluster/requests/{{.ID}}">{{.Name}} · {{.NodeID}}</a> · {{.State}}</li>{{end}}</ul>{{end}}</section>{{end}}
+{{define "join-request"}}<h1>Review join request</h1><p id="stream-state" role="status">Connecting to live updates…</p>
+{{template "cluster-status" .}}
+<h2>{{.JoinRequest.Name}}</h2><p>Node: {{.JoinRequest.NodeID}}</p><p>Key fingerprint: <code>{{.JoinRequest.KeyFingerprint}}</code></p><p>State: {{.JoinRequest.State}} · Reviewed version: {{.JoinRequest.Version}}</p><p>Expires: {{.JoinRequest.ExpiresAt}}</p>
+<p><a href="/ui/cluster/requests/{{.JoinRequest.ID}}">Reload review</a> to inspect changes.</p>
+<form data-command method="post" action="/ui/commands" hx-post="/ui/commands" hx-target="#receipt" hx-swap="innerHTML">
+<input type="hidden" name="id" value="{{.CommandID}}"><input type="hidden" name="type" value="cluster.request.approve"><input type="hidden" name="target_id" value="{{.TargetID}}"><input type="hidden" name="request_id" value="{{.JoinRequest.ID}}"><input type="hidden" name="expected_version" value="{{.JoinRequest.Version}}">
+<button type="submit" {{if ne .JoinRequest.State "awaiting_approval"}}disabled{{end}}>Approve pending membership</button></form>
+<form data-command method="post" action="/ui/commands" hx-post="/ui/commands" hx-target="#receipt" hx-swap="innerHTML">
+<input type="hidden" name="id" value="{{.RejectCommandID}}"><input type="hidden" name="type" value="cluster.request.reject"><input type="hidden" name="target_id" value="{{.TargetID}}"><input type="hidden" name="request_id" value="{{.JoinRequest.ID}}"><input type="hidden" name="expected_version" value="{{.JoinRequest.Version}}">
+<button type="submit" {{if ne .JoinRequest.State "awaiting_approval"}}disabled{{end}}>Reject request</button></form>
+{{if ne .JoinRequest.State "awaiting_approval"}}<p>Decisions are unavailable because this request is {{.JoinRequest.State}}.</p>{{end}}
+<div id="receipt" aria-live="polite">{{template "receipt" .}}</div>{{end}}

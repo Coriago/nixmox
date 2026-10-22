@@ -11,16 +11,8 @@ import (
 	"nixmox/internal/pki"
 )
 
-type EnrollmentRequest struct {
-	ID                  string `json:"id"`
-	NodeID              string `json:"node_id"`
-	Name                string `json:"name"`
-	ExpectedClusterName string `json:"expected_cluster_name"`
-	DaemonCSR           string `json:"daemon_csr"`
-	BrokerCSR           string `json:"broker_csr"`
-}
 type Enrollment interface {
-	Submit(owner string, request EnrollmentRequest) (any, error)
+	SubmitEnrollment(owner string, request domain.EnrollmentRequest) (any, error)
 	Read(owner, id string) (any, error)
 	Certificates(owner, id string) (any, error)
 }
@@ -49,12 +41,12 @@ func New(enrollment Enrollment) http.Handler {
 			switch action {
 			case "submit":
 				data, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 48<<10))
-				var request EnrollmentRequest
+				var request domain.EnrollmentRequest
 				if readErr != nil || domain.StrictJSON(data, &request) != nil {
 					respond(w, nil, domain.Err("INVALID_PAYLOAD", "Invalid enrollment request.", 422))
 					return
 				}
-				v, err = enrollment.Submit(owner, request)
+				v, err = enrollment.SubmitEnrollment(owner, request)
 			case "read":
 				v, err = enrollment.Read(owner, id)
 			case "certificates":

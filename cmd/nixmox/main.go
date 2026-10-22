@@ -116,14 +116,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	group, verb := args[0], args[1]
 	rest := args[2:]
-	clusterName := ""
-	if group == "cluster" && verb == "create" {
-		if len(rest) == 0 {
-			fmt.Fprintln(errOut, "A cluster name is required.")
-			return 2
-		}
-		clusterName = rest[0]
-		rest = rest[1:]
+	if group == "cluster" {
+		return clusterCommand(ctx, c, args[1:], out, errOut)
 	}
 	id := ""
 	if (group == "tasks" && verb != "list") || group == "commands" {
@@ -140,7 +134,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	f := flags(group+" "+verb, errOut)
 	asJSON := f.Bool("json", false, "JSON output")
-	mutation := (group == "network" && verb == "check") || (group == "tasks" && (verb == "cancel" || verb == "retry")) || (group == "cluster" && verb == "create")
+	mutation := (group == "network" && verb == "check") || (group == "tasks" && (verb == "cancel" || verb == "retry"))
 	var wait bool
 	var commandID string
 	var version int64
@@ -177,9 +171,6 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 			commandID = domain.NewID("cmd_")
 		}
 		cmd := domain.Command{ID: commandID, Type: group + "." + verb, TargetID: identity.NodeID, ExpectedVersions: map[string]int64{}, Payload: json.RawMessage(`{}`)}
-		if group == "cluster" {
-			cmd.Payload, _ = json.Marshal(map[string]string{"name": clusterName})
-		}
 		if group == "tasks" {
 			if version <= 0 {
 				fmt.Fprintln(errOut, "--version must be the reviewed task version.")
@@ -189,46 +180,9 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 			cmd.ExpectedVersions["task:"+id] = version
 			cmd.Payload, _ = json.Marshal(map[string]string{"task_id": id})
 		}
-		fmt.Fprintln(errOut, "Command ID:", cmd.ID)
-		receipt, err := c.Submit(ctx, cmd)
-		if err != nil {
-			return exitError(errOut, err)
-		}
-		if !wait {
-			if *asJSON {
-				printJSON(out, receipt)
-			} else {
-				fmt.Fprintf(out, "Accepted %s · task %s\n", receipt.CommandID, receipt.TaskID)
-			}
-			return 0
-		}
-		task, err := c.Wait(ctx, receipt.TaskID)
-		if err != nil {
-			return exitError(errOut, err)
-		}
-		if *asJSON {
-			printJSON(out, task)
-		} else {
-			fmt.Fprintln(out, presentation.Task(task))
-			if result := task.NetworkResult(); result != nil {
-				fmt.Fprintln(out, presentation.Network(*result))
-			}
-		}
-		if task.State == "blocked" {
-			return 4
-		}
-		if task.State != "succeeded" {
-			return 1
-		}
-		return 0
+		return submitCommand(ctx, c, cmd, wait, *asJSON, out, errOut)
 	}
 	switch group + " " + verb {
-	case "cluster status":
-		v, err := c.Cluster(ctx)
-		if err != nil {
-			return exitError(errOut, err)
-		}
-		printJSON(out, v)
 	case "identity show":
 		v, err := c.Identity(ctx)
 		if err != nil {
@@ -347,6 +301,9 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 		return exitError(errOut, err)
 	}
 	defer svc.Close()
+	if err := clusters.Attach(svc); err != nil {
+		return exitError(errOut, err)
+	}
 	addresses, err := network.BindAddresses(cfg)
 	if err != nil {
 		return exitError(errOut, err)
@@ -384,7 +341,7 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 			return exitError(errOut, fmt.Errorf("machine listener %s (machine.port): %w", machineAddress, err))
 		}
 		listeners = append(listeners, tls.NewListener(l, clusters.TLS()))
-		handlers = append(handlers, machine.New(nil))
+		handlers = append(handlers, machine.New(clusters))
 		if host == "127.0.0.1" {
 			continue
 		}
