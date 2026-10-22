@@ -20,10 +20,17 @@ Do not write readme.md files until the end once the application reaches maturity
   from domain rules.
 - Follow the specified command admission, task lifecycle, concurrency,
   credential, and storage contracts.
-- Resolve documented implementation gates before dependent work.
 - Do not introduce compatibility layers, new frameworks, or additional services
   without a concrete requirement.
 - Always consider refactoring code after each deliverable to keep the code base clean.
+
+## Development environment
+
+- Create a project `flake.nix` with a default development shell and pin inputs
+  in `flake.lock`.
+- Add any needed development, build, and test tooling to the dev shell; do not
+  install tooling globally or modify the developer host's system configuration.
+- Run tooling through `nix develop`, or `nix develop -c <command>` for automation.
 
 ## Correctness
 

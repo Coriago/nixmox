@@ -146,7 +146,7 @@ approved key. Nixmox chooses certificate roles/names; never sign caller-selected
 privileges. Requests expire after ten minutes; bound request sizes/rates and dedupe
 retries. A changed key or expired/rejected request requires a new explicit attempt.
 
-Bootstrap uses a limited TLS exchange with locally generated keys and first-contact
+Bootstrap uses a limited mutual-TLS exchange with locally generated keys and first-contact
 trust; it supports request submission/status and certificate provisioning only.
 No preinstalled token, CA secret, Git credential, or SOPS setup is needed. Pin the
 accepted cluster identity after admission. Approval controls admission but does
@@ -164,8 +164,12 @@ listeners to management interfaces. Human/interface authentication is outside v1
 These machine-only bootstrap routes use `machine.port` (default 63175) with
 automated TLS. Administrative `/api/v1/commands` and `/cluster/requests` reads stay
 on the HTTP console; the CLI/TUI/browser asks its daemon to perform enrollment.
-Before admission the server uses its generated daemon certificate; first-contact
-trust has the limitation above. After admission pin the cluster CA and peer identity.
+Before admission the node presents a locally generated self-signed daemon
+certificate. The server presents its generated daemon certificate. TLS verifies
+key possession on both sides; accepting a bootstrap certificate grants enrollment
+access only, not cluster membership. Pin the server key for the enrollment attempt;
+an unexpected key change fails that attempt. First-contact trust has the limitation
+above. After admission pin the accepted cluster CA and peer identity.
 
 | Endpoint | Request / response |
 | --- | --- |
@@ -173,20 +177,40 @@ trust has the limitation above. After admission pin the cluster CA and peer iden
 | `GET /api/v1/enrollment/requests/{id}` | Request-owner read of state, expiry, cluster ID/fingerprint, and decision; no cluster inventory |
 | `POST /api/v1/enrollment/requests/{id}/certificates` | Retrieve approved certificates, CA chain, membership epoch, and scoped grants |
 
-Use standard TLS/CSR facilities for key possession and request-owner authentication;
-do not define a custom HTTP signing format. Bind approval to the node ID and exact
-daemon/broker keys. Changed keys need new approval; request IDs alone grant no
-access. Cluster-side persistence/approval/issuance requires quorum. The joining
-node retains its task locally while waiting. Certificate retrieval is idempotent
-for the approved membership; revoked nodes cannot obtain fresh credentials.
-Add verifies the discovered key and uses this same enrollment flow without a
-node-side prompt. Certificates never contain private keys or caller-selected roles.
+Use standard TLS/X.509 and signed PKCS#10 CSRs; no custom HTTP signing or
+certificate-encryption format is required.
 
-**Implementation gate:** a small TLS/enrollment prototype must demonstrate key
-possession before admission, request-owner isolation, CSR/approval binding, and
-safe retries before freezing authentication details. The separate
-[machine listener](runtime-configuration.md#service-ports) requires no browser trust setup.
-The routes above define operation boundaries, not a validated authentication wire format.
+1. Authenticate the request owner by the TLS client public key, never by a
+   caller-supplied ID or certificate name. Verify both CSR signatures and require
+   the daemon CSR key to match that TLS key.
+2. Persist the request ID, owner key, node ID, expected cluster name, and exact
+   daemon/broker CSRs as an immutable binding. Status and certificate retrieval
+   require the same authenticated owner key; knowing a request ID grants no access.
+3. Approve the exact request/version/binding. The cluster chooses certificate
+   identities and pending-node permissions; caller-selected CSR roles/extensions
+   cannot grant privileges. Changed keys require a new request and approval.
+4. Issue node-specific certificates containing the approved public keys, signed by
+   the cluster CA. Persist issuance before responding. Return those certificates,
+   the public CA chain, membership epoch, and scoped grants over TLS. Private keys
+   stay on the node; certificates need no additional encryption.
+5. The node verifies the returned keys/identity against its approved request,
+   persists the accepted cluster trust, and connects using its existing private
+   keys and issued certificates. Mutual TLS proves possession on each connection;
+   current membership and grants determine access.
+
+The same request ID and binding returns the existing request or persisted issuance;
+a different binding returns `IDEMPOTENCY_CONFLICT`. Restart or a lost response must
+not create another membership or issuance. Expired/rejected requests cannot be
+revived by retries; revoked memberships cannot retrieve credentials. Cluster-side
+persistence/approval/issuance requires quorum. The joining node retains its task
+locally while waiting. Add verifies the discovered key and uses this same flow
+without a node-side prompt.
+
+Bootstrap certificate acceptance is restricted to these enrollment routes on the
+[machine listener](runtime-configuration.md#service-ports). Other machine routes
+and NATS require their normal membership authentication; the HTTP console needs
+no browser certificates. Integration tests verify key possession, request-owner
+isolation, immutable approval bindings, and retry/restart behavior.
 
 ## Managed TLS and NATS permissions
 
@@ -195,8 +219,9 @@ Use standard X.509/TLS libraries and certificate-to-user mapping; v1 requires no
 NKeys, JWT hierarchy, shared broker password, or manual certificate configuration.
 Daemon keys also identify agent machine links. All private keys are generated
 locally; enrollment exchanges public keys/CSRs and certificates only.
-Before enrollment, the local daemon/broker trust only their locally provisioned
-keys; this permits standalone operation without granting cluster access.
+Before enrollment, the local broker trusts only locally provisioned keys; this
+permits standalone operation without granting cluster access. The machine listener
+additionally permits the restricted bootstrap exchange defined above.
 
 ```text
 Full daemon ── mTLS, loopback :63171 ── Full broker
