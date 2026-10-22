@@ -116,8 +116,11 @@ credential-dependent operations. Git remote configuration never triggers a push.
 | cache.serve | bool / true | Permit serving when membership and local signing credential are ready; independent of pulls |
 | cache.signingCredentialRef | nullable string / null | Selected `nix-cache-signing-key`; unset/unavailable keeps store serving offline while the enabled gateway remains responsive |
 | cache.maxConcurrentTransfers | positive integer / 4 | Independently bound outgoing gateway downloads and incoming store exports |
-| telemetry.otlp.enable | bool / false | Export OTel; local diagnostics still work |
+| telemetry.host.fastIntervalMs | integer / 500 | Fast host sampling and NATS publish interval; range 250–5000 ms |
+| telemetry.host.filesystemIntervalMs | integer / 10000 | Independent filesystem sampling; range 1000–60000 ms, at least fastIntervalMs |
+| telemetry.otlp.enable | bool / false | Export application and host metrics via OTel; live host telemetry and local diagnostics work independently |
 | telemetry.otlp.endpoint | nullable string / null | Required when export is enabled |
+| telemetry.otlp.metricsIntervalMs | integer / 5000 | Metrics export interval; range 250–60000 ms, at least fastIntervalMs |
 | prepare.sops.updateRules | list of strings / [] | Templated exact selectors for `.sops.yaml` path_regex values; empty skips SOPS mutation |
 | prepare.sops.updaterRef | nullable string / null | Null uses bundled anchor updater; otherwise selects a custom YAML updater |
 | prepare.sops.credentialRef | nullable string / null | Age credential for updating encrypted-file recipients; null skips SOPS mutation |

@@ -81,6 +81,60 @@ host reads and `/cluster/status`. CLI: `nixmox hosts show cedar --json` and
 with reasons and observation time in host details. Health is informational in v1;
 it does not initiate deployment, restart, or automatic rollback.
 
+## Live host telemetry
+
+Browser and TUI Hosts → host details → Telemetry show CPU usage/load, memory/swap,
+filesystem space, disk I/O, per-interface network rates, and uptime as current values
+and recent sparklines, including on pending installers/bootstrap agents.
+See [collection and delivery](technical-requirements.md#host-metrics).
+
+`GET /api/v1/hosts/{id}/telemetry` returns the latest sample:
+
+```json
+{
+  "schema_version": 1,
+  "host_id": "n_cedar",
+  "membership_epoch": 2,
+  "stream_id": "telemetry_01", "sequence": 42,
+  "observed_at": "2026-10-21T14:00:00Z", "freshness": "live",
+  "interval_seconds": 0.5, "uptime_seconds": 86400,
+  "cpu": {"utilization": 0.25, "logical_count": 8, "load_average": [0.8, 0.6, 0.4]},
+  "memory": {"total_bytes": 17179869184, "available_bytes": 12884901888, "used_bytes": 4294967296},
+  "swap": {"total_bytes": 4294967296, "used_bytes": 0},
+  "filesystems": {"observed_at": "2026-10-21T14:00:00Z", "interval_seconds": 10,
+    "freshness": "live", "items": [{"mount": "/", "total_bytes": 512000000000,
+      "used_bytes": 128000000000, "available_bytes": 380000000000}]},
+  "disks": [{"device": "nvme0n1", "read_bytes": 104857600, "write_bytes": 52428800,
+    "read_bytes_per_second": 1048576, "write_bytes_per_second": 0}],
+  "network": [{"interface": "enp1s0", "rx_bytes": 1073741824, "tx_bytes": 536870912,
+    "rx_bytes_per_second": 2097152, "tx_bytes_per_second": 1048576}],
+  "unavailable": []
+}
+```
+
+CPU utilization is aggregate busy time across logical CPUs, normalized to 0–1;
+idle and I/O wait are excluded. Load averages cover 1/5/15 minutes. Linux memory
+used is total minus available. Filesystem available excludes reserved space, so
+used + available need not equal total. Exclude pseudo-filesystems and duplicate
+mounts; keep per-device/interface counters separate to avoid double-counting.
+Rates use monotonic elapsed time and counter deltas; first samples and counter
+resets have null rates. Unsupported/failed measurements are null with field/reason
+entries in `unavailable`, never fabricated zeroes.
+
+Follow updates through the [SSE topic](api-and-interfaces.md#reads-and-events)
+`hosts.telemetry`, scoped by `host_id`. Telemetry never increments host
+configuration/review versions.
+
+Each metric group becomes stale after `max(3 seconds, 3 × its sampling interval)`
+without a successful sample, even if heartbeats continue. Snapshot freshness covers
+fast metrics; filesystem freshness and collection time remain independent. Reusing
+cached filesystem values in fast snapshots must not advance their timestamp.
+Freeze displayed rates/uptime with a stale label on stream loss; reconnect reads a
+fresh snapshot. Known hosts without a sample return `freshness: unknown` and null
+measurements. Clients retain at most five minutes of viewed history in memory;
+gaps remain gaps. Durable history belongs to an optional external metrics backend.
+CLI: `nixmox hosts telemetry cedar --json`; `--watch` follows the same samples.
+
 ## Discovery and enrollment
 
 Nodes advertise their ID/name/endpoints; clusters advertise cluster ID/name and

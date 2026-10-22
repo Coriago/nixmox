@@ -94,7 +94,7 @@ must use those configured ports rather than its conventional defaults.
 | --- | --- | --- |
 | `nx.<cluster>.command.<node>` | Command ID/type/target, expiry, payload, trace context | JetStream, explicit ack, per-executor durable consumer |
 | `nx.<cluster>.query.<node>` | Request ID, typed query, chunked reply address | Core request/reply, bounded timeout |
-| `nx.<cluster>.activity.<node>` | Replaceable resource counters | Core, no replay |
+| `nx.<cluster>.activity.<node>` | Latest host telemetry sample, stream ID/sequence | Core, no persistence/ack/replay; latest-value delivery |
 | `nx.<cluster>.result.<node>` | Command/task ID, executor, versioned outcome | JetStream, deduped by task/command receipt |
 | `nx.<cluster>.log.<task>` | Absolute offset, bytes, owner ID | Core; recover from persisted logs |
 | `nx.<cluster>.progress.<task>` | Versioned progress snapshots and activity updates | Core; recover latest persisted snapshot via query |
@@ -107,20 +107,20 @@ Leaves stream assigned work without becoming voting replicas.
 
 Commands expire after 120 seconds if not admitted. Broker deduplication is an
 optimization; durable request fingerprints/receipts enforce retry identity.
-Use discard-new backpressure on full queues. Error outcomes must distinguish
+Use discard-new backpressure on full command queues. Error outcomes must distinguish
 rejected before admission from unknown after submission.
 
 Proposed initial bounds: command payload 256 KiB; query chunk 64 KiB; total bounded
 query 64 MiB; log event 64 KiB. Larger Git artifacts use chunked object storage,
 not oversized command payloads. UI event cadence: coalesce state changes up to
-250 ms, activity every 2 seconds, inventory every 30 seconds, heartbeat every
-10 seconds. Mark stale after 20 seconds without a heartbeat, offline after 35.
+250 ms; host telemetry follows the [cadence below](#host-metric-delivery-and-lifecycle).
+Inventory refreshes every 30 seconds, heartbeat every 10 seconds. Mark reachability
+stale after 20 seconds without a heartbeat, offline after 35.
 Thresholds are protocol/config constants with tests, not duplicated UI timers.
 
 Subscribe before reading a snapshot/log tail, then merge by resource version or
 byte offset. Reconnection starts a fresh snapshot; safety refresh catches missed
-final updates. Telemetry never renews membership by itself. A disconnected browser
-freezes uptime rather than pretending the source is still live.
+final updates. Telemetry never renews membership by itself.
 
 Enrollment uses a limited TLS bootstrap exchange on the machine listener outside NATS; unapproved nodes
 have no cluster broker connection. After cluster approval/Add, commands and control
@@ -173,6 +173,54 @@ are outside v1 scope; no compatibility guarantee is implied by system rollback.
 
 ## OpenTelemetry and diagnostics
 
+### Host metrics
+
+One in-process OS sampler per node feeds the [live telemetry contract](host-inventory-and-lifecycle.md#live-host-telemetry)
+and optional OTel SDK/OTLP export; no Collector is required. Bound sampling work and
+isolate slow filesystem/device reads. Local sampling and views continue through
+quorum loss, NATS disconnection, or OTLP failure; neither delivery path blocks the other.
+
+Use [OTel system conventions](https://opentelemetry.io/docs/specs/semconv/system/system-metrics/)
+for CPU, memory/paging, filesystem, disk/network counters, and uptime;
+`nixmox.host.*` only where no standard fits. Pin the convention version and mapping
+without coupling the UI schema to SDK upgrades. Export cumulative I/O counters,
+omit stale/unavailable measurements, and identify hosts by resource `host.id` and
+`host.name`. Command/task IDs belong in logs/traces, not metric dimensions.
+Each node exports only its own metrics; configure one producer per metric per
+pipeline, including when using a separate hostmetrics receiver.
+
+### Host metric delivery and lifecycle
+
+Intervals and defaults live in [runtime settings](runtime-configuration.md#option-reference).
+
+| Work | Timing | Behavior |
+| --- | --- | --- |
+| CPU, memory/swap, disk/network counters, load, uptime | `telemetry.host.fastIntervalMs` | Update shared measurement cache; publish NATS snapshot immediately |
+| Filesystem space | `telemetry.host.filesystemIntervalMs` | Independent worker; preserve its own timestamp/freshness |
+| SSE/htmx/TUI | On sample; coalesce at most 250 ms | Replace pending updates independently of inventory refresh |
+| OTLP | `telemetry.otlp.metricsIntervalMs` when enabled | SDK reader consumes the same cache, without resampling the OS |
+
+NATS and OTLP share measurements, identity, and counter semantics, but use separate
+formats and schedules. OTLP aggregation/export may omit intermediate gauge samples.
+
+| Path | Buffering and recovery |
+| --- | --- |
+| Core NATS activity subject | Exclude from JetStream; separate telemetry connection, reconnect buffering disabled; subscriber limits 128 messages / 4 MiB |
+| Application/gateway | One pending latest snapshot per host; count drops/coalescing; expire gateway samples after five minutes without refresh |
+| Reconnect/slow consumer | Publish/read the current snapshot; no backlog replay or durable telemetry consumers |
+| OTLP | Serialize exports; two-second timeout including retries; skip ticks while exporting, then collect current values; no unbounded retry queue |
+
+| Lifecycle | Action |
+| --- | --- |
+| Agent start | Start local sampling, including unjoined nodes (`membership_epoch: null`); publish cluster samples only while authorized |
+| Restart/rejoin | New `stream_id`, sequence and rate baselines; retire old stream on authenticated restart |
+| Receive | Reject obsolete membership epochs and older sequences within a stream |
+| Counter reset/device hotplug | Invalidate only affected rate baselines |
+| Leave/removal | Close subscriptions, discard pending cluster samples, evict that membership's gateway cache |
+| Shutdown | Stop workers; bound final OTLP flush to two seconds |
+
+### Application diagnostics
+
 ```json
 {
   "service.name": "nixmox",
@@ -192,8 +240,8 @@ its originating command; traces do not determine task success.
 
 Metrics: command admission latency, queue depth, phase duration, failures by error
 code, broker reconnects, Git bytes transferred, artifact storage failures, log catch-up,
-cache lookup latency, streamed bytes, peer failures, and stale hosts. IDs belong
-in logs/traces, not unbounded metric labels.
+cache lookup latency, streamed bytes, peer failures, and stale hosts. Command/task
+IDs belong in logs/traces, not unbounded metric labels.
 Redact tokens, private keys, secret command output, and sensitive payload fields.
 Exporter failure must not stop tasks; bounded buffers/drop counters are mandatory.
 
@@ -228,6 +276,7 @@ Physical boot/media claims require disposable-device evidence; VMs alone are ins
 | Configuration | Generate without host/write credentials; template selection/pinning; safe serialization/paths; incomplete commits; hardware with/without filesystems; multi-disk layouts; browser/TUI live preview and embedded edits; preserve manual edits/buffers through regeneration, resize, and version conflicts; validate exact edited files |
 | Interface parity | Same operations, defaults, validation, reviews, errors, and results; explicit unknown/stale state; every verb maps to a registered operation/read |
 | Browser | htmx pages/fragments and form admission; SSE reconnect/version ordering/log gaps; no network asset dependencies; editor survives surrounding swaps and protects unsaved edits |
+| Host telemetry | Fast/slow cadence and timestamps; NATS/OTLP same-source values with independent delivery; slow consumers/exporter failures; restart/rejoin/hotplug; no stale replay; cache expiry; browser/TUI/CLI parity; null/stale values; samples never invalidate reviews |
 | Reviews | Start without advance erase approval; reject stale bindings/missing acknowledgements; unrelated health/progress does not invalidate approval; duplicate resume cannot repeat effects |
 | Reads | Pagination/filter bounds, revision-pinned catalogs/files, log gaps/per-build logs, download expiry and unavailable owners |
 | Admission/recovery | Interrupt every admission boundary; retry resolves the same task; restart queued/running/cancelling work; uncertain effects reconcile without destructive replay |

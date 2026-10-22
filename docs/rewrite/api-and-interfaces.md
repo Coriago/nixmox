@@ -228,6 +228,12 @@ logs to that task's activity; log events then include `activity_id` and offsets
 within that activity's log. Bootstrap clients receive local snapshots only. Snapshot contents use
 bounded first pages plus collection links; never embed unbounded histories.
 
+`hosts.telemetry` is an opt-in topic requiring `host_id=<id>`; omission of `topics`
+does not subscribe to it. Reject a telemetry selector without that topic. It sends
+`host.telemetry` events containing the [latest telemetry sample](host-inventory-and-lifecycle.md#live-host-telemetry),
+starting with a snapshot and refreshing it on reconnect. Sample stream/sequence
+numbers are independent of host record versions. Unjoined access is local-only.
+
 ```json
 {
   "type": "resource.updated",
