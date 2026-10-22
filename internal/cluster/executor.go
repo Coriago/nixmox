@@ -106,7 +106,7 @@ func (a *executorAgent) deliveries() {
 			continue
 		}
 		var p domain.PreparedCommand
-		if len(msg.Data) > domain.MaxCommandBytes || domain.StrictJSON(msg.Data, &p) != nil || p.ClusterID != a.membership.ClusterID || p.Command.TargetID != a.membership.NodeID || p.TargetEpoch != a.membership.Epoch {
+		if len(msg.Data) > domain.MaxCommandBytes || domain.StrictJSON(msg.Data, &p) != nil || p.ClusterID != a.membership.ClusterID || p.ExecutionNode() != a.membership.NodeID || p.ExecutionEpoch() != a.membership.Epoch {
 			continue
 		}
 		receipt, err := a.service.AdmitDelivered(p)

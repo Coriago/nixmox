@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"nixmox/internal/domain"
@@ -17,6 +18,18 @@ import (
 type descriptor struct {
 	render.Configuration
 	PreparationTemplates map[string][]string `json:"preparation_templates,omitempty"`
+}
+
+func (s *Service) CheckExport(ctx context.Context, c domain.Configuration) error {
+	dir, err := s.Sources.Git.Worktree(ctx, c.RepositoryID, c.InspectedCommit, gitstore.StableID("export_", c.InspectedCommit))
+	if err != nil {
+		return err
+	}
+	result, err := process.Run(ctx, process.Options{Timeout: 10 * time.Second, MaxOutput: 1 << 20}, "nix", "eval", "--json", "--no-write-lock-file", "--no-update-lock-file", "--option", "allow-import-from-derivation", "false", "--option", "accept-flake-config", "false", "path:"+filepath.Join(dir, c.FlakeDirectory)+"#"+c.FlakeAttribute, "--apply", "builtins.isAttrs")
+	if err != nil || strings.TrimSpace(string(result.Stdout)) != "true" {
+		return domain.Err("CONFIGURATION_UNAVAILABLE", "Selected revision does not provide the declared configuration export.", 422)
+	}
+	return nil
 }
 
 func (s *Service) catalog(ctx context.Context, r domain.Repository, ref, commit string) ([]domain.Configuration, error) {

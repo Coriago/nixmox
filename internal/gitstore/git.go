@@ -127,10 +127,16 @@ func SafePath(name string) bool {
 	return name != "" && name != "." && !filepath.IsAbs(name) && filepath.ToSlash(filepath.Clean(name)) == name && !strings.HasPrefix(name, "../") && name != ".." && !strings.ContainsAny(name, "\\\x00\r\n") && !strings.HasPrefix(name, ".git/") && name != ".git"
 }
 func (g *Git) ReadFile(ctx context.Context, id, commit, name string) ([]byte, error) {
+	return g.readFile(ctx, g.Bare(id), commit, name)
+}
+func ReadWorktreeFile(ctx context.Context, root, commit, name string) ([]byte, error) {
+	return (&Git{}).readFile(ctx, root, commit, name)
+}
+func (g *Git) readFile(ctx context.Context, directory, commit, name string) ([]byte, error) {
 	if !CommitPattern.MatchString(commit) || !SafePath(name) {
 		return nil, domain.Err("INVALID_PATH", "Invalid pinned source path.", 422)
 	}
-	r, err := g.run(ctx, g.Bare(id), nil, "ls-tree", commit, "--", name)
+	r, err := g.run(ctx, directory, nil, "ls-tree", commit, "--", name)
 	if err != nil {
 		return nil, domain.Err("SOURCE_UNAVAILABLE", "Source tree unavailable.", 503)
 	}
@@ -140,7 +146,7 @@ func (g *Git) ReadFile(ctx context.Context, id, commit, name string) ([]byte, er
 	if !strings.HasPrefix(string(r.Stdout), "100644 blob ") && !strings.HasPrefix(string(r.Stdout), "100755 blob ") {
 		return nil, domain.Err("UNSAFE_PATH", "Source file is not a regular file.", 422)
 	}
-	r, err = g.run(ctx, g.Bare(id), nil, "show", commit+":"+name)
+	r, err = g.run(ctx, directory, nil, "show", commit+":"+name)
 	if err != nil {
 		return nil, domain.Err("SOURCE_UNAVAILABLE", "Source file is unavailable or exceeds its size bound.", 503)
 	}

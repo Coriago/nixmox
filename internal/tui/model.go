@@ -502,6 +502,9 @@ func (m *Model) content() {
 	if m.taskFocus && len(m.tasks) > 0 {
 		task := m.tasks[m.selected]
 		lines = []string{"Selected task", presentation.Task(task), fmt.Sprintf("Reviewed version: %d", task.Version)}
+		if progress := presentation.TaskProgress(task); progress != "" {
+			lines = append(lines, "Progress", progress)
+		}
 		if result := presentation.TaskResult(task); result != "" {
 			lines = append(lines, "Result", result)
 		}

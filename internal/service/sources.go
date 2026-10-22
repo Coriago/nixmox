@@ -18,6 +18,7 @@ type ConfigurationReader interface {
 	DraftDiff(context.Context, string) (any, error)
 	Configurations(context.Context, string, string, string, string, string) (domain.Page[domain.Configuration], error)
 	Configuration(context.Context, string) (domain.Configuration, error)
+	CheckExport(context.Context, domain.Configuration) error
 }
 
 func (s *Service) SetConfigurations(r ConfigurationReader) {

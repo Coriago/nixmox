@@ -23,3 +23,15 @@ func TestRealProcessBoundsCancellationAndEnvironment(t *testing.T) {
 		t.Fatal("process group cancellation did not bound inherited pipes", err)
 	}
 }
+func TestStreamingProtocolDoesNotAccumulateStderr(t *testing.T) {
+	count := 0
+	r, err := Run(context.Background(), Options{MaxOutput: 64, Timeout: time.Second, StderrLine: func(line []byte) {
+		if string(line) != "record" {
+			t.Errorf("invalid record %q", line)
+		}
+		count++
+	}}, "sh", "-c", `i=0; while [ "$i" -lt 512 ]; do printf 'record\n' >&2; i=$((i+1)); done; printf record >&2; printf done`)
+	if err != nil || string(r.Stdout) != "done" || len(r.Stderr) != 0 || count != 513 {
+		t.Fatal("stream retention or EOF handling failed", count, r, err)
+	}
+}

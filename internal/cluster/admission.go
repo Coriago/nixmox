@@ -199,6 +199,14 @@ func (d *dispatcher) Submit(c domain.Command) (domain.Receipt, error) {
 		prepared.AdmittedAt = record.Prepared.AdmittedAt
 		prepared.TargetEpoch = record.Prepared.TargetEpoch
 		prepared.CoordinatorID = record.OwnerNodeID
+		executor, ownerErr := d.target(prepared.ExecutionNode())
+		if ownerErr != nil {
+			return domain.Receipt{}, ownerErr
+		}
+		if prepared.ExecutorEpoch != 0 && prepared.ExecutorEpoch != executor.Epoch {
+			return domain.Receipt{}, domain.Err("MEMBERSHIP_CHANGED", "Task owner membership changed.", 409)
+		}
+		prepared.ExecutorEpoch = executor.Epoch
 		prepared.ExpiresAt = record.Prepared.ExpiresAt
 		record.Prepared = prepared
 		record.State = "queued"
@@ -232,7 +240,7 @@ func (d *dispatcher) publish(record commandRecord) error {
 	if err != nil {
 		return err
 	}
-	msg := nats.NewMsg("nx." + d.cluster + ".command." + record.Prepared.Command.TargetID)
+	msg := nats.NewMsg("nx." + d.cluster + ".command." + record.Prepared.ExecutionNode())
 	msg.Data = b
 	msg.Header.Set(nats.MsgIdHdr, record.Prepared.Command.ID)
 	ctx, cancel := context.WithTimeout(d.ctx, 3*time.Second)
@@ -267,7 +275,7 @@ func (d *dispatcher) work() {
 }
 func (d *dispatcher) consume(msg *nats.Msg) {
 	var wire domain.PreparedCommand
-	if domain.StrictJSON(msg.Data, &wire) != nil || wire.ClusterID != d.cluster || wire.Command.TargetID != d.node {
+	if domain.StrictJSON(msg.Data, &wire) != nil || wire.ClusterID != d.cluster || wire.ExecutionNode() != d.node {
 		msg.Term()
 		return
 	}
@@ -345,7 +353,7 @@ func (d *dispatcher) repair() {
 			continue
 		}
 		record, revision, err := d.read(strings.TrimPrefix(key, "command."))
-		if err != nil || record.State != "queued" || record.Prepared.Command.TargetID != d.node {
+		if err != nil || record.State != "queued" || record.Prepared.ExecutionNode() != d.node {
 			continue
 		}
 		if time.Now().After(record.Prepared.ExpiresAt) {

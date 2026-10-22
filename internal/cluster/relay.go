@@ -87,7 +87,7 @@ func (h *deliveryHub) receiveResult(msg *nats.Msg) error {
 		return err
 	}
 	p := record.Prepared
-	if p.Command.TargetID != result.NodeID || p.TargetEpoch != result.Epoch {
+	if p.ExecutionNode() != result.NodeID || p.ExecutionEpoch() != result.Epoch {
 		return nil
 	}
 	switch result.Kind {
@@ -130,7 +130,7 @@ func (h *deliveryHub) receiveResult(msg *nats.Msg) error {
 		return h.d.update(record, revision)
 	case "task":
 		task := result.Task
-		if task == nil || task.ID != domain.CommandTaskID(result.CommandID) || task.OwnerNodeID != result.NodeID || task.TargetID != result.NodeID || task.Scope != "cluster" || task.ClusterID == nil || *task.ClusterID != h.d.cluster || task.MembershipEpoch != member.Epoch || task.Version < 1 || task.CoordinatorID != p.CoordinatorID || task.Kind != p.Kind {
+		if task == nil || task.ID != domain.CommandTaskID(result.CommandID) || task.OwnerNodeID != result.NodeID || task.TargetID != p.Command.TargetID || task.Scope != "cluster" || task.ClusterID == nil || *task.ClusterID != h.d.cluster || task.MembershipEpoch != member.Epoch || task.Version < 1 || task.CoordinatorID != p.CoordinatorID || task.Kind != p.Kind {
 			return nil
 		}
 		if result.ObservedAt.After(time.Now().Add(5 * time.Second)) {
@@ -148,7 +148,7 @@ func (d *dispatcher) projectTask(task domain.Task, observed time.Time) error {
 		return err
 	}
 	p := record.Prepared
-	if task.ID != domain.CommandTaskID(task.CommandID) || task.TargetID != p.Command.TargetID || task.OwnerNodeID != p.Command.TargetID || task.ClusterID == nil || *task.ClusterID != d.cluster || task.Scope != "cluster" || task.MembershipEpoch != p.TargetEpoch || task.CoordinatorID != p.CoordinatorID || task.Kind != p.Kind || observed.IsZero() || observed.After(time.Now().Add(5*time.Second)) {
+	if task.ID != domain.CommandTaskID(task.CommandID) || task.TargetID != p.Command.TargetID || task.OwnerNodeID != p.ExecutionNode() || task.ClusterID == nil || *task.ClusterID != d.cluster || task.Scope != "cluster" || task.MembershipEpoch != p.ExecutionEpoch() || task.CoordinatorID != p.CoordinatorID || task.Kind != p.Kind || observed.IsZero() || observed.After(time.Now().Add(5*time.Second)) {
 		return domain.Err("INVALID_RESULT", "Task result has an invalid execution binding.", 422)
 	}
 	task.Checkpoint = nil
@@ -271,7 +271,7 @@ func (h *deliveryHub) forward(ctx context.Context, node string, sub *nats.Subscr
 		}
 		for _, msg := range messages {
 			var wire domain.PreparedCommand
-			if domain.StrictJSON(msg.Data, &wire) != nil || wire.ClusterID != h.d.cluster || wire.Command.TargetID != node {
+			if domain.StrictJSON(msg.Data, &wire) != nil || wire.ClusterID != h.d.cluster || wire.ExecutionNode() != node {
 				msg.Term()
 				continue
 			}
@@ -289,7 +289,7 @@ func (h *deliveryHub) forward(ctx context.Context, node string, sub *nats.Subscr
 				continue
 			}
 			member, err := h.d.target(node)
-			if err != nil || member.Epoch != record.Prepared.TargetEpoch || record.State != "queued" {
+			if err != nil || member.Epoch != record.Prepared.ExecutionEpoch() || record.State != "queued" {
 				msg.NakWithDelay(2 * time.Second)
 				continue
 			}

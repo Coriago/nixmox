@@ -19,36 +19,44 @@ import (
 )
 
 type sourceMessage struct {
-	mode      string
-	repos     []domain.Repository
-	repo      domain.Repository
-	templates configuration.TemplateSet
-	bundle    configuration.TemplateBundle
-	draft     *configuration.Draft
-	err       error
+	hosts          []domain.Host
+	host           domain.Host
+	configurations []domain.Configuration
+	task           *domain.Task
+	mode           string
+	repos          []domain.Repository
+	repo           domain.Repository
+	templates      configuration.TemplateSet
+	bundle         configuration.TemplateBundle
+	draft          *configuration.Draft
+	err            error
 }
 type sourceModel struct {
-	client        *client.Client
-	ctx           context.Context
-	width, height int
-	mode, notice  string
-	busy          bool
-	repos         []domain.Repository
-	repo          domain.Repository
-	selection     int
-	templates     configuration.TemplateSet
-	bundle        configuration.TemplateBundle
-	inputs        []textinput.Model
-	field         int
-	editor        textarea.Model
-	editorFocus   bool
-	files         []render.File
-	file          int
-	values        map[string]any
-	edited        map[string]bool
-	regenerated   map[string]string
-	resolved      map[string]bool
-	draft         *configuration.Draft
+	hosts          []domain.Host
+	host           domain.Host
+	configurations []domain.Configuration
+	buildTask      *domain.Task
+	client         *client.Client
+	ctx            context.Context
+	width, height  int
+	mode, notice   string
+	busy           bool
+	repos          []domain.Repository
+	repo           domain.Repository
+	selection      int
+	templates      configuration.TemplateSet
+	bundle         configuration.TemplateBundle
+	inputs         []textinput.Model
+	field          int
+	editor         textarea.Model
+	editorFocus    bool
+	files          []render.File
+	file           int
+	values         map[string]any
+	edited         map[string]bool
+	regenerated    map[string]string
+	resolved       map[string]bool
+	draft          *configuration.Draft
 }
 
 func newSources(ctx context.Context, c *client.Client, width, height int) *sourceModel {
@@ -296,6 +304,8 @@ func (m *sourceModel) update(msg tea.Msg) tea.Cmd {
 		m.selection = 0
 		m.notice = ""
 		switch v.mode {
+		case "hosts", "host", "assign", "build-progress":
+			return m.hostMessage(v)
 		case "repositories":
 			m.repos = v.repos
 		case "repository":
@@ -464,6 +474,9 @@ func (m *sourceModel) update(msg tea.Msg) tea.Cmd {
 			m.inputs[m.field], cmd = m.inputs[m.field].Update(msg)
 			return cmd
 		}
+		if handled, cmd := m.hostKey(v); handled {
+			return cmd
+		}
 		switch v.String() {
 		case "b":
 			m.busy = true
@@ -534,6 +547,8 @@ func (m *sourceModel) view() string {
 	var b strings.Builder
 	b.WriteString("Nixmox · Sources\n\n")
 	switch m.mode {
+	case "hosts", "host", "assign", "build-progress":
+		b.WriteString(m.hostView())
 	case "repositories":
 		for i, r := range m.repos {
 			mark := "  "
@@ -542,7 +557,7 @@ func (m *sourceModel) view() string {
 			}
 			fmt.Fprintf(&b, "%s%s · %s\n", mark, r.Name, r.Remote.URL)
 		}
-		b.WriteString("\nEnter open · i import · o open draft")
+		b.WriteString("\nEnter open · i import · o open draft · h hosts")
 	case "repository":
 		fmt.Fprintf(&b, "%s · %s\n", m.repo.Name, m.repo.Remote.URL)
 		for _, r := range m.repo.Refs {
@@ -551,7 +566,7 @@ func (m *sourceModel) view() string {
 		for _, c := range m.repo.Configurations {
 			fmt.Fprintf(&b, "%s · %s\n", c.Name, c.Readiness)
 		}
-		b.WriteString("\nn new configuration · f fetch · o open draft")
+		b.WriteString("\nn new configuration · f fetch · o open draft · h hosts/assignment/build")
 	case "templates":
 		for i, t := range m.templates.Items {
 			mark := "  "

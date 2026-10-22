@@ -14,12 +14,28 @@ type PreparedCommand struct {
 	ClusterID     string          `json:"cluster_id"`
 	CoordinatorID string          `json:"coordinator_id"`
 	TargetEpoch   int             `json:"target_epoch"`
+	ExecutorID    string          `json:"executor_id,omitempty"`
+	ExecutorEpoch int             `json:"executor_epoch,omitempty"`
 	Fingerprint   string          `json:"fingerprint"`
 	Kind          string          `json:"kind"`
 	Resolved      json.RawMessage `json:"resolved"`
 	Exclusions    []string        `json:"exclusions,omitempty"`
 	AdmittedAt    time.Time       `json:"admitted_at"`
 	ExpiresAt     time.Time       `json:"expires_at"`
+}
+
+// Existing persisted target-executed admissions retain their original owner.
+func (p PreparedCommand) ExecutionNode() string {
+	if p.ExecutorID != "" {
+		return p.ExecutorID
+	}
+	return p.Command.TargetID
+}
+func (p PreparedCommand) ExecutionEpoch() int {
+	if p.ExecutorEpoch != 0 {
+		return p.ExecutorEpoch
+	}
+	return p.TargetEpoch
 }
 
 func CommandTaskID(id string) string {

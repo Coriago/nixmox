@@ -27,6 +27,7 @@
     const deadline = Date.now() + 190000;
     while (Date.now() < deadline) {
       const task = await request("/tasks/" + receipt.task_id);
+      if (task.progress) { const p=task.progress; $("build-progress").textContent = task.phase + " · " + p.freshness + "\nDownloads: " + p.downloads.bytes_received + " / " + (p.downloads.bytes_total ?? "unknown") + " bytes\nBuilds: " + p.builds.completed_derivations + " / " + (p.builds.total_derivations ?? "unknown") + " known · " + p.builds.active_derivations + " active"; }
       if (task.state === "succeeded") return task.result;
       if (["failed", "cancelled", "blocked"].includes(task.state)) throw new Error(task.error?.message || "Task " + task.state + ": " + receipt.task_id);
       await pause(300);
@@ -58,7 +59,7 @@
     for (const ref of repository.refs) { const row = document.createElement("p"); row.textContent = ref.name + " · " + ref.head + " · ahead " + ref.ahead + " / behind " + ref.behind; $("reference-list").append(row); }
     const catalog = await request("/configurations?repository_id=" + id);
     $("configuration-list").replaceChildren();
-    for (const cfg of catalog.items) { const row = document.createElement("p"); row.textContent = cfg.name + " · " + cfg.readiness + " · " + cfg.inspected_commit; $("configuration-list").append(row); }
+    for (const cfg of catalog.items) { const row = document.createElement("p"); row.textContent = cfg.name + " · " + cfg.readiness + " · " + cfg.inspected_commit; row.append(button("Assign to selected host", async () => {const h=await selectedHost();await command("host.assign",{host_id:h.id,repository_id:repository.id,configuration:cfg.id},{["host:"+h.id]:h.version,["configuration:"+cfg.id]:cfg.version},h.id);await hostDetails();notice("Assigned "+cfg.name+" to "+h.name);})); $("configuration-list").append(row); }
     notice("Repository " + repository.name);
   }
   async function loadTemplate(id, commit) {
@@ -171,6 +172,12 @@
     await openDraft(draft.id); notice("Draft saved.");
   }
   $("import-repository").onsubmit = event => { event.preventDefault(); const p = Object.fromEntries(new FormData(event.currentTarget)); run(async () => { await command("repository.import", p); await repositories(); }); };
+  async function hosts() { const selected=$("target-host").value;const page=await request("/hosts?limit=500");$("target-host").replaceChildren(...page.items.map(h=>new Option(h.name+" · "+h.membership+" · "+h.reachability,h.id)));if(page.items.some(h=>h.id===selected))$("target-host").value=selected;await hostDetails(); }
+  async function selectedHost(){const id=$("target-host").value;if(!id)throw new Error("Select a target host.");return request("/hosts/"+id);}
+  async function hostDetails(){const h=await selectedHost();$("host-details").textContent=h.environment+" · "+h.health.status+" · "+(h.configuration?h.configuration.name:"No configuration assigned")+" · observed "+(h.last_seen||"unknown");}
+  $("target-host").onchange=()=>run(hostDetails);
+  $("refresh-hosts").onclick=()=>run(hosts);
+  for(const [id,verb] of [["preview-host","preview"],["build-host","build"]])$(id).onclick=()=>run(async()=>{const h=await selectedHost();const result=await command("deployment."+verb,{host_id:h.id},{["host:"+h.id]:h.version},h.id);$("candidate-result").textContent=result.id?"Candidate "+result.id+"\nSource "+result.source.commit+"\nOutput "+result.output_path+"\nNAR hash "+result.nar_hash:JSON.stringify(result,null,2);notice("Completed "+verb+" for "+h.name);});
   $("fetch-repository").onclick = () => run(async () => { await command("repository.fetch", {repository_id: repository.id}); await openRepository(repository.id); });
   $("new-configuration").onclick = () => run(newConfiguration);
   $("open-draft").onsubmit = event => { event.preventDefault(); const id = new FormData(event.currentTarget).get("draft_id"); run(() => openDraft(id)); };
@@ -182,5 +189,5 @@
   $("save-draft").onclick = () => run(save);
   $("validate-draft").onclick = () => run(async () => { await save(); await command("configuration.validate", {draft_id: draft.id}, {}, draft.owner_node_id); await openDraft(draft.id); });
   $("commit-draft").onclick = () => run(async () => { if (regenerated.size) throw new Error("Review regenerated text before committing."); await save(); await command("configuration.commit", {draft_id: draft.id}, draft.expected_versions, draft.owner_node_id); await openDraft(draft.id); await openRepository(repository.id); });
-  (async () => { try { const go = new Go(); const bytes = await (await fetch("/assets/renderer.wasm")).arrayBuffer(); const wasm = await WebAssembly.instantiate(bytes, go.importObject); go.run(wasm.instance).catch(error); await repositories(); notice("Choose a repository or import one."); } catch (e) { error(e); } })();
+  (async () => { try { const go = new Go(); const bytes = await (await fetch("/assets/renderer.wasm")).arrayBuffer(); const wasm = await WebAssembly.instantiate(bytes, go.importObject); go.run(wasm.instance).catch(error); await repositories(); await hosts(); notice("Choose a repository or import one."); } catch (e) { error(e); } })();
 })();

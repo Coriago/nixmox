@@ -59,26 +59,27 @@ type Genesis struct {
 	} `json:"creator"`
 }
 type Manager struct {
-	mu                sync.RWMutex
-	store             *storage.Store
-	config            config.Config
-	identity          domain.Identity
-	keys              pki.Keys
-	membership        *Membership
-	broker            *broker.Broker
-	stores            *broker.Stores
-	service           *service.Service
-	dispatcher        *dispatcher
-	joinRates         map[string]joinRate
-	querySubscription *nats.Subscription
-	querySlots        chan struct{}
-	closed            bool
-	transportMu       sync.Mutex
-	agent             *executorAgent
-	hub               *deliveryHub
-	queryWorkers      sync.WaitGroup
-	queryIngress      chan struct{}
-	telemetry         *telemetryTransport
+	mu                    sync.RWMutex
+	store                 *storage.Store
+	config                config.Config
+	identity              domain.Identity
+	keys                  pki.Keys
+	membership            *Membership
+	broker                *broker.Broker
+	stores                *broker.Stores
+	service               *service.Service
+	dispatcher            *dispatcher
+	joinRates             map[string]joinRate
+	querySubscription     *nats.Subscription
+	inventorySubscription *nats.Subscription
+	querySlots            chan struct{}
+	closed                bool
+	transportMu           sync.Mutex
+	agent                 *executorAgent
+	hub                   *deliveryHub
+	queryWorkers          sync.WaitGroup
+	queryIngress          chan struct{}
+	telemetry             *telemetryTransport
 }
 
 // DurableStores is an adapter boundary for cluster feature services. Pending
@@ -91,6 +92,8 @@ func (m *Manager) DurableStores() (*broker.Stores, error) {
 	}
 	return m.stores, nil
 }
+
+func (m *Manager) Identity() domain.Identity { m.mu.RLock(); defer m.mu.RUnlock(); return m.identity }
 
 func Open(st *storage.Store, c config.Config) (*Manager, error) {
 	id, err := st.Identity()
@@ -119,6 +122,8 @@ func (m *Manager) Close() {
 	defer m.transportMu.Unlock()
 	m.mu.Lock()
 	d, b, q := m.dispatcher, m.broker, m.querySubscription
+	inventory := m.inventorySubscription
+	m.inventorySubscription = nil
 	agent, hub := m.agent, m.hub
 	telemetry := m.telemetry
 	m.telemetry = nil
@@ -145,6 +150,9 @@ func (m *Manager) Close() {
 	m.queryWorkers.Wait()
 	if q != nil {
 		q.Unsubscribe()
+	}
+	if inventory != nil {
+		inventory.Unsubscribe()
 	}
 	if b != nil {
 		b.Close()
@@ -212,6 +220,9 @@ func (m *Manager) activateDispatcher() error {
 	m.hub = hub
 	m.agent = agent
 	err = m.startQueries()
+	if err == nil {
+		err = m.startInventory()
+	}
 	m.mu.Unlock()
 	return err
 }

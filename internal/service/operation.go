@@ -12,15 +12,16 @@ import (
 // Validate is pure and repeated on execution. Resolve pins mutable selectors
 // before acceptance. Reconcile must inspect uncertain effects before repeating.
 type Operation struct {
-	Kind       string
-	Scope      string
-	Timeout    time.Duration
-	Validate   func(domain.Command) error
-	Resolve    func(context.Context, domain.Command) (json.RawMessage, error)
-	Run        func(context.Context, *Execution) (any, error)
-	Reconcile  func(context.Context, *Execution) (any, error)
-	SafeRetry  bool
-	Exclusions func(domain.Command, json.RawMessage) ([]string, error)
+	Kind             string
+	Scope            string
+	RunOnCoordinator bool
+	Timeout          time.Duration
+	Validate         func(domain.Command) error
+	Resolve          func(context.Context, domain.Command) (json.RawMessage, error)
+	Run              func(context.Context, *Execution) (any, error)
+	Reconcile        func(context.Context, *Execution) (any, error)
+	SafeRetry        bool
+	Exclusions       func(domain.Command, json.RawMessage) ([]string, error)
 }
 type Execution struct {
 	service  *Service

@@ -36,13 +36,15 @@ type ClusterReader interface {
 }
 
 func New(s *service.Service, clusters ...ClusterReader) http.Handler {
-	a := &Server{service: s, templates: template.Must(template.New("network.html").Funcs(template.FuncMap{"networkText": presentation.Network, "taskText": presentation.Task, "taskResult": presentation.TaskResult}).ParseFS(assets, "assets/*.html"))}
+	a := &Server{service: s, templates: template.Must(template.New("network.html").Funcs(template.FuncMap{"networkText": presentation.Network, "taskText": presentation.Task, "taskResult": presentation.TaskResult, "taskProgress": presentation.TaskProgress}).ParseFS(assets, "assets/*.html"))}
 	if len(clusters) > 0 {
 		a.cluster = clusters[0]
 	}
 	mux := http.NewServeMux()
 	a.sourceRoutes(mux)
 	a.configurationRoutes(mux)
+	a.hostRoutes(mux)
+	a.deploymentRoutes(mux)
 	mux.HandleFunc("GET /ui/sources", func(w http.ResponseWriter, r *http.Request) { a.render(w, r, "sources.html", 200, a.view()) })
 	mux.HandleFunc("GET /api/v1/cluster/status", func(w http.ResponseWriter, r *http.Request) {
 		if a.cluster == nil {

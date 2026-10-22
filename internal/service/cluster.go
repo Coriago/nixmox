@@ -131,6 +131,10 @@ func (s *Service) PrepareCluster(ctx context.Context, c domain.Command, cluster 
 	identity := s.Identity()
 	p.CoordinatorID = identity.NodeID
 	p.TargetEpoch = identity.MembershipEpoch
+	p.ExecutorID = c.TargetID
+	if op.RunOnCoordinator {
+		p.ExecutorID = identity.NodeID
+	}
 	if op.Resolve != nil {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -175,7 +179,7 @@ func (s *Service) prepareClusterControl(c domain.Command, fingerprint, cluster s
 	if t.MembershipEpoch != identity.MembershipEpoch {
 		return domain.PreparedCommand{}, domain.Err("MEMBERSHIP_CHANGED", "Task belongs to an inactive membership epoch.", 409)
 	}
-	original := domain.PreparedCommand{Resolved: a.Resolved, Exclusions: a.Exclusions, TargetEpoch: a.MembershipEpoch}
+	original := domain.PreparedCommand{Resolved: a.Resolved, Exclusions: a.Exclusions, ExecutorID: t.OwnerNodeID, ExecutorEpoch: a.MembershipEpoch, TargetEpoch: a.MembershipEpoch}
 	return PrepareTaskControl(c, fingerprint, cluster, identity.NodeID, t, original, safeRetry)
 }
 
@@ -183,7 +187,7 @@ func PrepareTaskControl(c domain.Command, fingerprint, cluster, coordinator stri
 	if t.Scope != "cluster" || c.TargetID != t.TargetID || t.ClusterID == nil || *t.ClusterID != cluster {
 		return domain.PreparedCommand{}, domain.Err("INVALID_COMMAND", "Task control scope or target differs from its owner.", 422)
 	}
-	if t.MembershipEpoch != original.TargetEpoch {
+	if t.MembershipEpoch != original.ExecutionEpoch() {
 		return domain.PreparedCommand{}, domain.Err("MEMBERSHIP_CHANGED", "Task belongs to an inactive membership epoch.", 409)
 	}
 	if len(c.ExpectedVersions) != 1 || c.ExpectedVersions["task:"+t.ID] != t.Version {
@@ -201,5 +205,5 @@ func PrepareTaskControl(c domain.Command, fingerprint, cluster, coordinator stri
 		}
 	}
 	now := time.Now().UTC()
-	return domain.PreparedCommand{Command: c, ClusterID: cluster, CoordinatorID: coordinator, TargetEpoch: t.MembershipEpoch, Fingerprint: fingerprint, Kind: t.Kind, Resolved: original.Resolved, Exclusions: append([]string(nil), original.Exclusions...), AdmittedAt: now, ExpiresAt: now.Add(120 * time.Second)}, nil
+	return domain.PreparedCommand{Command: c, ClusterID: cluster, CoordinatorID: coordinator, TargetEpoch: original.TargetEpoch, ExecutorID: t.OwnerNodeID, ExecutorEpoch: t.MembershipEpoch, Fingerprint: fingerprint, Kind: t.Kind, Resolved: original.Resolved, Exclusions: append([]string(nil), original.Exclusions...), AdmittedAt: now, ExpiresAt: now.Add(120 * time.Second)}, nil
 }

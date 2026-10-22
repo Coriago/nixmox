@@ -36,6 +36,8 @@ type admission struct {
 type Service struct {
 	sources              SourceReader
 	configurations       ConfigurationReader
+	hosts                HostReader
+	deployments          DeploymentReader
 	mu                   sync.Mutex
 	store                *storage.Store
 	inspector            Inspector
@@ -230,7 +232,7 @@ func (s *Service) admit(c domain.Command, delivered *domain.PreparedCommand) (do
 		}
 		return a.Receipt, nil
 	}
-	if c.TargetID != s.identity.NodeID {
+	if delivered == nil && c.TargetID != s.identity.NodeID {
 		return domain.Receipt{}, domain.Err("TARGET_UNREACHABLE", "This unjoined daemon can address only its own node.", 503)
 	}
 	if s.fatal || s.ctx.Err() != nil {
@@ -243,7 +245,7 @@ func (s *Service) admit(c domain.Command, delivered *domain.PreparedCommand) (do
 		if delivered.Fingerprint != fingerprint || s.identity.ClusterID == nil || *s.identity.ClusterID != delivered.ClusterID {
 			return domain.Receipt{}, domain.Err("INVALID_COMMAND", "Invalid authenticated cluster command context.", 422)
 		}
-		if delivered.TargetEpoch != s.identity.MembershipEpoch || !domain.SafeID.MatchString(delivered.CoordinatorID) {
+		if delivered.ExecutionNode() != s.identity.NodeID || delivered.ExecutionEpoch() != s.identity.MembershipEpoch || !domain.SafeID.MatchString(delivered.CoordinatorID) {
 			return domain.Receipt{}, domain.Err("MEMBERSHIP_CHANGED", "Delivery belongs to another membership epoch.", 409)
 		}
 		if time.Now().After(delivered.ExpiresAt) {
@@ -253,7 +255,7 @@ func (s *Service) admit(c domain.Command, delivered *domain.PreparedCommand) (do
 	a := admission{SchemaVersion: 1, Kind: c.Type, Scope: "node_local", Resolved: c.Payload, Fingerprint: fingerprint, Command: c, CreatedAt: time.Now().UTC(), Receipt: domain.Receipt{CommandID: c.ID, Admission: "accepted", TaskID: taskID(c.ID)}}
 	if delivered != nil {
 		a.ClusterID = &delivered.ClusterID
-		a.MembershipEpoch = delivered.TargetEpoch
+		a.MembershipEpoch = delivered.ExecutionEpoch()
 		a.CoordinatorID = delivered.CoordinatorID
 	}
 	switch c.Type {
@@ -310,6 +312,9 @@ func (s *Service) admit(c domain.Command, delivered *domain.PreparedCommand) (do
 		}
 		if delivered != nil && (op.Scope != "cluster" || delivered.Kind != c.Type) {
 			return domain.Receipt{}, domain.Err("INVALID_COMMAND", "Operation scope does not permit cluster delivery.", 422)
+		}
+		if delivered != nil && c.TargetID != s.identity.NodeID && (!op.RunOnCoordinator || delivered.CoordinatorID != s.identity.NodeID) {
+			return domain.Receipt{}, domain.Err("FORBIDDEN", "Operation cannot execute away from its target.", 403)
 		}
 		a.Scope = op.Scope
 		if delivered != nil {

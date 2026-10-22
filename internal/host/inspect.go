@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -38,6 +39,13 @@ func (i Inspector) Inspect(ctx context.Context, node string) (domain.HostSample,
 	sample := domain.HostSample{SchemaVersion: 1, HostID: node, Name: name, System: system, Environment: "bootstrap", ObservedAt: now, Freshness: "live", Health: domain.Health{Status: "healthy", ObservedAt: &now, Reasons: []domain.HealthReason{}}, Endpoints: []domain.Endpoint{}}
 	if running, err := filepath.EvalSymlinks("/run/current-system"); err == nil && strings.HasPrefix(running, "/nix/store/") {
 		sample.RunningOutput = &running
+		if info, err := os.Stat(filepath.Join(running, "bin/switch-to-configuration")); err == nil && info.Mode()&0111 != 0 {
+			sample.Capabilities.Apply = true
+		}
+	}
+	if _, err := exec.LookPath("nix"); err == nil {
+		_, err := process.Run(ctx, process.Options{Timeout: 3 * time.Second, MaxOutput: 64 << 10}, "nix", "store", "ping", "--json")
+		sample.Capabilities.Build = err == nil
 	}
 	issue := func(status, code, resource, message string) {
 		sample.Health.Reasons = append(sample.Health.Reasons, domain.HealthReason{Code: code, Resource: resource, Message: message})

@@ -19,6 +19,10 @@ type Options struct {
 	Directory   string
 	Environment []string
 	Timeout     time.Duration
+	// StderrLine consumes bounded records without retaining an unbounded log.
+	// Oversized records are discarded. Callbacks must be quick and never log raw
+	// input implicitly; protocol adapters select safe fields for presentation.
+	StderrLine func([]byte)
 }
 type Result struct {
 	Stdout, Stderr []byte
@@ -60,6 +64,11 @@ func Run(ctx context.Context, options Options, program string, args ...string) (
 	cmd.Dir = options.Directory
 	cmd.Stdout = out
 	cmd.Stderr = stderr
+	var lines *lineWriter
+	if options.StderrLine != nil {
+		lines = &lineWriter{consume: options.StderrLine}
+		cmd.Stderr = lines
+	}
 	cmd.WaitDelay = time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -80,6 +89,9 @@ func Run(ctx context.Context, options Options, program string, args ...string) (
 	cmd.Env = append(cmd.Env, "LANG=C.UTF-8", "LC_ALL=C.UTF-8")
 	cmd.Env = append(cmd.Env, options.Environment...)
 	err := cmd.Run()
+	if lines != nil {
+		lines.flush()
+	}
 	result := Result{Stdout: out.buffer.Bytes(), Stderr: stderr.buffer.Bytes(), ExitCode: -1}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
@@ -91,4 +103,42 @@ func Run(ctx context.Context, options Options, program string, args ...string) (
 		return result, ctx.Err()
 	}
 	return result, err
+}
+
+type lineWriter struct {
+	buffer  []byte
+	discard bool
+	consume func([]byte)
+}
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	count := len(p)
+	for len(p) > 0 {
+		index := bytes.IndexByte(p, '\n')
+		part := p
+		if index >= 0 {
+			part = p[:index]
+		}
+		if !w.discard {
+			if len(w.buffer)+len(part) > 256<<10 {
+				w.buffer = nil
+				w.discard = true
+			} else {
+				w.buffer = append(w.buffer, part...)
+			}
+		}
+		if index < 0 {
+			break
+		}
+		w.flush()
+		p = p[index+1:]
+	}
+	return count, nil
+}
+func (w *lineWriter) flush() {
+	if !w.discard && len(w.buffer) > 0 {
+		w.consume(w.buffer)
+	}
+	w.buffer = w.buffer[:0]
+	w.discard = false
 }

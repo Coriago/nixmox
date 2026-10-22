@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"nixmox/internal/cluster"
 	"nixmox/internal/config"
 	"nixmox/internal/configuration"
+	"nixmox/internal/deployment"
 	"nixmox/internal/domain"
 	"nixmox/internal/gitops"
 	"nixmox/internal/gitstore"
@@ -125,6 +127,30 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	if group == "cluster" {
 		return clusterCommand(ctx, c, args[1:], out, errOut)
 	}
+	if group == "deploy" {
+		return deployCommand(ctx, c, args[1:], out, errOut)
+	}
+	if group == "tasks" && (verb == "progress" || verb == "watch") && len(rest) >= 1 {
+		if !domain.SafeID.MatchString(rest[0]) {
+			return 2
+		}
+		asJSON := false
+		if len(rest) > 1 {
+			if rest[1] != "--json" || len(rest) != 2 {
+				return 2
+			}
+			asJSON = true
+		}
+		if verb == "watch" {
+			return watchTask(ctx, c, rest[0], asJSON, out, errOut)
+		}
+		var progress any
+		if err := c.Read(ctx, "/api/v1/tasks/"+rest[0]+"/progress", &progress); err != nil {
+			return exitError(errOut, err)
+		}
+		printJSON(out, progress)
+		return 0
+	}
 	if group == "repositories" {
 		return repositoryCommand(ctx, c, args[1:], out, errOut)
 	}
@@ -143,7 +169,17 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return 0
 	}
 	if group == "hosts" && verb == "telemetry" {
+		if len(rest) > 0 && !strings.HasPrefix(rest[0], "n_") {
+			h, err := resolveHost(ctx, c, rest[0])
+			if err != nil {
+				return exitError(errOut, err)
+			}
+			rest = append([]string{h.ID}, rest[1:]...)
+		}
 		return hostTelemetryCommand(ctx, c, rest, out, errOut)
+	}
+	if group == "hosts" && (verb == "list" || verb == "show" || verb == "endpoints" || verb == "assign") {
+		return inventoryCommand(ctx, c, args[1:], out, errOut)
 	}
 	id := ""
 	if (group == "tasks" && verb != "list") || group == "commands" || (group == "hosts" && verb == "refresh") {
@@ -339,6 +375,12 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 		return exitError(errOut, err)
 	}
 	operations = append(operations, configurations.Operations()...)
+	inventorySampler := host.StartSampler(host.Inspector{Config: cfg, BrokerReady: clusters.BrokerReady}, clusters.Identity, clusters.PublishHost)
+	defer inventorySampler.Close()
+	hosts := &host.Catalog{State: sources.State, Identity: clusters.Identity, Members: clusters.Members, Configurations: configurations, Sample: inventorySampler.Snapshot}
+	operations = append(operations, hosts.Operations()...)
+	deployments := &deployment.Service{Sources: sources, Configurations: configurations, Hosts: hosts, Identity: clusters.Identity, Root: store.Root + "/builds"}
+	operations = append(operations, deployments.Operations()...)
 	svc, err := service.Open(store, network.Inspector{Config: cfg}, operations...)
 	if err != nil {
 		return exitError(errOut, err)
@@ -346,6 +388,8 @@ func serve(ctx context.Context, args []string, inherited string, out, errOut io.
 	defer svc.Close()
 	svc.SetSources(sources)
 	svc.SetConfigurations(configurations)
+	svc.SetHosts(hosts)
+	svc.SetDeployments(deployments)
 	sampler := telemetry.Start(svc.Identity, time.Duration(cfg.Telemetry.Host.FastIntervalMs)*time.Millisecond, time.Duration(cfg.Telemetry.Host.FilesystemIntervalMs)*time.Millisecond)
 	defer sampler.Close()
 	if err := svc.SetTelemetry(sampler); err != nil {
