@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="htmx-config" content='{"allowEval":false,"includeIndicatorStyles":false}'><title>Nixmox · Local node</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/htmx.min.js" defer></script><script src="/assets/events.js" defer></script></head>
+<body><header><a href="/ui/network">Nixmox</a><span>Local node</span></header><main>{{if .Task}}{{template "task-content" .}}{{else}}{{template "content" .}}{{end}}</main></body></html>
+{{define "content"}}
+<h1>Network</h1><p>Inspect this node’s management connections.</p>
+<p id="stream-state" role="status">Connecting to live updates…</p>
+{{template "status" .}}
+<form data-command method="post" action="/ui/commands" hx-post="/ui/commands" hx-target="#receipt" hx-swap="innerHTML">
+<input type="hidden" name="id" value="{{.CommandID}}"><input type="hidden" name="target_id" value="{{.TargetID}}"><input type="hidden" name="type" value="network.check">
+<button type="submit">Check network</button></form>
+<div id="receipt" aria-live="polite">{{template "receipt" .}}</div>
+<p class="note">This build supports local network inspection. Wi-Fi configuration and cluster enrollment are not available yet.</p>
+{{end}}
+{{define "status"}}<section id="network-status" hx-get="/ui/network/status" hx-trigger="refresh" hx-swap="outerHTML" hx-sync="this:replace"><h2>Connection</h2><p>{{networkText .Network}}</p><p>Freshness: {{.Network.Freshness}}</p><h2>Recent tasks</h2><ul>{{range .Tasks}}<li><a href="/ui/tasks/{{.ID}}">{{taskText .}}</a></li>{{else}}<li>No tasks yet.</li>{{end}}</ul></section>{{end}}
+{{define "receipt"}}{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}{{if .Receipt}}<p>Accepted command <code>{{.Receipt.CommandID}}</code><br>Task <a href="/ui/tasks/{{.Receipt.TaskID}}">{{.Receipt.TaskID}}</a></p>{{end}}{{end}}
+{{define "task-content"}}
+<h1>Task</h1><p id="stream-state" role="status">Connecting to live updates…</p>
+{{template "task-status" .}}
+<p>Actions use reviewed version {{.Task.Version}}. <a href="/ui/tasks/{{.Task.ID}}">Reload review</a> after a state change.</p>
+{{range .Controls}}<form data-command method="post" action="/ui/commands" hx-post="/ui/commands" hx-target="#receipt" hx-swap="innerHTML">
+<input type="hidden" name="id" value="{{.CommandID}}"><input type="hidden" name="target_id" value="{{.TargetID}}"><input type="hidden" name="type" value="{{.Action.Type}}"><input type="hidden" name="task_id" value="{{.TaskID}}"><input type="hidden" name="expected_version" value="{{.Version}}">
+<button type="submit" {{if not .Action.Enabled}}disabled{{end}}>{{.Action.Label}}</button> {{.Action.Reason}}
+</form>{{end}}
+<div id="receipt" aria-live="polite">{{template "receipt" .}}</div>
+{{end}}
+{{define "task-status"}}<section id="task-status" hx-get="/ui/tasks/{{.Task.ID}}/status" hx-trigger="refresh" hx-swap="outerHTML" hx-sync="this:replace"><p>{{taskText .Task}}</p><p>Version: {{.Task.Version}}</p>{{if .Task.Result}}<p>{{networkText .Task.Result}}</p>{{end}}{{if .Task.Error}}<p role="alert">{{.Task.Error.Code}}: {{.Task.Error.Message}}</p>{{end}}<a href="/api/v1/tasks/{{.Task.ID}}/logs/download">Download retained log</a></section>{{end}}
