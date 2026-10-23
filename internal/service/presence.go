@@ -1,8 +1,10 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"nixmox/internal/domain"
@@ -173,7 +175,7 @@ func (s *membershipTelemetry) Next(ctx context.Context) (domain.HostTelemetry, e
 func (s *Service) readHosts(ctx context.Context, request ReadRequest) (json.RawMessage, error) {
 	hosts := s.Cluster.Hosts()
 	if request.ID == nil {
-		page, err := pageItems(hosts, request.Page, func(h domain.Host) domain.ID { return h.ID })
+		page, err := hostPage(hosts, request.Page)
 		if err != nil {
 			return nil, err
 		}
@@ -198,6 +200,33 @@ func (s *Service) readHosts(ctx context.Context, request ReadRequest) (json.RawM
 		return json.Marshal(host)
 	}
 	return nil, notFound()
+}
+
+type hostFilter struct {
+	membership   domain.Membership
+	reachability domain.Reachability
+}
+
+func parseHostFilter(values map[string]string) (hostFilter, error) {
+	membership, err := enumFilter(values["membership"], domain.Unjoined, domain.Pending, domain.Full, domain.Removed)
+	if err != nil {
+		return hostFilter{}, err
+	}
+	reachability, err := enumFilter(values["reachability"], domain.Online, domain.ReachabilityStale, domain.Offline)
+	return hostFilter{membership, reachability}, err
+}
+
+// Host filters and ordering stay typed; pagination only sees the final snapshot.
+func hostPage(hosts []domain.Host, page domain.PageRequest) (domain.Page[domain.Host], error) {
+	filter, err := parseHostFilter(page.Filters)
+	if err != nil {
+		return domain.Page[domain.Host]{}, err
+	}
+	items := slices.DeleteFunc(slices.Clone(hosts), func(h domain.Host) bool {
+		return (filter.membership != "" && h.Membership != filter.membership) || (filter.reachability != "" && h.Reachability != filter.reachability)
+	})
+	slices.SortFunc(items, func(a, b domain.Host) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID)) })
+	return pageItems(items, page, "hosts", func(h domain.Host) []string { return []string{h.Name, string(h.ID)} })
 }
 
 func notFound() error { return &domain.Error{Code: "NOT_FOUND", Message: "Resource not found"} }

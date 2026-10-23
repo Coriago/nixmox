@@ -1,11 +1,12 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
-	"sort"
+	"slices"
 	"time"
 
 	js "github.com/nats-io/nats.go/jetstream"
@@ -146,7 +147,7 @@ func (s *Service) reconcileTasks(ctx context.Context) (resultErr error) {
 			resultErr = errors.Join(resultErr, err)
 		}
 	}
-	return resultErr
+	return errors.Join(resultErr, s.Cluster.reconcilePower(ctx))
 }
 
 func (s *Service) taskState(ctx context.Context, id domain.ID) (domain.Task, error) {
@@ -160,7 +161,41 @@ func (s *Service) taskState(ctx context.Context, id domain.ID) (domain.Task, err
 	}
 	return s.Cluster.refreshTask(ctx, current)
 }
+
+// Only cursor encoding uses formatted timestamps; filtering/sorting use time.Time.
+const listTimeFormat = "2006-01-02T15:04:05.000000000Z"
+
 func (s *Service) taskList(ctx context.Context, request domain.PageRequest) (domain.Page[domain.Task], error) {
+	request, err := validatePage("tasks", request)
+	if err != nil {
+		return domain.Page[domain.Task]{}, err
+	}
+	state, err := enumFilter(request.Filters["state"], domain.Queued, domain.Running, domain.Blocked, domain.Reconciling, domain.Cancelling, domain.Cancelled, domain.Succeeded, domain.Failed)
+	if err != nil {
+		return domain.Page[domain.Task]{}, err
+	}
+	host, kind := domain.ID(request.Filters["host_id"]), request.Filters["kind"]
+	if kind != "" {
+		if _, ok := s.Registry.Lookup(kind); !ok {
+			return domain.Page[domain.Task]{}, invalid("Unknown task kind")
+		}
+	}
+	var bounds [2]*time.Time
+	for i, name := range []string{"since", "until"} {
+		if raw := request.Filters[name]; raw != "" {
+			value, err := time.Parse(time.RFC3339Nano, raw)
+			if err != nil {
+				return domain.Page[domain.Task]{}, invalid("Time filters require RFC3339 timestamps")
+			}
+			value = value.UTC()
+			bounds[i] = &value
+			request.Filters[name] = value.Format(listTimeFormat)
+		}
+	}
+	since, until := bounds[0], bounds[1]
+	if since != nil && until != nil && !since.Before(*until) {
+		return domain.Page[domain.Task]{}, invalid("since must precede until")
+	}
 	byID := map[domain.ID]domain.Task{}
 	cursor := ""
 	for {
@@ -189,15 +224,17 @@ func (s *Service) taskList(ctx context.Context, request domain.PageRequest) (dom
 	}
 	items := make([]domain.Task, 0, len(byID))
 	for _, current := range byID {
+		if (host != "" && current.TargetID != host) ||
+			(kind != "" && current.Kind != kind) ||
+			(state != "" && current.State != state) ||
+			(since != nil && current.CreatedAt.Before(*since)) ||
+			(until != nil && !current.CreatedAt.Before(*until)) {
+			continue
+		}
 		items = append(items, current)
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
-			return items[i].ID > items[j].ID
-		}
-		return items[i].CreatedAt.After(items[j].CreatedAt)
-	})
-	return pageItems(items, request, func(t domain.Task) domain.ID { return t.ID })
+	slices.SortFunc(items, func(a, b domain.Task) int { return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), cmp.Compare(b.ID, a.ID)) })
+	return pageItems(items, request, "tasks", func(t domain.Task) []string { return []string{t.CreatedAt.UTC().Format(listTimeFormat), string(t.ID)} })
 }
 func (s *Service) taskLogs(ctx context.Context, id domain.ID, offset int64, limit int) (domain.LogChunk, error) {
 	current, err := s.taskState(ctx, id)

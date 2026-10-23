@@ -175,10 +175,8 @@ func (c *Client) Certificates(ctx context.Context, id domain.ID) (domain.Issuanc
 	err := c.request(ctx, http.MethodPost, "enrollment/requests/"+url.PathEscape(string(id))+"/certificates", domain.Empty{}, &result)
 	return result, err
 }
-func (c *Client) Requests(ctx context.Context) (domain.Page[domain.JoinRequest], error) {
-	var result domain.Page[domain.JoinRequest]
-	err := c.request(ctx, http.MethodGet, "cluster/requests", nil, &result)
-	return result, err
+func (c *Client) Requests(ctx context.Context, page ...domain.PageRequest) (domain.Page[domain.JoinRequest], error) {
+	return listPage[domain.JoinRequest](ctx, c, "cluster/requests", page...)
 }
 
 func (c *Client) Discoveries(ctx context.Context) (domain.Page[domain.Discovery], error) {
@@ -199,10 +197,8 @@ func (c *Client) Host(ctx context.Context, id domain.ID) (domain.Host, error) {
 	return result, err
 }
 
-func (c *Client) Hosts(ctx context.Context) (domain.Page[domain.Host], error) {
-	var result domain.Page[domain.Host]
-	err := c.request(ctx, http.MethodGet, "hosts", nil, &result)
-	return result, err
+func (c *Client) Hosts(ctx context.Context, page ...domain.PageRequest) (domain.Page[domain.Host], error) {
+	return listPage[domain.Host](ctx, c, "hosts", page...)
 }
 
 func (c *Client) Telemetry(ctx context.Context, id domain.ID) (domain.HostTelemetry, error) {
@@ -230,15 +226,37 @@ func (c *Client) Task(ctx context.Context, id domain.ID) (domain.Task, error) {
 }
 
 func (c *Client) Tasks(ctx context.Context, page domain.PageRequest) (domain.Page[domain.Task], error) {
-	var result domain.Page[domain.Task]
-	query := url.Values{"cursor": {page.Cursor}}
-	if page.Limit != 0 {
-		query.Set("limit", strconv.Itoa(page.Limit))
-	}
-	err := c.request(ctx, http.MethodGet, "tasks?"+query.Encode(), nil, &result)
-	return result, err
+	return listPage[domain.Task](ctx, c, "tasks", page)
 }
 
+// A single list encoder keeps filters/cursors intact for every frontend.
+func listPage[T any](ctx context.Context, c *Client, path string, pages ...domain.PageRequest) (domain.Page[T], error) {
+	var result domain.Page[T]
+	if len(pages) > 1 {
+		return result, &domain.Error{Code: "INVALID_INPUT", Message: "Expected one page request"}
+	}
+	query := url.Values{}
+	if len(pages) == 1 {
+		page := pages[0]
+		for key, value := range page.Filters {
+			if key == "cursor" || key == "limit" {
+				return result, &domain.Error{Code: "INVALID_INPUT", Message: "Reserved filter name"}
+			}
+			query.Set(key, value)
+		}
+		if page.Cursor != "" {
+			query.Set("cursor", page.Cursor)
+		}
+		if page.Limit != 0 {
+			query.Set("limit", strconv.Itoa(page.Limit))
+		}
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	err := c.request(ctx, http.MethodGet, path, nil, &result)
+	return result, err
+}
 func (c *Client) Logs(ctx context.Context, id domain.ID, offset int64, limit int) (domain.LogChunk, error) {
 	var result domain.LogChunk
 	query := url.Values{"offset": {strconv.FormatInt(offset, 10)}, "limit": {strconv.Itoa(limit)}}

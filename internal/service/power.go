@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	js "github.com/nats-io/nats.go/jetstream"
+
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/platform"
@@ -117,6 +119,54 @@ func (c *ClusterNode) authorizePower(ctx context.Context, caller, id domain.ID) 
 	// A successful write, not a cached quorum observation, gates the effect.
 	return *r, c.saveState(ctx, *c.state)
 }
+
+// reconcilePower consumes durable executor evidence, not daemon startup itself.
+// Run after task projection so a failed membership CAS is retried even when the
+// task is already terminal. Only the authority can release the reservation.
+func (c *ClusterNode) reconcilePower(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.creator() || c.state == nil || c.state.Power == nil {
+		return nil
+	}
+	r := *c.state.Power
+	if err := c.quorum(ctx); err != nil {
+		return err
+	}
+	current, _, err := readRecord[domain.Task](ctx, c.transport.Store, recordKey("task", task.TaskID(r.CommandID)))
+	if errors.Is(err, js.ErrKeyNotFound) {
+		return nil
+	} // Admission/projection may still be pending.
+	if err != nil {
+		return err
+	}
+	if current.ID != task.TaskID(r.CommandID) || current.CommandID != r.CommandID || current.OwnerNodeID != r.HostID || current.TargetID != r.HostID || current.MembershipEpoch != r.Epoch || !isPower(current.Kind) || current.Scope != domain.ClusterScope || current.ClusterID == nil || *current.ClusterID != c.state.Cluster.ID {
+		return nil
+	}
+	for _, cp := range current.Checkpoints {
+		if cp.State != "observed" {
+			continue
+		}
+		var evidence struct {
+			PreviousBootID string `json:"previous_boot_id"`
+			BootID         string `json:"boot_id"`
+			Returned       bool   `json:"returned_after_request"`
+			Scheduled      *bool  `json:"scheduled"`
+		}
+		if json.Unmarshal(cp.Evidence, &evidence) != nil {
+			continue
+		}
+		rebooted := current.State == domain.Succeeded && cp.Phase == "boot" && evidence.Returned && r.BootID != "" && evidence.PreviousBootID == r.BootID && evidence.BootID != "" && evidence.BootID != r.BootID
+		neverScheduled := current.State == domain.Failed && cp.Phase == "schedule" && evidence.Scheduled != nil && !*evidence.Scheduled
+		if rebooted || neverScheduled {
+			state := *c.state
+			state.Power = nil
+			return c.saveState(ctx, state)
+		}
+	}
+	return nil
+}
+
 func (s *Service) powerDefinitions() []engine.TaskDefinition {
 	definitions := []engine.TaskDefinition{}
 	for _, kind := range []string{"host.shutdown", "host.reboot"} {

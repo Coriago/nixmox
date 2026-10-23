@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -9,7 +10,7 @@ import (
 	"maps"
 	"net/url"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -92,7 +93,11 @@ func (c *ClusterNode) Enrollment(ctx context.Context, id domain.ID) (domain.Enro
 	}
 	return c.status(r), nil
 }
-func (c *ClusterNode) Requests(ctx context.Context) (domain.Page[domain.JoinRequest], error) {
+func (c *ClusterNode) Requests(ctx context.Context, page domain.PageRequest) (domain.Page[domain.JoinRequest], error) {
+	state, err := enumFilter(page.Filters["state"], "awaiting_approval", "approved", "rejected", "expired")
+	if err != nil {
+		return domain.Page[domain.JoinRequest]{}, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.quorum(ctx); err != nil {
@@ -100,10 +105,13 @@ func (c *ClusterNode) Requests(ctx context.Context) (domain.Page[domain.JoinRequ
 	}
 	items := make([]domain.JoinRequest, 0, len(c.state.Requests))
 	for _, r := range c.state.Requests {
-		items = append(items, c.status(r).Request)
+		r = c.status(r).Request
+		if state == "" || r.State == state {
+			items = append(items, r)
+		}
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
-	return domain.Page[domain.JoinRequest]{Items: items}, nil
+	slices.SortFunc(items, func(a, b domain.JoinRequest) int { return cmp.Compare(a.ID, b.ID) })
+	return pageItems(items, page, "cluster/requests", func(r domain.JoinRequest) []string { return []string{string(r.ID)} })
 }
 func (c *ClusterNode) Certificates(ctx context.Context, id domain.ID) (domain.Issuance, error) {
 	c.mu.Lock()

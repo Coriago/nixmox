@@ -1,9 +1,11 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"nixmox/internal/domain"
@@ -72,6 +74,21 @@ func (s *Service) Read(ctx context.Context, request ReadRequest) (json.RawMessag
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	path := request.Collection
+	if request.ID != nil || request.Subresource != "" {
+		path = ""
+	}
+	page, err := validatePage(path, request.Page)
+	if err != nil {
+		return nil, err
+	}
+	request.Page = page
+	// Validate host predicates before forwarding, even if the authority is offline.
+	if request.Collection == "hosts" && request.ID == nil {
+		if _, err := parseHostFilter(page.Filters); err != nil {
+			return nil, err
+		}
+	}
 	if s.Cluster != nil && s.Cluster.leaf() && (request.Collection == "hosts" || request.Collection == "cluster/status") {
 		localHost := request.Collection == "hosts" && request.ID != nil && *request.ID == s.Identity.NodeID && request.Subresource == "telemetry"
 		if !localHost {
@@ -84,7 +101,13 @@ func (s *Service) Read(ctx context.Context, request ReadRequest) (json.RawMessag
 		if s.Discovery != nil {
 			items = s.Discovery.Snapshot()
 		}
-		page, err := pageItems(items, request.Page, func(d domain.Discovery) domain.ID { return d.ID })
+		kind, err := enumFilter(request.Page.Filters["kind"], "node", "cluster")
+		if err != nil {
+			return nil, err
+		}
+		items = slices.DeleteFunc(slices.Clone(items), func(d domain.Discovery) bool { return kind != "" && string(d.Kind) != kind })
+		slices.SortFunc(items, func(a, b domain.Discovery) int { return cmp.Compare(a.ID, b.ID) })
+		page, err := pageItems(items, request.Page, "discoveries", func(d domain.Discovery) []string { return []string{string(d.ID)} })
 		if err != nil {
 			return nil, err
 		}
@@ -98,7 +121,7 @@ func (s *Service) Read(ctx context.Context, request ReadRequest) (json.RawMessag
 		if s.Cluster == nil {
 			return nil, domain.Unavailable("cluster requests")
 		}
-		page, err := s.Cluster.Requests(ctx)
+		page, err := s.Cluster.Requests(ctx, request.Page)
 		if err != nil {
 			return nil, err
 		}
@@ -124,10 +147,11 @@ func (s *Service) Read(ctx context.Context, request ReadRequest) (json.RawMessag
 		now := time.Now().UTC()
 		host.LastSeen = &now
 		if request.ID == nil {
-			if request.Page.Cursor != "" {
-				return nil, &domain.Error{Code: "CURSOR_EXPIRED", Message: "Host cursor unavailable"}
+			page, err := hostPage([]domain.Host{host}, request.Page)
+			if err != nil {
+				return nil, err
 			}
-			return json.Marshal(domain.Page[domain.Host]{Items: []domain.Host{host}})
+			return json.Marshal(page)
 		}
 		if *request.ID != s.Identity.NodeID {
 			return nil, &domain.Error{Code: "NOT_FOUND", Message: "Host not found"}

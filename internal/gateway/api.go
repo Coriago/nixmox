@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -121,12 +122,17 @@ func New(s *service.Service) http.Handler {
 
 func read(s *service.Service, collection, subresource string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limit, err := strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(domain.PageDefault)))
-		if err != nil || limit < 1 || limit > domain.PageLimit || !queries(c, "cursor", "limit") {
-			failure(c, &domain.Error{Code: "INVALID_INPUT", Message: "Invalid pagination or unsupported filter"}, nil)
+		values, err := url.ParseQuery(c.Request.URL.RawQuery)
+		if err != nil {
+			failure(c, &domain.Error{Code: "INVALID_INPUT", Message: "Invalid query encoding"}, nil)
 			return
 		}
-		request := service.ReadRequest{Collection: collection, Subresource: subresource, Page: domain.PageRequest{Limit: limit, Cursor: c.Query("cursor")}}
+		page, err := service.ParsePageQuery(values)
+		if err != nil {
+			failure(c, err, nil)
+			return
+		}
+		request := service.ReadRequest{Collection: collection, Subresource: subresource, Page: page}
 		if value := c.Param("id"); value != "" {
 			id := domain.ID(value)
 			request.ID = &id
