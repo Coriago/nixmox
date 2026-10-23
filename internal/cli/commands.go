@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"github.com/spf13/cobra"
 
 	"nixmox/internal/client"
@@ -181,9 +182,18 @@ func (o *options) taskCommands() *cobra.Command {
 		value, err := api.Task(cmd.Context(), domain.ID(args[0]))
 		return o.print(cmd, value, err)
 	}})
+	watch := &cobra.Command{Use: "watch TASK", Args: cobra.ExactArgs(1), Short: "Watch task state until terminal; Ctrl-C only stops watching"}
+	watch.RunE = func(cmd *cobra.Command, args []string) error {
+		return o.watchTask(cmd, args[0], false, 0)
+	}
+	group.AddCommand(watch)
 	var offset int64
 	var logLimit int
+	var follow bool
 	logs := &cobra.Command{Use: "logs TASK", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if follow {
+			return o.watchTask(cmd, args[0], true, offset)
+		}
 		api, err := o.api()
 		if err != nil {
 			return err
@@ -199,6 +209,7 @@ func (o *options) taskCommands() *cobra.Command {
 		_, err = cmd.OutOrStdout().Write(data)
 		return operationError(err)
 	}}
+	logs.Flags().BoolVarP(&follow, "follow", "f", false, "Follow logs through completion; Ctrl-C only stops following")
 	logs.Flags().Int64Var(&offset, "offset", 0, "Absolute log byte offset")
 	logs.Flags().IntVar(&logLimit, "limit", domain.LogReadDefault, "Maximum log bytes (1–1048576)")
 	group.AddCommand(logs)
@@ -218,6 +229,28 @@ func (o *options) taskCommands() *cobra.Command {
 		group.AddCommand(command)
 	}
 	return group
+}
+
+func (o *options) watchTask(cmd *cobra.Command, id string, logs bool, offset int64) error {
+	api, err := o.api()
+	if err != nil {
+		return err
+	}
+	return operationError(api.WatchTask(cmd.Context(), domain.ID(id), logs, offset, func(data json.RawMessage) error {
+		if !logs || o.json {
+			return o.print(cmd, data, nil)
+		}
+		var chunk domain.LogChunk
+		if err := json.Unmarshal(data, &chunk); err != nil {
+			return err
+		}
+		decoded, err := base64.StdEncoding.DecodeString(chunk.DataBase64)
+		if err != nil {
+			return err
+		}
+		_, err = cmd.OutOrStdout().Write(decoded)
+		return err
+	}))
 }
 
 func (o *options) receiptCommand() *cobra.Command {

@@ -89,6 +89,10 @@ func New(s *service.Service) http.Handler {
 		c.JSON(http.StatusOK, chunk)
 	})
 	api.GET("/events", func(c *gin.Context) {
+		if c.Query("topics") == "tasks" || c.Query("topics") == "task.logs" {
+			watchTask(c, s)
+			return
+		}
 		if c.Query("topics") != "hosts.telemetry" || c.Query("host_id") == "" || !queries(c, "topics", "host_id") {
 			failure(c, &domain.Error{Code: "INVALID_INPUT", Message: "This node supports hosts.telemetry events with host_id"}, nil)
 			return
