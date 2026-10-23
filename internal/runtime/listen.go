@@ -4,12 +4,17 @@ import (
 	"fmt"
 	"net"
 	"slices"
+
+	"nixmox/internal/domain"
 )
 
-// HTTPAddresses binds only explicit management addresses, never a wildcard.
-// Loopback remains available for the local CLI even with management interfaces.
-func (c Config) HTTPAddresses() ([]string, error) {
-	addresses := []string{net.JoinHostPort("127.0.0.1", fmt.Sprint(c.HTTP.Port))}
+// HTTPEndpoints supplies both listener addresses and their advertised interfaces.
+// Only explicit management addresses are bound; loopback remains available locally.
+func (c Config) HTTPEndpoints() ([]domain.Endpoint, error) {
+	endpoint := func(ip, name string) domain.Endpoint {
+		return domain.Endpoint{Service: "api", Transport: "http", Address: net.JoinHostPort(ip, fmt.Sprint(c.HTTP.Port)), Interface: name, Verified: true}
+	}
+	endpoints := []domain.Endpoint{endpoint("127.0.0.1", "")}
 	for _, name := range c.Network.ManagementInterfaces {
 		iface, err := net.InterfaceByName(name)
 		if err != nil {
@@ -24,11 +29,11 @@ func (c Config) HTTPAddresses() ([]string, error) {
 			if err != nil || (!ip.IsGlobalUnicast() && !ip.IsLoopback()) {
 				continue
 			}
-			address := net.JoinHostPort(ip.String(), fmt.Sprint(c.HTTP.Port))
-			if !slices.Contains(addresses, address) {
-				addresses = append(addresses, address)
+			next := endpoint(ip.String(), name)
+			if !slices.ContainsFunc(endpoints, func(e domain.Endpoint) bool { return e.Address == next.Address }) {
+				endpoints = append(endpoints, next)
 			}
 		}
 	}
-	return addresses, nil
+	return endpoints, nil
 }

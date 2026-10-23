@@ -25,6 +25,20 @@ type Repository struct {
 	Upstream Upstream `json:"upstream"`
 }
 
+// RepositoryState is the single authoritative CAS unit for settings and refs.
+// Applied commands retain small acceptance proofs for uncertain-write recovery.
+type RepositoryState struct {
+	Repository Repository              `json:"repository"`
+	Refs       []Reference             `json:"refs"`
+	Applied    map[ID]RepositoryResult `json:"applied"`
+}
+
+type RepositoryResult struct {
+	RepositoryID ID      `json:"repository_id"`
+	Version      Version `json:"version"`
+	Commit       *Commit `json:"commit"`
+}
+
 type Remote struct {
 	URL           string `json:"url"`
 	CredentialRef *ID    `json:"credential_ref"`

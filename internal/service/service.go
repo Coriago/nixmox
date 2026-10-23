@@ -41,6 +41,7 @@ type Resolutions interface {
 	Stage(context.Context, domain.ID, domain.Version, []domain.FileManifest, io.Reader) (domain.Resolution, error)
 }
 type Service struct {
+	Cache     *Cache
 	Registry  *Registry
 	Cluster   *ClusterNode
 	Identity  domain.Identity
@@ -65,6 +66,14 @@ func (s *Service) Submit(ctx context.Context, command domain.Command) (_ domain.
 		return domain.Receipt{}, err
 	}
 	span.SetName("command.admit " + op.Name)
+	if (repositoryOperation(command.Type) || command.Type == "host.assign") && s.Cluster != nil && s.Cluster.leaf() {
+		data, err := s.Cluster.call(ctx, "", "source.submit", command, true)
+		var receipt domain.Receipt
+		if err == nil {
+			err = json.Unmarshal(data, &receipt)
+		}
+		return receipt, err
+	}
 	if s.Scheduler == nil {
 		return domain.Receipt{}, domain.Unavailable(command.Type)
 	}

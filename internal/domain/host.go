@@ -50,6 +50,7 @@ type Capabilities struct {
 }
 
 type Host struct {
+	Cache *CachePeer `json:"cache,omitempty"`
 	Record
 	Name               string         `json:"name"`
 	ClusterID          *ID            `json:"cluster_id"`

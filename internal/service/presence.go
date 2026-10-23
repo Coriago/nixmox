@@ -17,6 +17,7 @@ func (c *ClusterNode) localHost() domain.Host {
 	host.Version = c.keys.Identity.Version
 	if c.state != nil {
 		host.Version = c.state.Members[host.ID].Version
+		host.Configuration = c.state.Members[host.ID].Configuration
 	}
 	now := time.Now().UTC()
 	host.LastSeen = &now
@@ -71,6 +72,9 @@ func (c *ClusterNode) Hosts() []domain.Host {
 	c.mu.Lock()
 	local, state := c.localHost(), c.state
 	c.mu.Unlock()
+	if c.cache != nil {
+		local.Cache = c.cache.Advertisement()
+	}
 	if state == nil {
 		return []domain.Host{local}
 	}

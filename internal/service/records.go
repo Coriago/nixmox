@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
+	"nixmox/internal/engine/comms"
 )
 
 func recordKey(kind string, id domain.ID) string {
@@ -20,6 +21,24 @@ func readRecord[T any](ctx context.Context, store engine.StateStore, key string)
 	}
 	return value, entry.Revision, err
 }
+
+// listRecords uses the transport's bounded initial snapshot, never an open-ended watch.
+func listRecords[T any](ctx context.Context, store *comms.JetStream, pattern string) ([]T, error) {
+	entries, err := store.Entries(ctx, pattern)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]T, 0, len(entries))
+	for _, entry := range entries {
+		var value T
+		if err := json.Unmarshal(entry.Value, &value); err != nil {
+			return nil, err
+		}
+		items = append(items, value)
+	}
+	return items, nil
+}
+
 func writeRecord(ctx context.Context, store engine.StateStore, key string, revision engine.Revision, value any) (engine.Revision, error) {
 	data, err := json.Marshal(value)
 	if err != nil {

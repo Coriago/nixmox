@@ -12,9 +12,34 @@ import (
 	js "github.com/nats-io/nats.go/jetstream"
 
 	"nixmox/internal/domain"
+	"nixmox/internal/engine"
 	"nixmox/internal/engine/task"
 	"nixmox/internal/engine/telemetry"
 )
+
+// Completion and definitive failure evidence use the same journal boundary.
+// Callers must not observe a storage-uncertain effect as a definitive failure.
+func completePhase(ctx context.Context, e engine.Execution, phase string, result any) error {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	if err := e.Result(ctx, data); err != nil {
+		return err
+	}
+	return e.Observed(ctx, domain.Checkpoint{Phase: phase, Evidence: data})
+}
+
+func observeFailure(ctx context.Context, e engine.Execution, phase string, failure error) error {
+	data, err := json.Marshal(map[string]any{"error": failure})
+	if err != nil {
+		return err
+	}
+	if err := e.Observed(ctx, domain.Checkpoint{Phase: phase, Evidence: data}); err != nil {
+		return err
+	}
+	return failure
+}
 
 type logQuery struct {
 	TaskID domain.ID
@@ -54,19 +79,7 @@ func (c *ClusterNode) projectedTasks(ctx context.Context) ([]domain.Task, error)
 	}
 	call, cancel := context.WithTimeout(ctx, domain.ExportTimeout)
 	defer cancel()
-	entries, err := transport.Store.Entries(call, "task.*")
-	if err != nil {
-		return nil, err
-	}
-	tasks := make([]domain.Task, 0, len(entries))
-	for _, entry := range entries {
-		var current domain.Task
-		if err = json.Unmarshal(entry.Value, &current); err != nil {
-			return nil, err
-		}
-		tasks = append(tasks, current)
-	}
-	return tasks, nil
+	return listRecords[domain.Task](call, transport.Store, "task.*")
 }
 func (c *ClusterNode) projectedTask(ctx context.Context, id domain.ID) (domain.Task, error) {
 	c.mu.Lock()

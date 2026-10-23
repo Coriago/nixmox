@@ -37,17 +37,19 @@ type ClusterTrust struct {
 }
 
 type Member struct {
-	TopologyCommand   ID      `json:"topology_command,omitempty"`
-	Full              bool    `json:"full"`
-	ForcedBy          ID      `json:"forced_by,omitempty"`
-	Version           Version `json:"version"`
-	Removed           bool    `json:"removed"`
-	BrokerCertificate Digest  `json:"broker_certificate"`
-	NodeID            ID      `json:"node_id"`
-	Epoch             uint64  `json:"epoch"`
-	DaemonKey         Digest  `json:"daemon_key"`
-	BrokerKey         Digest  `json:"broker_key"`
-	RequestID         ID      `json:"request_id"`
+	Configuration     *Binding       `json:"configuration,omitempty"`
+	Assignments       map[ID]Version `json:"assignments,omitempty"`
+	TopologyCommand   ID             `json:"topology_command,omitempty"`
+	Full              bool           `json:"full"`
+	ForcedBy          ID             `json:"forced_by,omitempty"`
+	Version           Version        `json:"version"`
+	Removed           bool           `json:"removed"`
+	BrokerCertificate Digest         `json:"broker_certificate"`
+	NodeID            ID             `json:"node_id"`
+	Epoch             uint64         `json:"epoch"`
+	DaemonKey         Digest         `json:"daemon_key"`
+	BrokerKey         Digest         `json:"broker_key"`
+	RequestID         ID             `json:"request_id"`
 }
 
 type MembershipState struct {

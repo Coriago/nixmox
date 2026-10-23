@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"time"
 
@@ -48,6 +49,7 @@ type Execution interface {
 	// Intent precedes effects; Observed follows independently verified evidence.
 	Intent(context.Context, domain.Checkpoint) error
 	Observed(context.Context, domain.Checkpoint) error
+	Result(context.Context, json.RawMessage) error
 	Block(context.Context, domain.Review) error
 	Log() io.Writer
 	// Runner decorates any command adapter with task-owned persistence and parsing.

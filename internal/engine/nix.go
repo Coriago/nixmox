@@ -29,13 +29,12 @@ type Nix interface {
 type PackageDiffer interface {
 	Compare(context.Context, []domain.ClosurePath, []domain.ClosurePath) (domain.PackageDiff, error)
 }
-type StoreCache interface {
-	Lookup(context.Context, string) (domain.StoreOutput, error)
-	// Embedded go-nix NAR serializer; hold GC pin for the entire stream.
-	Export(context.Context, domain.StoreOutput, io.Writer) error
+type StoreExport interface {
+	io.WriterTo
+	io.Closer
 }
-type CacheGateway interface {
-	Locate(context.Context, string) ([]domain.CacheLocation, error)
-	Open(context.Context, domain.CacheLocation) (io.ReadCloser, error)
-	Status(context.Context) domain.CacheStatus
+
+type StoreCache interface {
+	Open(context.Context, domain.StoreOutput) (StoreExport, error)
+	Lookup(context.Context, string) (domain.StoreOutput, error)
 }

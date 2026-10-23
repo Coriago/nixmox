@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ func (o *options) identityCommand() *cobra.Command {
 
 func (o *options) hostCommands() *cobra.Command {
 	group := &cobra.Command{Use: "hosts", Short: "Read host inventory and live measurements"}
+	group.AddCommand(o.assignmentCommand())
 	group.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		api, err := o.api()
 		if err != nil {
@@ -106,23 +108,39 @@ func (o *options) hostCommands() *cobra.Command {
 }
 
 func resolveHost(cmd *cobra.Command, api *client.Client, selector string) (domain.ID, error) {
-	page, err := api.Hosts(cmd.Context())
-	if err != nil {
-		return "", err
-	}
-	var matches []domain.ID
-	for _, host := range page.Items {
-		if string(host.ID) == selector {
-			return host.ID, nil
+	host, err := resolveSelector(cmd.Context(), selector, domain.PageRequest{}, api.Hosts, func(h domain.Host) (domain.ID, string) { return h.ID, h.Name })
+	return host.ID, err
+}
+
+// IDs take precedence; names must be unique across the entire result, not one page.
+func resolveSelector[T any](ctx context.Context, selector string, page domain.PageRequest, list func(context.Context, ...domain.PageRequest) (domain.Page[T], error), identity func(T) (domain.ID, string)) (T, error) {
+	var selected, zero T
+	matches := 0
+	page.Limit = domain.PageLimit
+	for {
+		result, err := list(ctx, page)
+		if err != nil {
+			return zero, err
 		}
-		if host.Name == selector {
-			matches = append(matches, host.ID)
+		for _, item := range result.Items {
+			id, name := identity(item)
+			if string(id) == selector {
+				return item, nil
+			}
+			if name == selector {
+				selected = item
+				matches++
+			}
 		}
+		if result.NextCursor == nil {
+			break
+		}
+		page.Cursor = *result.NextCursor
 	}
-	if len(matches) != 1 {
-		return "", &domain.Error{Code: "INVALID_INPUT", Message: "Host selector is missing or ambiguous; use its ID"}
+	if matches != 1 {
+		return zero, &domain.Error{Code: "INVALID_INPUT", Message: "Selector is missing or ambiguous; use its ID"}
 	}
-	return matches[0], nil
+	return selected, nil
 }
 
 func (o *options) discoveryCommands() *cobra.Command {

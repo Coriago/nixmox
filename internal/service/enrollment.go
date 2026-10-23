@@ -138,6 +138,14 @@ func (c *ClusterNode) Validate(ctx context.Context, command domain.Command, valu
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch p := value.(type) {
+	case domain.RepositoryImport, domain.RepositoryTarget, domain.RepositoryRemoteSet:
+		if !repositoryOperation(command.Type) {
+			return domain.Unavailable(command.Type)
+		}
+		_, err := c.repositoryInput(ctx, command, value)
+		return err
+	case domain.HostAssign:
+		return c.validateAssignment(ctx, command, p)
 	case domain.ClusterCreate:
 		if strings.TrimSpace(p.Name) != p.Name || p.Name == "" || len(p.Name) > 128 {
 			return invalid("Cluster name must contain 1–128 characters without surrounding whitespace")
@@ -448,7 +456,8 @@ func (c *ClusterNode) awaitLeaf(ctx context.Context) (resultErr error) {
 }
 
 func (c *ClusterNode) Definitions(journal engine.LocalStore) []engine.TaskDefinition {
-	definitions := []engine.TaskDefinition{}
+	definitions := c.repositoryDefinitions(journal)
+	definitions = append(definitions, c.assignmentDefinition(journal))
 	for _, kind := range []string{"cluster.create", "cluster.join", "cluster.request.approve", "cluster.request.reject", "cluster.leave", "host.remove", "host.force_full_membership", "host.demote"} {
 		run := func(ctx context.Context, e engine.Execution) (resultErr error) {
 			record, err := journal.Receipt(ctx, e.Task().CommandID)

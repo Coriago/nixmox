@@ -31,20 +31,20 @@ func Serve(ctx context.Context, config runtime.Config) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
-	addresses, err := config.HTTPAddresses()
+	endpoints, err := config.HTTPEndpoints()
 	if err != nil {
 		return err
 	}
-	listeners := make([]net.Listener, 0, len(addresses))
+	listeners := make([]net.Listener, 0, len(endpoints))
 	defer func() {
 		for _, listener := range listeners {
 			listener.Close()
 		}
 	}()
-	for _, address := range addresses {
-		listener, err := net.Listen("tcp", address)
+	for _, endpoint := range endpoints {
+		listener, err := net.Listen("tcp", endpoint.Address)
 		if err != nil {
-			return fmt.Errorf("http.port listener %s: %w", address, err)
+			return fmt.Errorf("http.port listener %s: %w", endpoint.Address, err)
 		}
 		listeners = append(listeners, listener)
 	}
@@ -99,9 +99,7 @@ func Serve(ctx context.Context, config runtime.Config) error {
 		Capabilities: domain.Capabilities{Power: config.Capabilities.Power}, Name: name, Membership: domain.Unjoined, Environment: domain.Bootstrap,
 		Reachability: domain.Online, BrokerRole: "standalone", Health: domain.Health{Status: "unknown", Reasons: []domain.HealthReason{}},
 		PendingReasons: []string{}, Connectivity: []domain.Connectivity{}, ActiveTaskIDs: []domain.ID{}}
-	for _, address := range addresses {
-		s.Host.Endpoints = append(s.Host.Endpoints, domain.Endpoint{Service: "api", Transport: "http", Address: address, Verified: true})
-	}
+	s.Host.Endpoints = endpoints
 	s.Cluster, err = service.OpenCluster(ctx, config, keys, s.Host)
 	if err != nil {
 		return err
@@ -120,7 +118,7 @@ func Serve(ctx context.Context, config runtime.Config) error {
 	}
 
 	var workers sync.WaitGroup
-	results := make(chan error, len(listeners)+11)
+	results := make(chan error, len(listeners)+12)
 	start := func(run func() error) {
 		workers.Go(func() { results <- run() })
 	}
@@ -141,6 +139,7 @@ func Serve(ctx context.Context, config runtime.Config) error {
 	start(func() error { return sampler.Run(life) })
 	start(func() error { return s.Scheduler.Run(life) })
 	start(func() error { return s.Cluster.Run(life, sampler) })
+	start(func() error { return s.Cache.Run(life) })
 	start(func() error { return s.Deliver(life) })
 	start(func() error { return s.ServeQueries(life, false) })
 	start(func() error { return s.ServeQueries(life, true) })

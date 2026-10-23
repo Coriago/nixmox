@@ -116,6 +116,12 @@ func (c *Client) requestOnce(ctx context.Context, method, path string, input, ou
 	return nil
 }
 
+func get[T any](ctx context.Context, c *Client, path string) (T, error) {
+	var value T
+	err := c.request(ctx, http.MethodGet, path, nil, &value)
+	return value, err
+}
+
 func (c *Client) Submit(ctx context.Context, command domain.Command) (domain.Receipt, error) {
 	var receipt domain.Receipt
 	err := c.request(ctx, http.MethodPost, "commands", command, &receipt)
@@ -151,14 +157,10 @@ func (c *Client) Receipt(ctx context.Context, id domain.ID) (domain.Receipt, err
 }
 
 func (c *Client) Topology(ctx context.Context) (domain.SignedTopology, error) {
-	var result domain.SignedTopology
-	err := c.request(ctx, http.MethodGet, "membership-topology", nil, &result)
-	return result, err
+	return get[domain.SignedTopology](ctx, c, "membership-topology")
 }
 func (c *Client) Removal(ctx context.Context, node domain.ID, epoch uint64) (domain.SignedRemoval, error) {
-	var result domain.SignedRemoval
-	err := c.request(ctx, http.MethodGet, "membership-status?node_id="+url.QueryEscape(string(node))+"&membership_epoch="+strconv.FormatUint(epoch, 10), nil, &result)
-	return result, err
+	return get[domain.SignedRemoval](ctx, c, "membership-status?node_id="+url.QueryEscape(string(node))+"&membership_epoch="+strconv.FormatUint(epoch, 10))
 }
 func (c *Client) Enroll(ctx context.Context, request domain.EnrollmentSubmission) (domain.EnrollmentStatus, error) {
 	var result domain.EnrollmentStatus
@@ -166,9 +168,7 @@ func (c *Client) Enroll(ctx context.Context, request domain.EnrollmentSubmission
 	return result, err
 }
 func (c *Client) Enrollment(ctx context.Context, id domain.ID) (domain.EnrollmentStatus, error) {
-	var result domain.EnrollmentStatus
-	err := c.request(ctx, http.MethodGet, "enrollment/requests/"+url.PathEscape(string(id)), nil, &result)
-	return result, err
+	return get[domain.EnrollmentStatus](ctx, c, "enrollment/requests/"+url.PathEscape(string(id)))
 }
 func (c *Client) Certificates(ctx context.Context, id domain.ID) (domain.Issuance, error) {
 	var result domain.Issuance
@@ -180,21 +180,15 @@ func (c *Client) Requests(ctx context.Context, page ...domain.PageRequest) (doma
 }
 
 func (c *Client) Discoveries(ctx context.Context) (domain.Page[domain.Discovery], error) {
-	var result domain.Page[domain.Discovery]
-	err := c.request(ctx, http.MethodGet, "discoveries", nil, &result)
-	return result, err
+	return get[domain.Page[domain.Discovery]](ctx, c, "discoveries")
 }
 
 func (c *Client) Identity(ctx context.Context) (domain.Identity, error) {
-	var result domain.Identity
-	err := c.request(ctx, http.MethodGet, "identity", nil, &result)
-	return result, err
+	return get[domain.Identity](ctx, c, "identity")
 }
 
 func (c *Client) Host(ctx context.Context, id domain.ID) (domain.Host, error) {
-	var result domain.Host
-	err := c.request(ctx, http.MethodGet, "hosts/"+url.PathEscape(string(id)), nil, &result)
-	return result, err
+	return get[domain.Host](ctx, c, "hosts/"+url.PathEscape(string(id)))
 }
 
 func (c *Client) Hosts(ctx context.Context, page ...domain.PageRequest) (domain.Page[domain.Host], error) {
@@ -202,27 +196,19 @@ func (c *Client) Hosts(ctx context.Context, page ...domain.PageRequest) (domain.
 }
 
 func (c *Client) Telemetry(ctx context.Context, id domain.ID) (domain.HostTelemetry, error) {
-	var result domain.HostTelemetry
-	err := c.request(ctx, http.MethodGet, "hosts/"+url.PathEscape(string(id))+"/telemetry", nil, &result)
-	return result, err
+	return get[domain.HostTelemetry](ctx, c, "hosts/"+url.PathEscape(string(id))+"/telemetry")
 }
 
 func (c *Client) Network(ctx context.Context) (domain.NetworkStatus, error) {
-	var result domain.NetworkStatus
-	err := c.request(ctx, http.MethodGet, "network/status", nil, &result)
-	return result, err
+	return get[domain.NetworkStatus](ctx, c, "network/status")
 }
 
 func (c *Client) Cluster(ctx context.Context) (domain.ClusterStatus, error) {
-	var result domain.ClusterStatus
-	err := c.request(ctx, http.MethodGet, "cluster/status", nil, &result)
-	return result, err
+	return get[domain.ClusterStatus](ctx, c, "cluster/status")
 }
 
 func (c *Client) Task(ctx context.Context, id domain.ID) (domain.Task, error) {
-	var result domain.Task
-	err := c.request(ctx, http.MethodGet, "tasks/"+url.PathEscape(string(id)), nil, &result)
-	return result, err
+	return get[domain.Task](ctx, c, "tasks/"+url.PathEscape(string(id)))
 }
 
 func (c *Client) Tasks(ctx context.Context, page domain.PageRequest) (domain.Page[domain.Task], error) {

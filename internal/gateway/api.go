@@ -24,7 +24,10 @@ func New(s *service.Service) http.Handler {
 	router.Use(otelgin.Middleware("nixmox"))
 	_ = router.SetTrustedProxies(nil)
 	// Do not log request bodies, headers, credentials or panic values.
-	router.Use(gin.CustomRecoveryWithWriter(io.Discard, func(c *gin.Context, _ any) {
+	router.Use(gin.CustomRecoveryWithWriter(io.Discard, func(c *gin.Context, recovered any) {
+		if recovered == http.ErrAbortHandler {
+			panic(recovered)
+		}
 		failure(c, errors.New("handler panic"), nil)
 	}))
 	router.Use(func(c *gin.Context) {
@@ -32,6 +35,7 @@ func New(s *service.Service) http.Handler {
 		c.Header("Cache-Control", "no-store")
 		c.Next()
 	})
+	cacheRoutes(router, s)
 	api := router.Group("/api/v1")
 	enrollment(api, s)
 	api.POST("/commands", func(c *gin.Context) {
@@ -68,9 +72,13 @@ func New(s *service.Service) http.Handler {
 		}
 		c.JSON(http.StatusOK, receipt)
 	})
-	for _, path := range []string{"identity", "cluster/status", "cluster/requests", "network/status", "hosts", "tasks", "discoveries"} {
+	for _, path := range []string{"identity", "cluster/status", "cluster/requests", "network/status", "hosts", "tasks", "discoveries", "repositories", "configurations", "cache/status", "cache/locations"} {
 		api.GET("/"+path, read(s, path, ""))
 	}
+	for _, collection := range []string{"repositories", "configurations"} {
+		api.GET("/"+collection+"/:id", read(s, collection, ""))
+	}
+	api.GET("/repositories/:id/refs", read(s, "repositories", "refs"))
 	api.GET("/hosts/:id", read(s, "hosts", ""))
 	api.GET("/hosts/:id/telemetry", read(s, "hosts", "telemetry"))
 	api.GET("/tasks/:id", read(s, "tasks", ""))
@@ -89,6 +97,14 @@ func New(s *service.Service) http.Handler {
 		c.JSON(http.StatusOK, chunk)
 	})
 	api.GET("/events", func(c *gin.Context) {
+		if c.Query("topics") == "cache.status" {
+			if !queries(c, "topics") {
+				failure(c, &domain.Error{Code: "INVALID_INPUT", Message: "Invalid cache event selector"}, nil)
+				return
+			}
+			watchCache(c, s)
+			return
+		}
 		if c.Query("topics") == "tasks" || c.Query("topics") == "task.logs" {
 			watchTask(c, s)
 			return
@@ -184,9 +200,9 @@ func failure(c *gin.Context, err error, command *domain.ID) {
 		status = http.StatusGone
 	case "RANGE_NOT_SATISFIABLE":
 		status = http.StatusRequestedRangeNotSatisfiable
-	case "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT":
+	case "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT", "CONFIGURATION_CONFLICT":
 		status = http.StatusConflict
-	case "UNSUPPORTED_CAPABILITY", "TARGET_UNREACHABLE", "QUORUM_UNAVAILABLE", "SUBMISSION_UNKNOWN":
+	case "UNSUPPORTED_CAPABILITY", "TARGET_UNREACHABLE", "QUORUM_UNAVAILABLE", "SUBMISSION_UNKNOWN", "SOURCE_UNAVAILABLE", "CREDENTIAL_UNAVAILABLE", "CATALOG_UNAVAILABLE", "CONFIGURATION_UNAVAILABLE", "CACHE_UNAVAILABLE":
 		status = http.StatusServiceUnavailable
 	}
 	// Only expose the sanitized domain error to instrumentation, never the

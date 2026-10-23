@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/nix-community/go-nix/pkg/nar"
@@ -21,8 +23,7 @@ import (
 )
 
 func validStorePath(path string) bool {
-	p, err := storepath.FromAbsolutePath(path)
-	return err == nil && p != nil && filepath.Clean(path) == path && !strings.HasSuffix(path, ".drv")
+	return storepath.PathRe.MatchString(path) && filepath.Clean(path) == path && !strings.HasSuffix(path, ".drv")
 }
 
 var (
@@ -34,6 +35,18 @@ var (
 type Engine struct {
 	Runner       engine.Runner
 	PinDirectory string
+	// Options is evaluated when a build/evaluation plan is made, so peer trust stays live.
+	Options func() map[string]string
+}
+
+func (n Engine) command(args ...string) engine.CommandLine {
+	if n.Options != nil && (args[0] == "build" || args[0] == "eval") {
+		options := n.Options()
+		for _, name := range slices.Sorted(maps.Keys(options)) {
+			args = append(args, "--option", name, options[name])
+		}
+	}
+	return engine.CommandLine{Program: "nix", Args: args}
 }
 
 func flakeRef(source domain.Source, worktree string, pinned bool) (string, error) {
@@ -86,7 +99,7 @@ func (n Engine) BuildPlan(request engine.BuildRequest) (engine.CommandLine, erro
 	if request.System != "x86_64-linux" && request.System != "aarch64-linux" {
 		return engine.CommandLine{}, domain.Unavailable("requested build system")
 	}
-	return engine.CommandLine{Program: "nix", Args: []string{"build", "--json", "--no-link", "--verbose", "--log-format", "internal-json", "--no-write-lock-file", "--no-update-lock-file", "--system", request.System, ref + "#" + attribute}}, nil
+	return n.command("build", "--json", "--no-link", "--verbose", "--log-format", "internal-json", "--no-write-lock-file", "--no-update-lock-file", "--system", request.System, ref+"#"+attribute), nil
 }
 
 func (n Engine) Validate(ctx context.Context, source domain.Source, worktree string) (domain.Validation, error) {
@@ -98,17 +111,30 @@ func (n Engine) ValidateDraft(ctx context.Context, source domain.Source, worktre
 }
 
 func (n Engine) validate(ctx context.Context, source domain.Source, worktree string, pinned bool) (domain.Validation, error) {
-	ref, err := flakeRef(source, worktree, pinned)
-	if err != nil {
-		return domain.Validation{}, err
+	if source.FlakeAttribute == "" {
+		return domain.Validation{}, errors.New("explicit flake attribute required")
 	}
-	_, err = task.Capture(ctx, n.Runner, engine.CommandLine{Program: "nix", Args: []string{"eval", "--json", "--no-write-lock-file", "--no-update-lock-file", "--option", "allow-import-from-derivation", "false", ref + "#" + source.FlakeAttribute + ".config.system.build.toplevel.drvPath"}}, domain.QueryTotalLimit)
+	source.FlakeAttribute += ".config.system.build.toplevel.drvPath"
+	_, err := n.evaluate(ctx, source, worktree, pinned, "", domain.QueryTotalLimit)
 	result := domain.Validation{State: "ready", Commit: &source.Commit, Missing: []string{}, Errors: []domain.FieldError{}}
 	if err != nil {
 		result.State = "invalid"
 		result.Errors = append(result.Errors, domain.FieldError{Code: "EVALUATION_FAILED", Message: "Lightweight evaluation failed (IFD is disabled)"})
 	}
 	return result, err
+}
+
+// All source evaluation shares the same lock and IFD policy.
+func (n Engine) evaluate(ctx context.Context, source domain.Source, worktree string, pinned bool, apply string, limit int) ([]byte, error) {
+	ref, err := flakeRef(source, worktree, pinned)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"eval", "--json", "--no-write-lock-file", "--no-update-lock-file", "--option", "allow-import-from-derivation", "false", ref + "#" + source.FlakeAttribute}
+	if apply != "" {
+		args = append(args, "--apply", apply)
+	}
+	return task.Capture(ctx, n.Runner, n.command(args...), limit)
 }
 
 func (n Engine) ActivationPlan(output string, mode domain.ActivationMode) (engine.CommandLine, error) {
@@ -266,30 +292,45 @@ func (e NARExporter) Lookup(ctx context.Context, path string) (domain.StoreOutpu
 	return e.Nix.ObserveOutput(ctx, path)
 }
 
-func (e NARExporter) Export(ctx context.Context, output domain.StoreOutput, w io.Writer) error {
+func (e NARExporter) Open(ctx context.Context, output domain.StoreOutput) (engine.StoreExport, error) {
 	pin, err := e.Nix.Pin(ctx, output.StorePath, "cache-export")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer pin.Close()
 	actual, err := e.Nix.ObserveOutput(ctx, output.StorePath)
+	if err == nil && (actual.NARHash != output.NARHash || actual.NARSize != output.NARSize) {
+		err = errors.New("output changed before export")
+	}
 	if err != nil {
-		return err
+		pin.Close()
+		return nil, err
 	}
-	if actual.NARHash != output.NARHash || actual.NARSize != output.NARSize {
-		return errors.New("output changed before export")
-	}
-	return nar.DumpPath(contextWriter{ctx, w}, output.StorePath)
+	return &narExport{ctx: ctx, pin: pin}, nil
 }
 
-type contextWriter struct {
+type narExport struct {
+	ctx context.Context
+	pin engine.OutputPin
+}
+
+func (e *narExport) Close() error { return e.pin.Close() }
+func (e *narExport) WriteTo(w io.Writer) (int64, error) {
+	counted := &narWriter{ctx: e.ctx, writer: w}
+	err := nar.DumpPath(counted, e.pin.Path())
+	return counted.n, err
+}
+
+type narWriter struct {
 	ctx    context.Context
 	writer io.Writer
+	n      int64
 }
 
-func (w contextWriter) Write(p []byte) (int, error) {
+func (w *narWriter) Write(p []byte) (int, error) {
 	if err := w.ctx.Err(); err != nil {
 		return 0, err
 	}
-	return w.writer.Write(p)
+	n, err := w.writer.Write(p)
+	w.n += int64(n)
+	return n, err
 }

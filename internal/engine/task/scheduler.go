@@ -377,7 +377,12 @@ func (s *Scheduler) Execute(ctx context.Context, id domain.ID) (result error) {
 			if saveErr := e.update(func(t *domain.Task) {
 				t.State = state
 				t.Cancellation.Allowed = false
-				t.Error = &domain.Error{Code: "TASK_FAILED", Message: "Phase failed; see sanitized task logs"}
+				var detail *domain.Error
+				if errors.As(err, &detail) {
+					t.Error = detail
+				} else {
+					t.Error = &domain.Error{Code: "TASK_FAILED", Message: "Phase failed; see sanitized task logs"}
+				}
 			}); saveErr != nil {
 				return errors.Join(err, saveErr)
 			}
@@ -588,6 +593,17 @@ func (e *execution) Intent(ctx context.Context, cp domain.Checkpoint) error {
 		trace.SpanFromContext(ctx).AddEvent("task.checkpoint.intent", trace.WithAttributes(attribute.String("nixmox.task.phase", cp.Phase)))
 	}
 	return err
+}
+
+// Result persists resource IDs and evidence while the phase is still fenced.
+func (e *execution) Result(ctx context.Context, result json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !json.Valid(result) || len(result) > domain.CommandPayloadLimit {
+		return errors.New("invalid task result")
+	}
+	return e.update(func(t *domain.Task) { t.Result = append(json.RawMessage(nil), result...) })
 }
 
 func (e *execution) Observed(ctx context.Context, cp domain.Checkpoint) error {

@@ -53,6 +53,9 @@ func (c *ClusterNode) publishPresence(ctx context.Context, sampler engine.HostSa
 			logging.From(ctx).Info("broker topology", "meta_leader", info.Meta.Leader, "meta_size", info.Meta.Size, "routes", transport.Broker.RouteConnections())
 		}
 	}
+	if c.cache != nil {
+		host.Cache = c.cache.Advertisement()
+	}
 	if host.ClusterID != nil && core != nil {
 		sample := sampler.Snapshot(ctx)
 		sample.MembershipEpoch = host.MembershipEpoch

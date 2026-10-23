@@ -118,6 +118,26 @@ func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, v
 	if !valid {
 		return nil, &domain.Error{Code: "MEMBERSHIP_REQUIRED", Message: "Current authenticated membership is required"}
 	}
+	if view && q.Type == "source.submit" {
+		c.mu.Lock()
+		full := c.state.Members[q.CallerID].Full
+		c.mu.Unlock()
+		if !full {
+			return nil, invalid("Source mutations require a full-member console")
+		}
+		var command domain.Command
+		if err := decodeQuery(q.Payload, &command); err != nil {
+			return nil, err
+		}
+		if !repositoryOperation(command.Type) && command.Type != "host.assign" {
+			return nil, invalid("Operation is not a source command")
+		}
+		receipt, err := s.Submit(ctx, command)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(receipt)
+	}
 	if q.Type == "membership.topology" {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -208,7 +228,7 @@ func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, v
 		if err := decodeQuery(q.Payload, &request); err != nil {
 			return nil, err
 		}
-		if view && request.Collection != "hosts" && request.Collection != "cluster/status" {
+		if view && request.Collection != "hosts" && request.Collection != "cluster/status" && request.Collection != "repositories" && request.Collection != "configurations" {
 			return nil, invalid("This leaf view is not permitted")
 		}
 		if request.Collection == "identity" || request.Collection == "network/status" {

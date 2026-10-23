@@ -11,6 +11,17 @@ import (
 	"nixmox/internal/service"
 )
 
+func sendEvent(c *gin.Context, event string, value any) error {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("X-Accel-Buffering", "no")
+	controller := http.NewResponseController(c.Writer)
+	if err := controller.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	c.SSEvent(event, value)
+	return controller.Flush()
+}
+
 // Task watches reuse authoritative reads, including remote-owner routing.
 func watchTask(c *gin.Context, s *service.Service) {
 	id := domain.ID(c.Query("task_id"))
@@ -21,7 +32,6 @@ func watchTask(c *gin.Context, s *service.Service) {
 		return
 	}
 	ctx := c.Request.Context()
-	controller := http.NewResponseController(c.Writer)
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -49,16 +59,11 @@ func watchTask(c *gin.Context, s *service.Service) {
 			}
 			return
 		}
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("X-Accel-Buffering", "no")
-		if controller.SetWriteDeadline(time.Now().Add(5*time.Second)) != nil {
+		if sendEvent(c, event, value) != nil {
 			return
 		}
-		c.SSEvent(event, value)
 		if complete {
-			c.SSEvent("done", struct{}{})
-		}
-		if controller.Flush() != nil || complete {
+			_ = sendEvent(c, "done", struct{}{})
 			return
 		}
 		select {

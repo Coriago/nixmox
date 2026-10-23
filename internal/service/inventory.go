@@ -47,6 +47,16 @@ func (i *inventory) heartbeat(h domain.Heartbeat, member domain.Member, cluster,
 	current.seen = time.Now()
 	current.topologyVersion = h.TopologyVersion
 	host := h.Host
+	if host.Cache != nil {
+		cache := *host.Cache
+		observed := current.seen
+		cache.NodeID, cache.Endpoints, cache.ObservedAt = host.ID, host.Endpoints, &observed
+		if !member.Full && host.ID != issuer {
+			cache.Available = false
+			cache.PublicKey = nil
+		}
+		host.Cache = &cache
+	}
 	host.Version, host.ClusterID, host.Membership = member.Version, &cluster, domain.Pending
 	host.DeploymentVerified = false
 	host.Capabilities = domain.Capabilities{Power: h.Host.Capabilities.Power}
@@ -126,6 +136,7 @@ func (i *inventory) hosts(cluster domain.ID, members map[domain.ID]domain.Member
 			}
 		}
 		host.Version = member.Version
+		host.Configuration = member.Configuration
 		if member.Full {
 			host.Membership = domain.Full
 			host.BrokerRole = "route"

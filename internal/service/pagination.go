@@ -47,6 +47,11 @@ func collectionFor(path string) Collection {
 			return c
 		}
 	}
+	for _, c := range NestedReads {
+		if c.Path == path {
+			return c
+		}
+	}
 	return Collection{Path: path}
 }
 

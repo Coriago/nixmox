@@ -17,13 +17,20 @@ import (
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/comms"
+	"nixmox/internal/engine/git"
 	"nixmox/internal/engine/identity"
+	"nixmox/internal/engine/nix"
+	"nixmox/internal/engine/task"
 	"nixmox/internal/runtime"
 )
 
 // ClusterNode owns membership policy. Transport generations own their clients,
 // consumers and broker; inventory observations never authorize membership.
 type ClusterNode struct {
+	cache              *Cache
+	repositoryMu       sync.Mutex
+	git                engine.Git
+	nix                nix.Engine
 	mu                 sync.Mutex
 	membershipObserver func(domain.ID)
 	topologyMu         sync.Mutex
@@ -45,6 +52,14 @@ type ClusterNode struct {
 
 func OpenCluster(ctx context.Context, config runtime.Config, keys *identity.Local, host domain.Host) (*ClusterNode, error) {
 	c := &ClusterNode{life: ctx, config: config, keys: keys, host: host, transport: &comms.Runtime{}, inventory: newInventory(), limiter: rate.NewLimiter(5, 10)}
+	c.git = &git.Engine{Root: config.DataDir, Runner: task.ProcessRunner{}}
+	c.nix = nix.Engine{Runner: task.ProcessRunner{}, PinDirectory: filepath.Join(config.DataDir, "store-roots")}
+	var err error
+	c.cache, err = newCache(c)
+	if err != nil {
+		return nil, err
+	}
+	c.nix.Options = c.cache.nixOptions
 	if err := c.configure(ctx); err != nil {
 		c.Close()
 		return nil, err

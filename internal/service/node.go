@@ -38,6 +38,7 @@ func (s *Service) StartNode(ctx context.Context) error {
 		definitions = append(definitions, s.discoveryDefinition())
 	}
 	if s.Cluster != nil {
+		s.Cache = s.Cluster.cache
 		definitions = append(definitions, s.powerDefinitions()...)
 		definitions = append(definitions, s.Cluster.Definitions(s.Journal)...)
 	}
@@ -96,6 +97,28 @@ func (s *Service) Read(ctx context.Context, request ReadRequest) (json.RawMessag
 		}
 	}
 	switch request.Collection {
+	case "cache/status":
+		if s.Cache == nil {
+			return nil, cacheUnavailable()
+		}
+		return json.Marshal(s.Cache.Status(ctx))
+	case "cache/locations":
+		if s.Cache == nil {
+			return nil, cacheUnavailable()
+		}
+		locations, err := s.Cache.Locate(ctx, request.Page.Filters["path"])
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(locations)
+	case "repositories", "configurations":
+		if s.Cluster == nil {
+			return nil, domain.Unavailable("repository metadata")
+		}
+		if s.Cluster.leaf() {
+			return s.Cluster.call(ctx, "", "read", request, true)
+		}
+		return s.Cluster.readSources(ctx, request)
 	case "discoveries":
 		items := []domain.Discovery{}
 		if s.Discovery != nil {

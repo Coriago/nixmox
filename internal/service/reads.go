@@ -36,6 +36,7 @@ var Singletons = []string{
 	"network/status", "network/wifi/networks", "media/profiles",
 }
 var NestedReads = []Collection{
+	{Path: "cache/locations", Filters: []string{"path"}},
 	{Path: "hosts/{id}/generations", Order: "id"},
 	{Path: "hosts/{id}/disks", Order: "id"},
 	{Path: "repositories/{id}/refs", Order: "name,id"},

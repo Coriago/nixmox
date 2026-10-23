@@ -42,6 +42,15 @@ func (g *Engine) directory(id domain.ID) string {
 	return filepath.Join(g.Root, "repositories", shared.Token(id))
 }
 
+// ValidateRepository checks transport and branch syntax without network effects.
+func ValidateRepository(repository domain.Repository) error {
+	if !validRemote(repository.Remote.URL) {
+		return errors.New("remote requires HTTPS, SSH or absolute file URL without embedded secrets")
+	}
+	_, err := branchName(repository.Upstream.Branch)
+	return err
+}
+
 func validRemote(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -122,6 +131,9 @@ func branchName(branch string) (plumbing.ReferenceName, error) {
 	ref := plumbing.NewBranchReferenceName(branch)
 	return ref, ref.Validate()
 }
+
+// ValidCommit validates the exact object ID supported by this adapter.
+func ValidCommit(commit domain.Commit) bool { return validCommit(commit) }
 
 // Stable go-git stores SHA-1 objects. Never truncate a SHA-256 object ID into a
 // different commit; support for that repository format needs a separate upgrade.
