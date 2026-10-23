@@ -228,6 +228,136 @@ tolerance. After three-replica promotion, quorum loss
 blocks new cluster-scoped durable mutations; local bootstrap operations retain
 their node-local scope. Never silently scale down because nodes disappeared.
 Graceful removal coordinates explicit replica changes. Explain durability in UI.
+The recovered implementation contract below records the old lifecycle; do not
+replace it with a self-routed singleton or confuse stream replication with
+metadata Raft membership.
+
+### Recovered promotion/demotion logic from the old implementation
+
+Source: the parent of deletion commit `938218846025a87f702dd49307dd7d12d85a5e1c`,
+namely `886fb663eed35ea96a55e324e7ade2398b11e4cd` (`93821884^`). Paths and symbols
+in this section refer to that historical tree, not the current implementation.
+It used `nats-server/v2 v2.14.4` and `nats.go v1.52.0`. These are source-derived
+behaviors and test assertions, not a claim that the old tests were rerun.
+
+The old code distinguished permanent nodes from temporary installers; it did
+not have the rewrite's deployment-verified pending/full promotion gate.
+Permanent join initiated routing directly. Preserve the following transport
+lifecycle when applying the rewrite's separate membership eligibility rules.
+
+| Transition/state | Embedded broker / metadata Raft | Application streams |
+| --- | --- | --- |
+| Create cluster, creator alone | Standalone; no NATS `Cluster` block or metadata Raft group | R1 |
+| First permanent peer joins | Both sides establish real routes; two-member metadata Raft | R1, never R2 |
+| At least three online permanent peers | Routed metadata Raft group | Explicit R1 → R3 updates |
+| Members become unreachable | Keep configured routes/membership and Raft size | Keep R3; no timeout-based downscale |
+| Planned three → two members | Commit replica reduction before Raft peer removal; retain two-member metadata Raft | R3 → R1 |
+| Planned two → one members | Last survivor keeps cluster name but returns to standalone; no metadata Raft | R1 |
+
+**Startup and promotion ordering**
+
+1. `cluster.Supervisor.CreateCluster` persisted the cluster name in `node.json`
+   without restarting the standalone broker. `Start` restored routed mode only
+   when a non-installer had a saved cluster name **and nonempty routes**.
+   `natsx.NewOptions` required a real peer route for clustered mode. Its comment
+   explicitly warned that self-routes stall election.
+2. `Supervisor.AcceptJoin` validated the cluster name, node-name collision, and
+   joiner's route, then persisted the route. On the first inbound join it
+   restarted the embedded broker in clustered mode using the joiner's address.
+   It returned bootstrap/known-peer information without waiting for meta-leader
+   readiness. `JoinCluster` then persisted the joiner's identity/routes and
+   started its routed broker. Blocking the seed's join response on election
+   would prevent the other side from starting the route needed for that election.
+3. `Supervisor.startLocked` waited for readiness **asynchronously** using
+   `natsx.WaitReadyContext`: poll `JetStream.AccountInfo` on leaders or followers,
+   with two-second attempts, 500 ms delays, and retryable 90-second windows.
+   It did not require every server to become the metadata leader. Generation
+   cancellation and an embedded-server/generation check prevented stale readiness
+   callbacks from rearming a superseded transport.
+4. `OnReconfigure` rearmed `cluster.Runtime` and `messaging.Bus`. Only the broker
+   and its dependent subscriptions/watchers restarted; HTTP, job runner, cron,
+   and running jobs survived. Runtime retried bucket creation and host watches
+   because account readiness can precede stream/consumer readiness.
+5. `Runtime.arm` ran `ReplicaScaler.Check` every minute. The scaler counted
+   `Online && !Temporary` inventory entries and, at three or more, requested R3
+   for `KV_hosts`, `KV_applylog`, and `nixmox_commands`. `natsx.ScaleStream` read
+   the current stream config, changed only `Replicas`, and called `UpdateStream`;
+   matching counts were a no-op and R2 was rejected. The periodic scaler never
+   reduced replicas. Its liveness count triggered an attempt, not proof of quorum
+   or completed replica catch-up.
+
+**Storage boundary — the old solution was separation, not in-place migration**
+
+`internal/natsx/embed.go:NewOptions` selected `D/nats-standalone` versus
+`D/nats-clustered`. Its comment explicitly said reusing a standalone store wedges
+clustered Raft metadata and that standalone state was disposable. First routing
+therefore opened a separate clustered store; it did **not** import the old store
+or implement a lossless JetStream backup/restore migration. Missing buckets and
+the command stream were created at R1 after readiness.
+
+Local jobs/logs and command receipts survived broker replacement independently.
+`cluster.SwitchingRecordStore` always wrote apply history locally and mirrored
+new records to cluster KV when available. This was not a general replay/copy of
+all old KV entries or queued commands. The last survivor's standalone transition
+selected its standalone directory again; it did not copy clustered streams back.
+
+The rewrite now puts authoritative membership/approval/idempotency records in
+JetStream, so those records cannot simply be declared disposable. Carry forward
+separate stores and nonblocking two-sided route establishment, but explicitly
+preserve/reconcile authoritative records before a store switch. The old code
+supplies the topology lifecycle, not a lossless transfer implementation for the
+rewrite's different persistence model. Do not claim either that in-place reuse
+is safe or that the old code solved this by running singleton metadata Raft.
+
+**Planned demotion/removal ordering**
+
+1. `server.hostAction` collected non-temporary peers and called
+   `Supervisor.PrepareLeave(remaining)` before `Leave`. For fewer than three
+   remaining members, `PrepareLeave` reduced the existing hosts/applylog KV
+   streams and command stream to R1. Errors stopped the leave; no R2 intermediate
+   was requested. This was an explicit planned change, not a liveness reaction.
+2. `Supervisor.Leave` detached cluster runtime/transport hooks, then, while the
+   routed broker was still connected, called `EmbeddedServer.RemovePeer` with
+   a 20-second deadline. A failure rearmed the previous runtime and aborted.
+3. `natsx.RemovePeer` used a loopback system-account connection and NATS's own
+   administration APIs. If the departing local server was metadata leader, it
+   first requested `JSApiLeaderStepDown`; otherwise it could remove itself and
+   lose the ability to acknowledge its RPC. It then requested `JSApiRemoveServer`
+   with the server name. Already-not-a-member meant an earlier attempt committed;
+   in-flight member changes, transient server errors, missing responders, and
+   timeouts were retried (two-second removal attempts, 250 ms retry delay).
+4. Only after committed peer removal did `Leave` cancel the generation, stop the
+   broker, archive `nats-clustered` as `nats-clustered.left-<timestamp>`, persist
+   an unclustered identity with `Left: true`, and start standalone. Local history
+   remained; `Left` suppressed automatic rejoin across restart.
+5. The handler notified survivors through `/api/v1/cluster/forget`, reporting
+   failures as cleanup warnings. `ForgetHost` purged the departed inventory key;
+   `ForgetRoute` merged saved/known routes, removed the departed and self routes,
+   and persisted the result. With peers remaining, `ReloadOptions` changed routes
+   without restarting surviving Raft. With none remaining, it restarted standalone
+   while preserving the survivor's cluster name. Explicit rejoin cleared `Left`.
+
+Temporary installers had JetStream disabled and no store. Their leaf link did
+not share `$SYS` or extend the Raft group (`ConnectInstaller` and
+`TestInstallerLeafUsesCoordinatorJetStream`). Merely connecting a temporary node
+was not a promotion.
+
+**Existing verification to preserve**
+
+- `internal/cluster/leave_test.go:TestLeaveAndRejoin` deliberately made the
+  departing node metadata leader and exercised two leave/rejoin cycles, checking
+  two-member Raft after join and no metadata Raft on the last survivor.
+- `e2e/run.py:topology` checked metadata group size/leader separately from stream
+  replica counts, and checked follower catch-up from each group's leader.
+- `e2e/run.py:quorum_probe` required a commit ACK on the **existing replicated
+  hosts stream**, not a separate R1 probe stream. NATS PING/PONG before and after
+  the probe distinguished write-quorum failure from a broken transport.
+- `quorum_loss` first required healthy three-member Raft and all three streams
+  at R3, killed two VMs, and repeatedly checked unchanged topology and rejected
+  writes for 75 seconds (longer than the scaler interval). Restoring one peer
+  had to restore acknowledged writes; the third then had to catch up.
+- `teardown` checked planned 3 → 2 → 1, R3 → R1 before shrinking, standalone
+  survivors, restart suppression on removed nodes, rejoin, and fresh-cluster reuse.
 
 ```sh
 nixmox cluster status

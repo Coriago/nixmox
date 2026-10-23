@@ -197,8 +197,10 @@ Use [OTel system conventions](https://opentelemetry.io/docs/specs/semconv/system
 for CPU, memory/paging, filesystem, disk/network counters, and uptime;
 `nixmox.host.*` only where no standard fits. Pin the convention version and mapping
 without coupling the UI schema to SDK upgrades. Export cumulative I/O counters,
-omit stale/unavailable measurements, and identify hosts by resource `host.id` and
-`host.name`. Command/task IDs belong in logs/traces, not metric dimensions.
+omit stale/unavailable measurements, and identify daemon producers by resource
+`nixmox.node.id`; `host.name` is the actual OS hostname, not a node alias.
+Do not use a Nixmox node ID as `host.id`. Command/task IDs belong in logs/traces,
+not metric dimensions.
 Each node exports only its own metrics; configure one producer per metric per
 pipeline, including when using a separate hostmetrics receiver.
 
@@ -236,10 +238,45 @@ formats and schedules. OTLP aggregation/export may omit intermediate gauge sampl
 
 Structured logs include service name, node/cluster/command/task IDs, event, and phase.
 
+Resource identity applies consistently to OTLP traces, logs and metrics:
+
+| Attribute | Value |
+| --- | --- |
+| `service.name` | `nixmox-daemon-<friendly-name>` (node ID fallback), `nixmox-cli`, `nixmox-tui`, or `nixmox-browser` |
+| `service.instance.id` | Stable daemon node ID; never a potentially colliding friendly name |
+| `host.name` | Actual OS hostname; omitted in browsers where unavailable |
+| `nixmox.node.id` | Local daemon node ID; omitted by clients |
+| `nixmox.node.name` | Optional friendly daemon name |
+| `nixmox.cluster.id` | Local daemon's committed cluster membership; omitted when unjoined |
+
+Clients describe themselves, not the target daemon. Target IDs belong on operation
+spans. SDK resources are immutable: membership changes select a fresh resource
+for newly started spans and newly emitted logs, including cached library
+instrumentation. Existing spans and queued logs keep their original resource.
+Metric exports use current membership; cumulative counters retain process-lifetime
+semantics rather than resetting on join/leave. Batch processors/exporters remain
+process-owned, bounded, and shut down once after workers stop.
+
 Propagate standard trace context through command/query envelopes and child tasks.
 Example span chain: `command.admit → task.execute → git.materialize → nix.build →
-deployment.activate → deployment.observe`. Async work links to
-its originating command; traces do not determine task success.
+deployment.activate → deployment.observe`. Normal asynchronous execution keeps
+its originating trace; recovery starts a new attempt linked to the persisted
+origin. Traces do not determine task success.
+
+Enrollment has an `enrollment.join` span across submission, approval waiting,
+credential installation and `enrollment.connect` through authentication.
+The authority persists normalized W3C origin context on the join request, outside
+the signed proof. Independently initiated approval/rejection commands keep their
+own traces, with an `enrollment.decision` link to that stored origin. Trace data
+never authorizes enrollment or affects request identity/idempotency.
+
+Background operations have finite root spans (`membership.poll`,
+`topology.reconcile`, `tasks.reconcile`, `presence.publish`), with HTTP/NATS calls
+as children—not one indefinitely open worker span. Routine background roots use
+10% head sampling with parent-based propagation; interactive/enrollment roots
+remain fully sampled. Unsampled background failures cannot be retroactively
+sampled. Daemon friendly names affect service grouping; unique instance/node IDs
+remain necessary when names collide (including local multi-daemon checks).
 
 Metrics: command admission latency, queue depth, phase duration, failures by error
 code, broker reconnects, Git bytes transferred, artifact storage failures, log catch-up,

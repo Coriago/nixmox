@@ -204,6 +204,7 @@ Equivalent standalone daemon configuration:
 ```yaml
 schema_version: 1
 data_dir: /var/lib/nixmox
+node_name: "" # Friendly inventory/telemetry name; empty uses OS hostname. host.name stays unchanged.
 http:
   port: 63170
 nats:
