@@ -15,13 +15,14 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          vendorHash = "sha256-coSY7MT1Aw4DTxtza7MJa05LlfquxsQmWvLbbunHwM0=";
         in
         {
           default = pkgs.buildGoModule {
             pname = "nixmox";
             version = "0.1.0-dev";
             src = self;
-            vendorHash = "sha256-XmP0H3BkJamNIK0iFJPUOM3xFHTdki3EoBiwJH32AZs=";
+            inherit vendorHash;
             subPackages = [ "cmd/nixmox" ];
             env.CGO_ENABLED = "0"; # Bootstrap agents must not require a host libc.
             nativeCheckInputs = [ pkgs.git ];
@@ -29,6 +30,32 @@
               runHook preCheck
               go test ./... -count=1 -timeout=120s
               runHook postCheck
+            '';
+          };
+          progress-preview = pkgs.buildGoModule {
+            pname = "nixmox-progress-preview";
+            meta.mainProgram = "progress-preview";
+            version = "0.1.0";
+            src = self;
+            inherit vendorHash;
+            subPackages = [ "cmd/progress-preview" ];
+            env.CGO_ENABLED = "0";
+            nativeCheckInputs = [ pkgs.nodejs ];
+            postBuild = ''
+              mkdir -p preview-assets
+              GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o preview-assets/app.wasm ./cmd/progress-preview
+              cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" preview-assets/wasm_exec.js
+              gzip -k -9 preview-assets/app.wasm
+            '';
+            checkPhase = ''
+              runHook preCheck
+              go test ./internal/ui/progress/... -count=1
+              GOOS=js GOARCH=wasm go test -exec "env -i PATH=$PATH HOME=$HOME $(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./internal/ui/progress -count=1
+              runHook postCheck
+            '';
+            postInstall = ''
+              mkdir -p $out/share/nixmox-progress
+              cp preview-assets/* $out/share/nixmox-progress/
             '';
           };
         }
@@ -43,6 +70,8 @@
             packages = with pkgs; [
               go
               gopls
+              nodejs # Execute the shared progress controller tests under Go/WASM.
+              python3 # Small PTY probe; no application runtime dependency.
               git
               nixfmt
               ripgrep
