@@ -36,17 +36,19 @@ Use Go for the daemon/CLI/TUI and shared presentation/template logic.
 
 | Interface | Rendering and updates |
 | --- | --- |
-| Browser: ordinary views/forms | Go-rendered HTML + [htmx](https://htmx.org/docs/); SSE drives live refreshes |
-| Browser: host configuration preview/editor | Locally loaded WASM renderer with a browser editor/DOM adapter; same draft API |
+| Browser | [go-app v11](https://go-app.dev/) components compiled to WASM; shared Go controllers/view models, thin DOM adapters |
 | TUI | Native shared Go logic + Charm, including live configuration preview/editing |
 | CLI | Typed arguments and JSON API; shared events for watching tasks |
 
-Ordinary views include inventory, discovery, repositories, tasks, media, settings,
-and reviews. The server and TUI use the shared presentation core natively; compile
-only the configuration preview logic to browser WASM. All mutations use the same
-command service and task engine. See [browser transport](api-and-interfaces.md#browser-html-and-live-updates).
-Bundle pinned HTML/CSS/JavaScript/WASM assets with the daemon; no CDN or internet
-connection is required to open the console. Load WASM only for the editor.
+Follow `internal/ui/progress/`: renderer-independent Go component controllers,
+explicit actions and complete view models, with thin native/terminal and go-app/DOM
+adapters. Separate reusable components from composed page views; do not duplicate
+formatting, selection, review or task-state rules in renderers. The browser runs
+the same presentation core in WASM. All real mutations use the same command
+service and task engine. See [browser transport](api-and-interfaces.md#browser-html-and-live-updates).
+Bundle pinned CSS/JavaScript/WASM assets locally; no CDN is required. The isolated
+mock preview may be developed before backend integration, but cannot make real
+operational claims. See [UI design](ui-design.md) for scope and interaction rules.
 
 Example presentation boundary, expressed as Go-like interfaces:
 
@@ -69,21 +71,26 @@ and identical template outputs/field validation across native/WASM preview runti
 
 ### Browser implementation
 
-Use htmx for navigation, forms, and HTML fragment replacement. A small JavaScript
-bridge consumes the shared JSON SSE stream, triggers affected fragment refreshes,
-and renders log bytes as text. Status and progress use server-rendered fragments;
-no browser-wide WASM application or parallel HTML event stream is required.
-Keep the preview/editor in a stable component outside htmx swap targets (or preserve
-its mount by ID). Surrounding updates must retain unsaved edits, cursor, and focus;
-navigation warns before discarding edits and disposes obsolete subscriptions.
+Use go-app v11 for the browser shell and reusable DOM components, following the
+progress reference. Feed typed API snapshots/events into shared Go controllers;
+render view models rather than implementing a second application state machine.
+Use the existing JSON SSE contract, not a parallel HTML event stream. Mount and
+dismount own bounded timers/subscriptions; dispatch asynchronous results onto the
+UI loop. Preserve focus, scroll and unsaved edits across live updates. Confirmations
+are accessible modal dialogs with focus containment/restoration and keyboard parity.
+Render logs as text. Motion preferences include the system reduced-motion setting.
 
 ### TUI implementation
 
 Use Charm's [Bubble Tea](https://github.com/charmbracelet/bubbletea) for interaction,
 [Bubbles](https://github.com/charmbracelet/bubbles) for reusable controls, and
-[Lip Gloss](https://github.com/charmbracelet/lipgloss) for styling/layout. Pin compatible
-versions. Keep these dependencies in the terminal adapter, outside the shared core.
-Provide a consistent theme, clear focus/action hints, keyboard-complete navigation,
+[Lip Gloss](https://github.com/charmbracelet/lipgloss) for styling/layout. Use v2
+of Bubble Tea, Bubbles and Lip Gloss (`charm.land/.../v2`), plus Harmonica for spring
+motion (currently v0.2; no v2 release exists). Keep terminal controls in the adapter;
+renderer-independent motion may live in shared components. Use alternate-screen,
+full-window background painting, layered confirmation popups, mouse clicks/wheel
+interaction, and keyboard-complete equivalents. Provide semantic customizable
+themes, reduced motion, clear focus/action hints, keyboard-complete navigation,
 responsive layouts for small/resized terminals, and scrollable diffs/logs. Live
 progress must preserve focus and scroll position; status must remain understandable
 without color. Use the same validation, reviews, and task data as the browser.
@@ -212,7 +219,7 @@ Intervals and defaults live in [runtime settings](runtime-configuration.md#optio
 | --- | --- | --- |
 | CPU, memory/swap, disk/network counters, load, uptime | `telemetry.host.fastIntervalMs` | Update shared measurement cache; publish NATS snapshot immediately |
 | Filesystem space | `telemetry.host.filesystemIntervalMs` | Independent worker; preserve its own timestamp/freshness |
-| SSE/htmx/TUI | On sample; coalesce at most 250 ms | Replace pending updates independently of inventory refresh |
+| Browser/TUI | On sample; coalesce at most 250 ms | Replace pending updates independently of inventory refresh |
 | OTLP | `telemetry.otlp.metricsIntervalMs` when enabled | SDK reader consumes the same cache, without resampling the OS |
 
 NATS and OTLP share measurements, identity, and counter semantics, but use separate
@@ -315,7 +322,7 @@ Physical boot/media claims require disposable-device evidence; VMs alone are ins
 | --- | --- |
 | Configuration | Generate without host/write credentials; template selection/pinning; safe serialization/paths; incomplete commits; hardware with/without filesystems; multi-disk layouts; browser/TUI live preview and embedded edits; preserve manual edits/buffers through regeneration, resize, and version conflicts; validate exact edited files |
 | Interface parity | Same operations, defaults, validation, reviews, errors, and results; explicit unknown/stale state; every verb maps to a registered operation/read |
-| Browser | htmx pages/fragments and form admission; SSE reconnect/version ordering/log gaps; no network asset dependencies; editor survives surrounding swaps and protects unsaved edits |
+| Browser | go-app component/action parity; modal focus/keyboard behavior; SSE reconnect/version ordering/log gaps; local assets; live updates preserve focus, scroll and unsaved edits |
 | Host telemetry | Fast/slow cadence and timestamps; NATS/OTLP same-source values with independent delivery; slow consumers/exporter failures; restart/rejoin/hotplug; no stale replay; cache expiry; browser/TUI/CLI parity; null/stale values; samples never invalidate reviews |
 | Reviews | Start without advance erase approval; reject stale bindings/missing acknowledgements; unrelated health/progress does not invalidate approval; duplicate resume cannot repeat effects |
 | Reads | Pagination/filter bounds, revision-pinned catalogs/files, log gaps/per-build logs, download expiry and unavailable owners |
