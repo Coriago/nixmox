@@ -3,9 +3,15 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"os"
+	"time"
+
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
+	"nixmox/internal/engine/platform"
+	"nixmox/internal/engine/task"
 )
 
 type Commands interface {
@@ -30,22 +36,109 @@ type SecretIngress interface {
 type Resolutions interface {
 	Stage(context.Context, domain.ID, domain.Version, []domain.FileManifest, io.Reader) (domain.Resolution, error)
 }
-type Service struct{ Registry *Registry }
+type Service struct {
+	Registry  *Registry
+	Cluster   *ClusterNode
+	Identity  domain.Identity
+	Host      domain.Host
+	Journal   *task.Journal
+	Scheduler *task.Scheduler
+	Sampler   engine.HostSampler
+	Discovery *platform.Discovery
+	Network   func(context.Context) (domain.NetworkStatus, error)
+}
 
 func New() *Service { return &Service{Registry: Catalog()} }
 func (s *Service) Submit(ctx context.Context, command domain.Command) (domain.Receipt, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.Receipt{}, err
 	}
-	if _, _, err := s.Registry.Decode(command); err != nil {
+	op, value, err := s.Registry.Decode(command)
+	if err != nil {
 		return domain.Receipt{}, err
 	}
-	// Gate until durable receipts, scope admission, handler validation and recovery
-	// exist together. Never report acceptance for an unwired operation.
-	return domain.Receipt{}, domain.Unavailable(command.Type)
+	if s.Scheduler == nil {
+		return domain.Receipt{}, domain.Unavailable(command.Type)
+	}
+	hash, err := task.RequestHash(command)
+	if err != nil {
+		return domain.Receipt{}, err
+	}
+	prior, err := s.Journal.Receipt(ctx, command.ID)
+	if errors.Is(err, os.ErrNotExist) && op.Scope == domain.ClusterScope && s.Cluster != nil {
+		prior, err = s.Cluster.Receipt(ctx, command.ID)
+	}
+	if err == nil {
+		if prior.Envelope.RequestHash != hash {
+			return domain.Receipt{}, &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Command ID already used"}
+		}
+		return prior.Receipt, prior.Error
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return domain.Receipt{}, err
+	}
+	if op.Scope == domain.NodeLocal && command.TargetID != s.Identity.NodeID {
+		return domain.Receipt{}, &domain.Error{Code: "TARGET_UNREACHABLE", Message: "Target is not this unjoined node"}
+	}
+	if command.Type == "discovery.search" {
+		if s.Discovery == nil {
+			return domain.Receipt{}, invalid("Discovery is disabled")
+		}
+		if len(command.ExpectedVersions) != 0 {
+			return domain.Receipt{}, invalid("Discovery has no version prerequisites")
+		}
+	} else if command.Type == "network.check" {
+		if len(command.ExpectedVersions) != 0 {
+			return domain.Receipt{}, invalid("network.check has no mutable version prerequisites")
+		}
+	} else {
+		if s.Cluster == nil {
+			return domain.Receipt{}, domain.Unavailable(command.Type)
+		}
+		if err := s.Cluster.Validate(ctx, command, value); err != nil {
+			return domain.Receipt{}, err
+		}
+	}
+	now := time.Now().UTC()
+	envelope := domain.Envelope{SchemaVersion: domain.SchemaVersion,
+		Command: command, Scope: op.Scope, OwnerNodeID: s.Identity.NodeID, RequestHash: hash,
+		AdmittedAt: now, ExpiresAt: now.Add(domain.CommandTTL)}
+	if op.Scope == domain.NodeLocal {
+		return s.Scheduler.Admit(ctx, envelope)
+	}
+	if command.Type == "host.refresh" || command.Type == "host.shutdown" || command.Type == "host.reboot" {
+		envelope.OwnerNodeID = command.TargetID
+	}
+	if err := s.Cluster.PublishCommand(ctx, envelope); err != nil {
+		return domain.Receipt{}, err
+	}
+	// Acceptance is the executor's persisted receipt, not just a broker ack.
+	wait, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if receipt, err := s.Receipt(wait, command.ID); err == nil || receipt.Admission == "rejected" {
+			return receipt, err
+		}
+		select {
+		case <-wait.Done():
+			return domain.Receipt{}, &domain.Error{Code: "SUBMISSION_UNKNOWN", Message: "Command published; reconcile the original command ID", Retryable: true}
+		case <-ticker.C:
+		}
+	}
 }
-func (s *Service) Receipt(context.Context, domain.ID) (domain.Receipt, error) {
-	return domain.Receipt{}, domain.Unavailable("durable receipts")
+func (s *Service) Receipt(ctx context.Context, id domain.ID) (domain.Receipt, error) {
+	if s.Journal == nil {
+		return domain.Receipt{}, domain.Unavailable("durable receipts")
+	}
+	record, err := s.Journal.Receipt(ctx, id)
+	if errors.Is(err, os.ErrNotExist) && s.Cluster != nil {
+		record, err = s.Cluster.Receipt(ctx, id)
+	}
+	if err == nil && record.Error != nil {
+		err = record.Error
+	}
+	return record.Receipt, err
 }
 
 // Feature orchestration ports keep presentation and adapters out of domain rules.

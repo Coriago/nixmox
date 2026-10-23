@@ -129,6 +129,9 @@ func (j *Journal) admission(id domain.ID) (admissionFile, error) {
 }
 
 func (j *Journal) ensureTask(file admissionFile) error {
+	if file.Record.Receipt.Admission == "rejected" {
+		return nil
+	}
 	var task domain.Task
 	err := j.read(taskPath(file.Initial.ID), &task)
 	if errors.Is(err, os.ErrNotExist) {
@@ -163,6 +166,29 @@ func (j *Journal) Admit(ctx context.Context, record domain.AdmissionRecord, task
 		return record, err
 	}
 	return record, j.ensureTask(file)
+}
+
+// Reject persists a terminal admission outcome without inventing an execution.
+func (j *Journal) Reject(ctx context.Context, e domain.Envelope, detail *domain.Error) (domain.Receipt, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	receipt := domain.Receipt{CommandID: e.Command.ID, Admission: "rejected"}
+	if err := ctx.Err(); err != nil {
+		return receipt, err
+	}
+	if prior, err := j.admission(e.Command.ID); err == nil {
+		if prior.Record.Envelope.RequestHash != e.RequestHash {
+			return receipt, &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Command ID already used"}
+		}
+		return prior.Record.Receipt, prior.Record.Error
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return receipt, err
+	}
+	record := domain.AdmissionRecord{SchemaVersion: 1, Envelope: e, Receipt: receipt, Error: detail}
+	if err := j.write(receiptPath(e.Command.ID), admissionFile{Record: record}); err != nil {
+		return receipt, err
+	}
+	return receipt, detail
 }
 
 func (j *Journal) Receipt(ctx context.Context, id domain.ID) (domain.AdmissionRecord, error) {
@@ -232,6 +258,16 @@ func (j *Journal) SaveTask(ctx context.Context, t domain.Task, expected domain.V
 }
 
 func (j *Journal) Recoverable(ctx context.Context, page domain.PageRequest) (domain.Page[domain.Task], error) {
+	return j.listTasks(ctx, page, true)
+}
+
+// Tasks lists retained tasks newest first. Cursors identify the last returned
+// task; execution recovery uses its separate ID-ordered scan.
+func (j *Journal) Tasks(ctx context.Context, page domain.PageRequest) (domain.Page[domain.Task], error) {
+	return j.listTasks(ctx, page, false)
+}
+
+func (j *Journal) listTasks(ctx context.Context, page domain.PageRequest, recovery bool) (domain.Page[domain.Task], error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	result := domain.Page[domain.Task]{Items: []domain.Task{}}
@@ -255,6 +291,9 @@ func (j *Journal) Recoverable(ctx context.Context, page domain.PageRequest) (dom
 		if err = j.read("receipts/"+entry.Name(), &admission); err != nil {
 			return result, err
 		}
+		if admission.Record.Receipt.Admission == "rejected" {
+			continue
+		}
 		if err = j.ensureTask(admission); err != nil {
 			return result, err
 		}
@@ -262,11 +301,33 @@ func (j *Journal) Recoverable(ctx context.Context, page domain.PageRequest) (dom
 		if err = j.read(taskPath(admission.Initial.ID), &task); err != nil {
 			return result, err
 		}
-		if !terminal(task.State) && string(task.ID) > page.Cursor {
+		if !recovery || (!terminal(task.State) && string(task.ID) > page.Cursor) {
 			result.Items = append(result.Items, task)
 		}
 	}
-	sort.Slice(result.Items, func(i, k int) bool { return result.Items[i].ID < result.Items[k].ID })
+	sort.Slice(result.Items, func(i, k int) bool {
+		a, b := result.Items[i], result.Items[k]
+		if recovery {
+			return a.ID < b.ID
+		}
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return a.ID > b.ID
+		}
+		return a.CreatedAt.After(b.CreatedAt)
+	})
+	if !recovery && page.Cursor != "" {
+		position := -1
+		for i, item := range result.Items {
+			if string(item.ID) == page.Cursor {
+				position = i
+				break
+			}
+		}
+		if position < 0 {
+			return domain.Page[domain.Task]{}, &domain.Error{Code: "CURSOR_EXPIRED", Message: "Task cursor unavailable"}
+		}
+		result.Items = result.Items[position+1:]
+	}
 	limit := page.Limit
 	if limit == 0 {
 		limit = domain.PageDefault

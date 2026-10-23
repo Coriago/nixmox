@@ -26,15 +26,15 @@ func Subject(cluster domain.ID, kind string, node domain.ID) string {
 func FullGrants(cluster, node domain.ID) domain.Grants {
 	prefix := "nx." + shared.Token(cluster) + "."
 	return domain.Grants{
-		Publish: []string{prefix + "command.*", prefix + "query.*", prefix + "secret.*", prefix + "reply.*.>",
-			Subject(cluster, "result", node), Subject(cluster, "activity", node), Subject(cluster, "log", node) + ".*", Subject(cluster, "progress", node) + ".*", "$JS.API.>", "$JS.ACK.>", "$KV.nx_state.>", "$O.nx_git.>"},
+		Publish: []string{Subject(cluster, "view", node), prefix + "command.*", prefix + "query.*", prefix + "secret.*", prefix + "reply.*.>",
+			Subject(cluster, "heartbeat", node), Subject(cluster, "result", node), Subject(cluster, "activity", node), Subject(cluster, "log", node) + ".*", Subject(cluster, "progress", node) + ".*", "$JS.API.>", "$JS.ACK.>", "$KV.nx_state.>", "$O.nx_git.>"},
 		Subscribe: []string{prefix + ">", "_INBOX." + shared.Token(node) + ".>", "$KV.nx_state.>", "$O.nx_git.>"},
 	}
 }
 
 func PendingGrants(cluster, node domain.ID) domain.Grants {
 	return domain.Grants{
-		Publish:   []string{Subject(cluster, "result", node), Subject(cluster, "activity", node), Subject(cluster, "log", node) + ".*", Subject(cluster, "progress", node) + ".*", Subject(cluster, "reply", node) + ".>"},
+		Publish:   []string{Subject(cluster, "view", node), Subject(cluster, "heartbeat", node), Subject(cluster, "result", node), Subject(cluster, "activity", node), Subject(cluster, "log", node) + ".*", Subject(cluster, "progress", node) + ".*", Subject(cluster, "reply", node) + ".>"},
 		Subscribe: []string{Subject(cluster, "command", node), Subject(cluster, "query", node), Subject(cluster, "reply", node) + ".>"},
 	}
 }
@@ -72,8 +72,8 @@ func (a machineAuth) Check(c server.ClientAuthentication) bool {
 
 // PinnedTLS adds approved-key verification without disabling CA/name verification.
 func PinnedTLS(base *tls.Config, keys []domain.Digest) (*tls.Config, error) {
-	if base == nil || base.InsecureSkipVerify || base.MinVersion < tls.VersionTLS12 || len(base.Certificates) == 0 || len(keys) == 0 {
-		return nil, errors.New("TLS requires a certificate, TLS 1.2+, verification and approved keys")
+	if base == nil || base.InsecureSkipVerify || base.MinVersion < tls.VersionTLS12 || len(base.Certificates) == 0 {
+		return nil, errors.New("TLS requires a certificate, TLS 1.2+, verification (an empty approved-key set denies all peers)")
 	}
 	cfg := base.Clone()
 	prior := cfg.VerifyConnection
@@ -105,6 +105,8 @@ type BrokerOptions struct {
 	DataDir, ClientAddress, RouteAddress, LeafAddress string
 	ClientTLS, RouteTLS, LeafTLS                      *tls.Config
 	DaemonKeys, BrokerKeys                            []domain.Digest
+	RouteCertificates                                 []domain.Digest
+	LeafCertificates                                  map[domain.ID]domain.Digest // exact issued leaf certificates, binding the membership epoch.
 	Leaves                                            map[domain.ID]domain.Digest // broker key; cert DNS SAN must equal SubjectToken(node).
 	Routes                                            []*url.URL
 	LeafRemotes                                       []*server.RemoteLeafOpts
@@ -146,12 +148,17 @@ func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error
 	opts := &server.Options{}
 	accountConfig := "accounts { NX {} }"
 	if !cfg.Pending {
-		accountConfig = "accounts { NX { jetstream: enabled } }"
+		accountConfig = "accounts {\n NX { jetstream: enabled }\n SYS {}\n}\nsystem_account: SYS"
 	}
 	if err = opts.ProcessConfigString(accountConfig); err != nil {
 		return nil, err
 	}
-	account := opts.Accounts[0]
+	var account *server.Account
+	for _, candidate := range opts.Accounts {
+		if candidate.Name == "NX" {
+			account = candidate
+		}
+	}
 	grants := FullGrants(cfg.ClusterID, cfg.NodeID)
 	if cfg.Pending {
 		grants = PendingGrants(cfg.ClusterID, cfg.NodeID)
@@ -179,6 +186,19 @@ func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error
 		}
 		if tlsCfg.ClientAuth != tls.RequireAndVerifyClientCert || tlsCfg.ClientCAs == nil || tlsCfg.RootCAs == nil {
 			return nil, errors.New("route TLS must verify both directions")
+		}
+		prior := tlsCfg.VerifyConnection
+		tlsCfg.VerifyConnection = func(state tls.ConnectionState) error {
+			if err := prior(state); err != nil {
+				return err
+			}
+			pin := shared.Fingerprint(state.PeerCertificates[0].Raw)
+			for _, allowed := range cfg.RouteCertificates {
+				if pin == allowed {
+					return nil
+				}
+			}
+			return errors.New("route certificate is not authorized for this topology")
 		}
 		opts.Cluster = server.ClusterOpts{Name: shared.Token(cfg.ClusterID), Host: h, Port: p, TLSConfig: tlsCfg, PoolSize: 1}
 	} else if len(cfg.Routes) > 0 {
@@ -210,6 +230,9 @@ func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error
 			}
 			cert := state.PeerCertificates[0]
 			for id, key := range cfg.Leaves {
+				if pin, ok := cfg.LeafCertificates[id]; ok && pin != shared.Fingerprint(cert.Raw) {
+					continue
+				}
 				if shared.Fingerprint(cert.RawSubjectPublicKeyInfo) == key && len(cert.DNSNames) == 1 && cert.DNSNames[0] == shared.Token(id) {
 					return nil
 				}
@@ -243,6 +266,10 @@ func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error
 	}
 	return &EmbeddedBroker{srv}, nil
 }
+
+func (b *EmbeddedBroker) RouteConnections() int { return b.server.NumRoutes() }
+
+func (b *EmbeddedBroker) LeafConnections() int { return b.server.NumLeafNodes() }
 
 func (b *EmbeddedBroker) Close() { b.server.Shutdown(); b.server.WaitForShutdown() }
 

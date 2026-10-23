@@ -15,7 +15,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          vendorHash = "sha256-y3XvLzevOH4FCw64NuK+y6t9wcUrA2zP10GuXeWu0B8=";
+          vendorHash = "sha256-YkFDcq2gM4gVw9ICZ4ZFdcSyTURnKkAfzMT6ewVTOsM=";
         in
         {
           default = pkgs.buildGoModule {
@@ -73,6 +73,7 @@
               nodejs # Execute the shared progress controller tests under Go/WASM.
               python3 # Small PTY probe; no application runtime dependency.
               git
+              jq # Disposable CLI-only multi-node smoke check.
               nixfmt
               ripgrep
             ];

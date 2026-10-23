@@ -36,11 +36,13 @@ type Delivery interface {
 	Retry(context.Context) error
 }
 type Query struct {
-	ID       domain.ID
-	Type     string
-	TargetID domain.ID
-	Payload  json.RawMessage
-	Trace    domain.TraceContext
+	CallerID        domain.ID
+	MembershipEpoch uint64
+	ID              domain.ID
+	Type            string
+	TargetID        domain.ID
+	Payload         json.RawMessage
+	Trace           domain.TraceContext
 }
 type QueryReply struct {
 	RequestID domain.ID

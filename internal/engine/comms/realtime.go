@@ -114,17 +114,28 @@ type queryRequest struct {
 }
 
 func (c *Core) Query(ctx context.Context, q engine.Query) (engine.Subscription[engine.QueryReply], error) {
+	return c.query(ctx, q, Subject(c.Cluster, "query", q.TargetID), q.TargetID)
+}
+
+// View is the leaf's narrowly scoped application read path. Broker grants bind
+// its request subject to the caller, without granting arbitrary peer queries.
+func (c *Core) View(ctx context.Context, q engine.Query) (engine.Subscription[engine.QueryReply], error) {
+	return c.query(ctx, q, Subject(c.Cluster, "view", c.Node), c.Node)
+}
+
+func (c *Core) query(ctx context.Context, q engine.Query, subject string, replyOwner domain.ID) (engine.Subscription[engine.QueryReply], error) {
+	q.CallerID = c.Node
 	if q.ID == "" || q.TargetID == "" || len(q.Payload) > domain.CommandPayloadLimit {
 		return nil, errors.New("invalid query")
 	}
-	reply := Subject(c.Cluster, "reply", c.Node) + "." + shared.Token(q.ID)
+	reply := Subject(c.Cluster, "reply", replyOwner) + "." + shared.Token(q.ID)
 	sub, err := c.nc.SubscribeSync(reply)
 	if err != nil {
 		return nil, err
 	}
 	sub.SetPendingLimits(1024, domain.QueryTotalLimit+1<<20)
 	if err = c.nc.FlushWithContext(ctx); err == nil {
-		err = c.publish(ctx, Subject(c.Cluster, "query", q.TargetID), queryRequest{q, reply}, domain.CommandPayloadLimit)
+		err = c.publish(ctx, subject, queryRequest{q, reply}, domain.CommandPayloadLimit)
 	}
 	if err != nil {
 		sub.Unsubscribe()
@@ -171,7 +182,17 @@ func (s *querySubscription) Next(ctx context.Context) (engine.QueryReply, error)
 // ServeQueries serializes handlers per subscription, with bounded reply bytes.
 // Feature handlers must authorize query type and caller/task scope before reading.
 func (c *Core) ServeQueries(ctx context.Context, handler func(context.Context, engine.Query) (io.ReadCloser, error)) error {
-	sub, err := c.nc.SubscribeSync(Subject(c.Cluster, "query", c.Node))
+	return c.serveQueries(ctx, false, handler)
+}
+func (c *Core) ServeViews(ctx context.Context, handler func(context.Context, engine.Query) (io.ReadCloser, error)) error {
+	return c.serveQueries(ctx, true, handler)
+}
+func (c *Core) serveQueries(ctx context.Context, view bool, handler func(context.Context, engine.Query) (io.ReadCloser, error)) error {
+	subject := Subject(c.Cluster, "query", c.Node)
+	if view {
+		subject = "nx." + shared.Token(c.Cluster) + ".view.*"
+	}
+	sub, err := c.nc.SubscribeSync(subject)
 	if err != nil {
 		return err
 	}
@@ -186,10 +207,24 @@ func (c *Core) ServeQueries(ctx context.Context, handler func(context.Context, e
 		if len(m.Data) > domain.CommandPayloadLimit || json.Unmarshal(m.Data, &req) != nil || req.Query.TargetID != c.Node || !validReply(c.Cluster, req.Reply) {
 			continue
 		}
-		call, cancel := context.WithTimeout(ctx, domain.CommandTTL)
+		replyOwner := c.Node
+		if view {
+			if m.Subject != Subject(c.Cluster, "view", req.Query.CallerID) {
+				continue
+			}
+			replyOwner = req.Query.CallerID
+		}
+		if req.Reply != Subject(c.Cluster, "reply", replyOwner)+"."+shared.Token(req.Query.ID) {
+			continue
+		}
+		call, cancel := context.WithTimeout(ctx, domain.ExportTimeout)
 		reader, e := handler(call, req.Query)
 		if e != nil {
-			c.publish(call, req.Reply, engine.QueryReply{RequestID: req.Query.ID, Complete: true, Error: &domain.Error{Code: "QUERY_FAILED", Message: "Owner query failed"}}, domain.CommandPayloadLimit)
+			var detail *domain.Error
+			if !errors.As(e, &detail) {
+				detail = &domain.Error{Code: "QUERY_FAILED", Message: "Owner query failed"}
+			}
+			c.publish(call, req.Reply, engine.QueryReply{RequestID: req.Query.ID, Complete: true, Error: detail}, domain.CommandPayloadLimit)
 			cancel()
 			continue
 		}

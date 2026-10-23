@@ -77,7 +77,7 @@ let
 in
 {
   options.services.nixmox = {
-    enable = lib.mkEnableOption "Nixmox (rewrite scaffold; not operational yet)";
+    enable = lib.mkEnableOption "Nixmox (provisional clusters; full membership lifecycle in progress)";
     package =
       opt types.package self.packages.${pkgs.stdenv.hostPlatform.system}.default
         "Nixmox package.";

@@ -64,9 +64,16 @@ type HostTarget struct {
 	HostID ID `json:"host_id"`
 }
 
+type ForceFullMembership struct {
+	HostID          ID     `json:"host_id"`
+	MembershipEpoch uint64 `json:"membership_epoch"`
+	ConfirmHost     string `json:"confirm_host"`
+}
+
 type HostPower struct {
-	HostID      ID     `json:"host_id"`
-	ConfirmHost string `json:"confirm_host"`
+	MembershipEpoch uint64 `json:"membership_epoch"`
+	HostID          ID     `json:"host_id"`
+	ConfirmHost     string `json:"confirm_host"`
 }
 
 type HostDiagnostics struct {

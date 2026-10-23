@@ -111,6 +111,7 @@ type Discovery struct {
 }
 
 type JoinRequest struct {
+	Signature string `json:"signature"`
 	Record
 	RequestID           ID            `json:"request_id"`
 	NodeID              ID            `json:"node_id"`

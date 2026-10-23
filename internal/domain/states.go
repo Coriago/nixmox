@@ -6,6 +6,7 @@ const (
 	Unjoined Membership = "unjoined"
 	Pending  Membership = "pending"
 	Full     Membership = "full"
+	Removed  Membership = "removed"
 )
 
 type Environment string

@@ -10,6 +10,13 @@ KEEP RESPONSIBILITIES CLEAR, FUNCTIONS FOCUSED, AND NAMES DESCRIPTIVE.
 Do not write readme.md files until the end once the application reaches maturity.
 Create a flake and use its devshell for any tooling you need.
 
+## Scope discipline
+
+- STOP EXPANDING SCOPE. Implement only what the user explicitly requests.
+- Do not add adjacent features, broader refactors, or infrastructure work without approval.
+- If a prerequisite would substantially expand the work, explain the blocker and ask before proceeding.
+- Keep validation focused on the requested change. Respect time limits and stop immediately when told to stop.
+
 # FOLLOW THIS ORDER
 1. read all docs and understand them.
 

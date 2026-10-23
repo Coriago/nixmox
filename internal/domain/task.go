@@ -6,6 +6,7 @@ import (
 )
 
 type Task struct {
+	MembershipEpoch uint64 `json:"membership_epoch,omitempty"`
 	Record
 	CommandID     ID              `json:"command_id"`
 	Kind          string          `json:"kind"`

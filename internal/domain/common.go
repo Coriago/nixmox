@@ -79,16 +79,17 @@ type Command struct {
 
 // Envelope is service-created; callers cannot select scope, expiry or authority.
 type Envelope struct {
-	SchemaVersion int             `json:"schema_version"`
-	Command       Command         `json:"command"`
-	Scope         Scope           `json:"scope"`
-	OwnerNodeID   ID              `json:"owner_node_id"`
-	ClusterID     *ID             `json:"cluster_id"`
-	AdmittedAt    time.Time       `json:"admitted_at"`
-	ExpiresAt     time.Time       `json:"expires_at"`
-	RequestHash   Digest          `json:"request_hash"`
-	Trace         TraceContext    `json:"trace"`
-	Resolved      json.RawMessage `json:"resolved"`
+	MembershipEpoch uint64          `json:"membership_epoch,omitempty"`
+	SchemaVersion   int             `json:"schema_version"`
+	Command         Command         `json:"command"`
+	Scope           Scope           `json:"scope"`
+	OwnerNodeID     ID              `json:"owner_node_id"`
+	ClusterID       *ID             `json:"cluster_id"`
+	AdmittedAt      time.Time       `json:"admitted_at"`
+	ExpiresAt       time.Time       `json:"expires_at"`
+	RequestHash     Digest          `json:"request_hash"`
+	Trace           TraceContext    `json:"trace"`
+	Resolved        json.RawMessage `json:"resolved"`
 }
 type Receipt struct {
 	CommandID  ID     `json:"command_id"`

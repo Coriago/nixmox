@@ -1,5 +1,7 @@
 package service
 
+import "nixmox/internal/domain"
+
 // Collection metadata is shared by API routing, pagination and console adapters.
 // Revision-pinned reads reject a changed source instead of mixing pages.
 type Collection struct {
@@ -43,6 +45,37 @@ var NestedReads = []Collection{
 	{Path: "drafts/{id}/files", Filters: []string{"version"}, Order: "path", RevisionPinned: true},
 	{Path: "diffs/{id}/changes", Filters: []string{"kind", "q"}, Order: "id", RevisionPinned: true},
 	{Path: "tasks/{id}/activities", Filters: []string{"kind", "state"}, Order: "id"},
+}
+
+func pageItems[T any](items []T, request domain.PageRequest, id func(T) domain.ID) (domain.Page[T], error) {
+	start := 0
+	if request.Cursor != "" {
+		found := false
+		for i, item := range items {
+			if string(id(item)) == request.Cursor {
+				start = i + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			return domain.Page[T]{}, &domain.Error{Code: "CURSOR_EXPIRED", Message: "Read cursor unavailable"}
+		}
+	}
+	limit := request.Limit
+	if limit == 0 {
+		limit = domain.PageDefault
+	}
+	if limit < 1 || limit > domain.PageLimit {
+		return domain.Page[T]{}, invalid("Invalid page limit")
+	}
+	end := min(start+limit, len(items))
+	page := domain.Page[T]{Items: items[start:end]}
+	if end < len(items) {
+		next := string(id(items[end-1]))
+		page.NextCursor = &next
+	}
+	return page, nil
 }
 
 // Downloads, owner-local log reads and enrollment use explicit route handlers;

@@ -84,13 +84,14 @@ func (f *localFence) Release(context.Context) error {
 }
 
 type Scheduler struct {
-	AdapterFailures atomic.Uint64
-	Store           *Journal
-	Definitions     map[string]engine.TaskDefinition
-	Node            domain.ID
-	Locks           *Locks
-	mu              sync.Mutex
-	active          map[domain.ID]*execution
+	MembershipContext func(domain.Task) (context.Context, error)
+	AdapterFailures   atomic.Uint64
+	Store             *Journal
+	Definitions       map[string]engine.TaskDefinition
+	Node              domain.ID
+	Locks             *Locks
+	mu                sync.Mutex
+	active            map[domain.ID]*execution
 }
 
 func NewScheduler(store *Journal, node domain.ID, definitions []engine.TaskDefinition) (*Scheduler, error) {
@@ -117,7 +118,9 @@ func NewScheduler(store *Journal, node domain.ID, definitions []engine.TaskDefin
 	return s, nil
 }
 
-func requestHash(c domain.Command) (domain.Digest, error) {
+// RequestHash binds both local receipts and cluster submission claims to one
+// canonical command, independent of JSON object ordering.
+func RequestHash(c domain.Command) (domain.Digest, error) {
 	raw, err := json.Marshal(c)
 	if err != nil {
 		return "", err
@@ -142,6 +145,15 @@ func (s *Scheduler) Admit(ctx context.Context, e domain.Envelope) (domain.Receip
 	return s.admit(ctx, e)
 }
 
+// AdmitAssigned is used by a scoped leaf relay. The full service acknowledges
+// JetStream only after it receives this executor's persisted admission outcome.
+func (s *Scheduler) AdmitAssigned(ctx context.Context, e domain.Envelope) (domain.Receipt, error) {
+	if e.Scope != domain.ClusterScope || e.ClusterID == nil {
+		return domain.Receipt{}, errors.New("invalid cluster assignment")
+	}
+	return s.admit(ctx, e)
+}
+
 func (s *Scheduler) AdmitDelivery(ctx context.Context, delivery engine.Delivery) (domain.Receipt, error) {
 	e := delivery.Envelope()
 	if e.Scope != domain.ClusterScope || e.ClusterID == nil {
@@ -161,7 +173,7 @@ func (s *Scheduler) admit(ctx context.Context, e domain.Envelope) (domain.Receip
 	if _, ok := s.Definitions[e.Command.Type]; !ok {
 		return domain.Receipt{}, domain.Unavailable(e.Command.Type)
 	}
-	hash, err := requestHash(e.Command)
+	hash, err := RequestHash(e.Command)
 	if err != nil {
 		return domain.Receipt{}, err
 	}
@@ -170,6 +182,9 @@ func (s *Scheduler) admit(ctx context.Context, e domain.Envelope) (domain.Receip
 	if err == nil {
 		if prior.Envelope.RequestHash != hash {
 			return domain.Receipt{}, &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Command ID already used"}
+		}
+		if prior.Error != nil {
+			return prior.Receipt, prior.Error
 		}
 		// Finish a crash-interrupted admission without allocating new identities.
 		s.Store.mu.Lock()
@@ -184,11 +199,11 @@ func (s *Scheduler) admit(ctx context.Context, e domain.Envelope) (domain.Receip
 		return domain.Receipt{}, err
 	}
 	if e.ExpiresAt.IsZero() || time.Now().After(e.ExpiresAt) {
-		return domain.Receipt{}, &domain.Error{Code: "COMMAND_EXPIRED", Message: "Command expired before admission"}
+		return s.Store.Reject(ctx, e, &domain.Error{Code: "COMMAND_EXPIRED", Message: "Command expired before admission"})
 	}
 	now := time.Now().UTC()
 	id := TaskID(e.Command.ID)
-	task := domain.Task{Record: domain.Record{SchemaVersion: 1, ID: id, Version: 1}, CommandID: e.Command.ID, Kind: e.Command.Type, Scope: e.Scope, OwnerNodeID: s.Node, ClusterID: e.ClusterID, State: domain.Queued, TargetID: e.Command.TargetID, CreatedAt: now, UpdatedAt: now, Cancellation: domain.Cancellation{Allowed: true}, Effects: map[string]bool{}, Log: domain.LogReference{NodeID: s.Node}}
+	task := domain.Task{MembershipEpoch: e.MembershipEpoch, Record: domain.Record{SchemaVersion: 1, ID: id, Version: 1}, CommandID: e.Command.ID, Kind: e.Command.Type, Scope: e.Scope, OwnerNodeID: s.Node, ClusterID: e.ClusterID, State: domain.Queued, TargetID: e.Command.TargetID, CreatedAt: now, UpdatedAt: now, Cancellation: domain.Cancellation{Allowed: true}, Effects: map[string]bool{}, Log: domain.LogReference{NodeID: s.Node}}
 	receipt := domain.Receipt{CommandID: e.Command.ID, Admission: "accepted", TaskID: &id}
 	record, err := s.Store.Admit(ctx, domain.AdmissionRecord{SchemaVersion: 1, Envelope: e, Receipt: receipt}, task)
 	return record.Receipt, err
@@ -212,6 +227,19 @@ func (s *Scheduler) Execute(ctx context.Context, id domain.ID) error {
 		return errors.New("task is not eligible for execution")
 	}
 	life, cancel := context.WithCancel(ctx)
+	var stopScope func() bool
+	if task.Scope == domain.ClusterScope && s.MembershipContext != nil {
+		scope, err := s.MembershipContext(task)
+		if err != nil {
+			s.mu.Unlock()
+			cancel()
+			return err
+		}
+		stopScope = context.AfterFunc(scope, cancel)
+	}
+	if stopScope != nil {
+		defer stopScope()
+	}
 	e := &execution{scheduler: s, current: task, cancel: cancel}
 	s.active[id] = e
 	s.mu.Unlock()
@@ -305,6 +333,50 @@ func (s *Scheduler) Execute(ctx context.Context, id domain.ID) error {
 		return err
 	}
 	return s.Store.Close(context.Background(), id, nil)
+}
+
+// Run drains the durable journal with one bounded worker. Admission never
+// depends on an in-memory queue, so restart cannot lose queued work.
+func (s *Scheduler) Run(ctx context.Context) error {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		cursor := ""
+		for {
+			page, err := s.Store.Recoverable(ctx, domain.PageRequest{Cursor: cursor, Limit: domain.PageLimit})
+			if err != nil {
+				return err
+			}
+			for _, current := range page.Items {
+				if _, ok := s.Definitions[current.Kind]; !ok {
+					return domain.Unavailable("recovery handler for " + current.Kind)
+				}
+				if current.State != domain.Queued && current.State != domain.Reconciling {
+					continue
+				}
+				if err = s.Execute(ctx, current.ID); err != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					// Failed/reconciling tasks remain queryable. Persistence failures
+					// that leave an executing task running stop the worker.
+					after, readErr := s.Store.Task(ctx, current.ID)
+					if readErr != nil || after.State == domain.Running {
+						return errors.Join(err, readErr)
+					}
+				}
+			}
+			if page.NextCursor == nil {
+				break
+			}
+			cursor = *page.NextCursor
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func findCheckpoint(t domain.Task, name string) *domain.Checkpoint {
@@ -428,9 +500,13 @@ func (e *execution) update(change func(*domain.Task)) error {
 
 func (e *execution) Intent(_ context.Context, cp domain.Checkpoint) error {
 	return e.update(func(t *domain.Task) {
-		if findCheckpoint(*t, cp.Phase) == nil {
+		if prior := findCheckpoint(*t, cp.Phase); prior == nil {
 			cp.State = "intent"
 			t.Checkpoints = append(t.Checkpoints, cp)
+		} else if prior.State == "intent" && len(prior.Evidence) == 0 {
+			// Refine the scheduler's generic intent before invoking an effect.
+			// Existing effect evidence is immutable on retry/reconciliation.
+			prior.Evidence = cp.Evidence
 		}
 	})
 }

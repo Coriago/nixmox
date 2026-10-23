@@ -1,13 +1,20 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"nixmox/internal/domain"
+	"github.com/gin-gonic/gin"
+
+	"nixmox/internal/cli"
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, domain.Unavailable("command interface"))
-	os.Exit(3)
+	gin.SetMode(gin.ReleaseMode)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := cli.Execute(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
 }

@@ -37,6 +37,7 @@ type JetStream struct {
 }
 
 type StorageLimits struct {
+	Existing                      bool
 	Commands, Results, State, Git int64
 	Replicas                      int
 }
@@ -50,6 +51,19 @@ func OpenJetStream(ctx context.Context, nc *nats.Conn, cluster, node domain.ID, 
 		return nil, err
 	}
 	j := &JetStream{API: api, Cluster: cluster, Node: node}
+	if limits.Existing {
+		for _, name := range durableStreams() {
+			if _, err = api.Stream(ctx, name); err != nil {
+				return nil, err
+			}
+		}
+		j.KV, err = api.KeyValue(ctx, domain.StateBucket)
+		if err != nil {
+			return nil, err
+		}
+		j.Objects, err = api.ObjectStore(ctx, domain.GitBucket)
+		return j, err
+	}
 	prefix := "nx." + shared.Token(cluster) + "."
 	for _, cfg := range []js.StreamConfig{
 		{Name: commandStream, Subjects: []string{prefix + "command.*"}, Storage: js.FileStorage, Retention: js.WorkQueuePolicy, Discard: js.DiscardNew, MaxBytes: limits.Commands, MaxMsgSize: 512 << 10, Replicas: limits.Replicas, Duplicates: domain.CommandTTL},
@@ -172,6 +186,31 @@ func (j *JetStream) Result(ctx context.Context, t domain.Task) error {
 	}
 	_, err = j.API.Publish(ctx, Subject(j.Cluster, "result", j.Node), data, js.WithMsgID(fmt.Sprintf("%s:%d", t.ID, t.Version)))
 	return err
+}
+
+// Entries consumes the bounded initial KV watch snapshot, not a polling cache.
+func (j *JetStream) Entries(ctx context.Context, pattern string) ([]engine.StateEntry, error) {
+	watch, err := j.Watch(ctx, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer watch.Close()
+	var entries []engine.StateEntry
+	for {
+		entry, err := watch.Next(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if entry.SnapshotComplete {
+			return entries, nil
+		}
+		if !entry.Deleted {
+			entries = append(entries, entry)
+		}
+		if len(entries) > 5000 {
+			return nil, errors.New("state snapshot exceeds bound")
+		}
+	}
 }
 
 func (j *JetStream) Get(ctx context.Context, key string) (engine.StateEntry, error) {
