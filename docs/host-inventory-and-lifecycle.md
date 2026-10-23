@@ -182,8 +182,9 @@ activation. Browser/TUI Verify running configuration selects the same candidate
 and confirms the host. Adoption preserves the desired binding and reports drift.
 
 Browser: unjoined Clusters → homelab → Request join → Awaiting approval. Existing
-cluster: Hosts → Join requests → inspect node/address/key → Approve or Reject.
-Alternative: Discovery → cedar → Add to homelab admits immediately without a
+cluster: Cluster → Discovery → requesting host → inspect node/address/key → Approve
+or Reject. Requesting hosts appear first with an Awaiting approval label.
+Alternative: Cluster → Discovery → cedar → Add admits immediately without a
 node-side prompt. CLI Add resolves/reviews the discovered key before submission;
 scripts supply `--key-fingerprint`. TUI uses the same screens/actions. The unjoined
 [Clusters flow](host-onboarding.md#clusters-joining-and-headless-setup) is shared

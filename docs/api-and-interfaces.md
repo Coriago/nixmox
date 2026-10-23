@@ -36,8 +36,8 @@ Changing the binding does not change tasks or the reported running system.
 `POST /api/v1/commands` is the normal mutation entry point. The operation registry
 validates the typed payload. Reads use resource endpoints. No arbitrary shell
 execution endpoint is exposed.
-The [browser HTML adapter](#browser-html-and-live-updates) translates forms into
-these same command objects and invokes the same admission service.
+The [go-app browser adapter](#browser-html-and-live-updates) translates shared UI
+actions into these same command objects and invokes the same admission service.
 Secret import has a dedicated redacted ingress described below; it dispatches
 only a secret-free reference through this command path.
 Rebase uploads stage bytes through the draft resolution ingress; accepting those
@@ -259,22 +259,22 @@ the authoritative data model.
 
 | Route | Contract |
 | --- | --- |
-| `GET /ui/...` | Registered console views: full HTML on navigation, fragments for htmx requests; same read services and scope as JSON API |
-| `POST /ui/commands` | Typed form adapter to the command service; HTML receipt/review/errors with the same command/task IDs and status meanings |
+| `GET /ui/...` | go-app application shell/assets; client navigation composes shared view models |
+| `POST /api/v1/commands` | Typed command submission from shared actions; same receipts/reviews/errors as CLI/TUI |
 | `GET /api/v1/events` | Shared JSON SSE stream for live browser updates; unchanged API event schema |
 
-Vary full-page/fragment responses by `HX-Request`. Keep `/api/v1` responses in their
-documented formats; never return HTML fragments to JSON clients. HTML forms retain
-command IDs across retries and submit the reviewed expected versions/acknowledgements.
-They cannot bypass admission, change scope, or execute effects directly. Secret
-fields still use the dedicated redacted ingress; no secret enters `/ui/commands`.
+The browser follows `internal/ui/progress/`: shared Go controllers and view models
+with go-app DOM components, not htmx fragment replacement. Keep `/api/v1` responses
+in their documented JSON formats. Retain command IDs across retries and submit the
+reviewed expected versions/acknowledgements. UI actions cannot bypass admission,
+change scope or execute effects directly. Secrets use the dedicated redacted ingress.
 
 Use one SSE connection per browser tab, selecting visible resource topics and
-explicitly watched logs. A small bridge coalesces versioned events into htmx fragment
-refreshes; discard stale events/responses and preserve active form values. Render
-log chunks as text using the existing offset/gap recovery contract. On reconnect,
-refresh snapshots and affected fragments; show stale/disconnected state meanwhile.
-HTML is a presentation of the shared data, not a second authoritative state model.
+explicitly watched logs. Coalesce versioned observations into shared controllers;
+discard stale events/responses and preserve active form values, focus and scroll.
+Render log chunks as text using the offset/gap recovery contract. On reconnect,
+refresh snapshots and show stale/disconnected state meanwhile. DOM components are
+presentation adapters, not a second authoritative state model.
 
 ## CLI contract
 
@@ -313,7 +313,13 @@ when user input is required. Boot approval and erase confirmation are separate;
 
 ## TUI and browser conventions
 
-Both expose Hosts, Configurations, Repositories, Tasks, Media, and Settings.
+The cluster-management slice opens Cluster by default and exposes Cluster, Hosts,
+Tasks and Settings, with host shortcuts beneath text-only primary navigation.
+Cluster includes active tasks and Discovery: requesting hosts first with Approve/
+Reject, other discovered hosts with Add. There is no separate join-request page.
+Settings is a single page without tabs. See [UI design](ui-design.md).
+Later feature slices add Configurations, Repositories and Media; do not show empty
+GitOps/deployment/media navigation in this slice.
 Unjoined nodes open Clusters for discovery/join/create; installer mode first shows
 network setup. Browser and TUI share these flows and reflect joins initiated from
 another console. Local bootstrap services run before enrollment and remain

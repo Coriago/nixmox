@@ -231,8 +231,8 @@ through preview updates. Show the current diff and unsaved/saved/validation stat
 | Commit | Save outstanding edits, validate the exact resulting draft, then commit the reviewed version |
 
 Render locally with the shared Go renderer (browser WASM/native TUI); discard
-outdated preview results. The browser editor is an isolated component within the
-htmx page; surrounding SSE/HTML refreshes must not replace its unsaved buffer.
+outdated preview results. The browser editor is an isolated go-app component;
+surrounding live updates must not replace its unsaved buffer or focus.
 Preview is not Nix evaluation or a system build. Invalid
 intermediate text may be saved as a draft; validation blocks committing syntax errors.
 Version conflicts preserve the local buffer for review rather than overwriting it.

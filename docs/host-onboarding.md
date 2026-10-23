@@ -173,8 +173,9 @@ cluster approval → pending membership → select an existing configuration or 
 configuration. Creation uses the shared generation forms, then returns to target preparation. Configuration
 assignment alone never grants full membership. Installed nodes use deployment or
 verified adoption; installer nodes proceed through preparation and installation.
-Configured address/name submits the same request and waits for approval. Cluster
-Hosts → Join requests exposes Approve/Reject with node/address/key details.
+Configured address/name submits the same request and waits for approval.
+Cluster → Discovery exposes Approve/Reject with node/address/key details; requesting
+hosts appear first. Other discovered hosts expose Add. No separate join-request page.
 
 ```text
 USB boot → network setup → Clusters → Request join → cluster approval
