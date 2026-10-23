@@ -15,12 +15,16 @@ import (
 
 	"github.com/google/uuid"
 	js "github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"nixmox/internal/client"
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/comms"
 	"nixmox/internal/engine/identity"
+	"nixmox/internal/engine/telemetry"
+	"nixmox/internal/logging"
 )
 
 var enrollmentID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
@@ -66,7 +70,7 @@ func (c *ClusterNode) Enroll(ctx context.Context, r domain.EnrollmentSubmission)
 	if err != nil {
 		return domain.EnrollmentStatus{}, invalid("Signed Ed25519 daemon and broker CSRs are required")
 	}
-	request := domain.JoinRequest{Signature: r.Signature, Record: domain.Record{SchemaVersion: 1, ID: r.RequestID, Version: 1}, RequestID: r.RequestID, NodeID: r.NodeID, ExpectedClusterName: r.ExpectedClusterName, DaemonCSR: r.DaemonCSR, BrokerCSR: r.BrokerCSR, KeyFingerprint: key, State: "awaiting_approval", ExpiresAt: time.Now().UTC().Add(domain.EnrollmentTTL)}
+	request := domain.JoinRequest{Trace: telemetry.Inject(ctx), Signature: r.Signature, Record: domain.Record{SchemaVersion: 1, ID: r.RequestID, Version: 1}, RequestID: r.RequestID, NodeID: r.NodeID, ExpectedClusterName: r.ExpectedClusterName, DaemonCSR: r.DaemonCSR, BrokerCSR: r.BrokerCSR, KeyFingerprint: key, State: "awaiting_approval", ExpiresAt: time.Now().UTC().Add(domain.EnrollmentTTL)}
 	state := *c.state
 	state.Requests = maps.Clone(state.Requests)
 	state.Requests[r.RequestID] = request
@@ -242,7 +246,7 @@ func (c *ClusterNode) create(ctx context.Context, command domain.Command) (any, 
 	return c.keys.Trust.Cluster, nil
 }
 
-func (c *ClusterNode) decide(ctx context.Context, command domain.Command) (any, error) {
+func (c *ClusterNode) decide(ctx context.Context, command domain.Command) (_ any, resultErr error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.quorum(ctx); err != nil {
@@ -256,6 +260,9 @@ func (c *ClusterNode) decide(ctx context.Context, command domain.Command) (any, 
 	if !ok {
 		return nil, notFound()
 	}
+	origin := trace.SpanContextFromContext(telemetry.Extract(context.Background(), r.Trace))
+	ctx, span := telemetry.Start(ctx, "enrollment.decision", trace.WithLinks(trace.Link{SpanContext: origin}), trace.WithAttributes(attribute.String("nixmox.enrollment.id", string(p.RequestID))))
+	defer func() { telemetry.End(span, resultErr) }()
 	approved := command.Type == "cluster.request.approve"
 	version := command.ExpectedVersions["join_request:"+string(p.RequestID)]
 	if r.Decision != nil {
@@ -322,7 +329,9 @@ func (c *ClusterNode) decide(ctx context.Context, command domain.Command) (any, 
 	return r, nil
 }
 
-func (c *ClusterNode) join(ctx context.Context, command domain.Command, log engine.Execution) (any, error) {
+func (c *ClusterNode) join(ctx context.Context, command domain.Command, log engine.Execution) (_ any, resultErr error) {
+	ctx, span := telemetry.Start(ctx, "enrollment.join")
+	defer func() { telemetry.End(span, resultErr) }()
 	var p domain.ClusterJoin
 	if err := json.Unmarshal(command.Payload, &p); err != nil {
 		return nil, err
@@ -346,11 +355,13 @@ func (c *ClusterNode) join(ctx context.Context, command domain.Command, log engi
 		return trust, err
 	}
 	id := domain.ID("join_" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(command.ID)).String())
+	span.SetAttributes(attribute.String("nixmox.enrollment.id", string(id)))
 	request, err := c.keys.Request(id, p.ExpectedClusterName)
 	c.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
+	span.AddEvent("enrollment.awaiting_approval")
 	fmt.Fprintln(log.Log(), "Enrollment request:", id, "(awaiting administrator approval)")
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -370,6 +381,7 @@ func (c *ClusterNode) join(ctx context.Context, command domain.Command, log engi
 			case "rejected", "expired":
 				return status, invalid("Enrollment " + status.Request.State + "; explicitly start a new join attempt")
 			case "approved":
+				span.AddEvent("enrollment.approved")
 				issued, err := api.Certificates(ctx, id)
 				if err != nil {
 					break
@@ -386,6 +398,7 @@ func (c *ClusterNode) join(ctx context.Context, command domain.Command, log engi
 				if err != nil {
 					return nil, err
 				}
+				span.AddEvent("enrollment.credentials_installed")
 				fmt.Fprintln(log.Log(), "Scoped cluster credentials installed; connecting pending leaf")
 				return status, c.awaitLeaf(ctx)
 			}
@@ -403,7 +416,9 @@ func (c *ClusterNode) join(ctx context.Context, command domain.Command, log engi
 	}
 }
 
-func (c *ClusterNode) awaitLeaf(ctx context.Context) error {
+func (c *ClusterNode) awaitLeaf(ctx context.Context) (resultErr error) {
+	ctx, span := telemetry.Start(ctx, "enrollment.connect")
+	defer func() { telemetry.End(span, resultErr) }()
 	wait, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -413,6 +428,7 @@ func (c *ClusterNode) awaitLeaf(ctx context.Context) error {
 		connected := c.transport.Broker != nil && c.transport.Broker.LeafConnections() > 0
 		c.mu.Unlock()
 		if connected {
+			span.AddEvent("enrollment.authenticated")
 			return nil
 		}
 		select {
@@ -425,19 +441,22 @@ func (c *ClusterNode) awaitLeaf(ctx context.Context) error {
 
 func (c *ClusterNode) Definitions(journal engine.LocalStore) []engine.TaskDefinition {
 	definitions := []engine.TaskDefinition{}
-	for _, kind := range []string{"cluster.create", "cluster.join", "cluster.request.approve", "cluster.request.reject", "cluster.leave", "host.remove", "host.force_full_membership"} {
-		run := func(ctx context.Context, e engine.Execution) error {
+	for _, kind := range []string{"cluster.create", "cluster.join", "cluster.request.approve", "cluster.request.reject", "cluster.leave", "host.remove", "host.force_full_membership", "host.demote"} {
+		run := func(ctx context.Context, e engine.Execution) (resultErr error) {
 			record, err := journal.Receipt(ctx, e.Task().CommandID)
 			if err != nil {
 				return err
 			}
+			ctx, span := telemetry.Start(ctx, kind)
+			defer func() { telemetry.End(span, resultErr) }()
+			logging.From(ctx).Info("membership operation", "operation", kind, "command_id", string(record.Envelope.Command.ID))
 			var result any
 			switch kind {
 			case "cluster.create":
 				result, err = c.create(ctx, record.Envelope.Command)
 			case "cluster.join":
 				result, err = c.join(ctx, record.Envelope.Command, e)
-			case "host.force_full_membership":
+			case "host.force_full_membership", "host.demote":
 				result, err = c.promote(ctx, record.Envelope.Command)
 			case "cluster.leave", "host.remove":
 				result, err = c.depart(ctx, record.Envelope.Command)
@@ -446,6 +465,7 @@ func (c *ClusterNode) Definitions(journal engine.LocalStore) []engine.TaskDefini
 			}
 			if err != nil {
 				fmt.Fprintf(e.Log(), "Membership reconciliation: %v\n", err)
+				logging.From(ctx).Error("membership reconciliation", "error", err)
 			}
 			var failure *domain.Error
 			// Definitive rejected/expired/version outcomes are observed failures.

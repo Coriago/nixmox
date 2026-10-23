@@ -107,7 +107,7 @@ func (s *Service) ServeQueries(ctx context.Context, views bool) error {
 func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, view bool) (json.RawMessage, error) {
 	c := s.Cluster
 	c.mu.Lock()
-	valid := c.transport.Core == core && c.keys.Trust != nil
+	valid := c.transport.Core == core && c.keys.Trust != nil && (!view || c.state != nil)
 	if valid && view {
 		member, exists := c.state.Members[q.CallerID]
 		valid = exists && !member.Removed && member.Epoch == q.MembershipEpoch

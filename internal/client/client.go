@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"nixmox/internal/domain"
 )
 
@@ -49,6 +51,7 @@ func New(endpoint string, transport *http.Client) (*Client, error) {
 	}
 	// Never forward a mutation to a redirect target or turn it into a GET.
 	owned := *transport
+	owned.Transport = otelhttp.NewTransport(owned.Transport)
 	owned.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{endpoint: strings.TrimRight(endpoint, "/"), http: &owned}, nil
 }
@@ -147,6 +150,11 @@ func (c *Client) Receipt(ctx context.Context, id domain.ID) (domain.Receipt, err
 	return result, err
 }
 
+func (c *Client) Topology(ctx context.Context) (domain.SignedTopology, error) {
+	var result domain.SignedTopology
+	err := c.request(ctx, http.MethodGet, "membership-topology", nil, &result)
+	return result, err
+}
 func (c *Client) Removal(ctx context.Context, node domain.ID, epoch uint64) (domain.SignedRemoval, error) {
 	var result domain.SignedRemoval
 	err := c.request(ctx, http.MethodGet, "membership-status?node_id="+url.QueryEscape(string(node))+"&membership_epoch="+strconv.FormatUint(epoch, 10), nil, &result)

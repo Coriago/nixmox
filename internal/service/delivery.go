@@ -10,9 +10,13 @@ import (
 	js "github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/task"
+	"nixmox/internal/engine/telemetry"
+	"nixmox/internal/logging"
 )
 
 // Run publishes the same sampler schema on every member. Disconnection drops
@@ -26,20 +30,35 @@ func (c *ClusterNode) Run(ctx context.Context, sampler engine.HostSampler) error
 			return ctx.Err()
 		case <-ticker.C:
 		}
-		c.mu.Lock()
-		core, host := c.transport.Core, c.localHost()
-		var version domain.Version
-		if c.keys.Trust != nil && c.keys.Trust.Topology != nil {
-			version = c.keys.Trust.Topology.Topology.Version
-		}
-		c.mu.Unlock()
-		if host.ClusterID != nil && core != nil {
-			sample := sampler.Snapshot(ctx)
-			sample.MembershipEpoch = host.MembershipEpoch
-			_ = core.Heartbeat(ctx, domain.Heartbeat{TopologyVersion: version, Host: host, StreamID: sample.StreamID})
-			_ = core.Publish(ctx, sample)
+		_ = c.publishPresence(ctx, sampler)
+	}
+}
+
+func (c *ClusterNode) publishPresence(ctx context.Context, sampler engine.HostSampler) (err error) {
+	ctx, span := telemetry.Background(ctx, "presence.publish")
+	defer func() { telemetry.End(span, err) }()
+	c.mu.Lock()
+	transport := c.transport
+	core, host := transport.Core, c.localHost()
+	var version domain.Version
+	if c.keys.Trust != nil && c.keys.Trust.Topology != nil {
+		version = c.keys.Trust.Topology.Topology.Version
+		if c.keys.Trust.BrokerTopology != nil {
+			version = c.keys.Trust.BrokerTopology.Topology.Version
 		}
 	}
+	c.mu.Unlock()
+	if transport.Broker != nil {
+		if info, err := transport.Broker.Diagnostics(); err == nil && info.Meta != nil {
+			logging.From(ctx).Info("broker topology", "meta_leader", info.Meta.Leader, "meta_size", info.Meta.Size, "routes", transport.Broker.RouteConnections())
+		}
+	}
+	if host.ClusterID != nil && core != nil {
+		sample := sampler.Snapshot(ctx)
+		sample.MembershipEpoch = host.MembershipEpoch
+		err = errors.Join(core.Heartbeat(ctx, domain.Heartbeat{TopologyVersion: version, Host: host, StreamID: sample.StreamID}), core.Publish(ctx, sample))
+	}
+	return err
 }
 
 // Deliver keeps durable consumers on the authority. Leaves receive only their
@@ -89,8 +108,12 @@ func (s *Service) Deliver(ctx context.Context) error {
 	}
 }
 
-func (s *Service) deliver(ctx context.Context, delivery engine.Delivery) error {
+func (s *Service) deliver(ctx context.Context, delivery engine.Delivery) (result error) {
 	envelope := delivery.Envelope()
+	ctx, span := telemetry.Start(telemetry.Extract(ctx, envelope.Trace), "nats.command.process", trace.WithSpanKind(trace.SpanKindConsumer), trace.WithAttributes(attribute.String("messaging.system", "nats"), attribute.String("nixmox.command.id", string(envelope.Command.ID))))
+	defer func() { telemetry.End(span, result) }()
+	ctx = logging.With(ctx, "command_id", string(envelope.Command.ID))
+	logging.From(ctx).Info("command received")
 	c := s.Cluster
 	c.mu.Lock()
 	member, active := c.state.Members[envelope.OwnerNodeID]

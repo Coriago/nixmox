@@ -15,6 +15,7 @@ import (
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/internal/shared"
+	"nixmox/internal/engine/telemetry"
 )
 
 // LineAdapter provides bounded per-stream framing for line-oriented parsers.
@@ -132,13 +133,15 @@ type taskRunner struct {
 	base      engine.Runner
 }
 
-func (r taskRunner) Run(ctx context.Context, plan engine.CommandLine, stdout, stderr io.Writer) (engine.ProcessResult, error) {
+func (r taskRunner) Run(ctx context.Context, plan engine.CommandLine, stdout, stderr io.Writer) (_ engine.ProcessResult, result error) {
+	ctx, span := telemetry.Start(ctx, "process.execute")
+	defer func() { telemetry.End(span, result) }()
 	// Sensitive output bypasses retention, parsers AND caller-provided collectors,
 	// even when the underlying Runner implementation does not enforce that policy.
 	if plan.SensitiveOutput {
 		return r.base.Run(ctx, plan, io.Discard, io.Discard)
 	}
-	session := r.execution.outputSession(plan)
+	session := r.execution.outputSession(ctx, plan)
 	defer session.flush()
 	out := session.writer(engine.Stdout)
 	errout := session.writer(engine.Stderr)
@@ -158,6 +161,7 @@ type namedAdapter struct {
 }
 
 type outputSession struct {
+	traceContext  context.Context
 	mu            sync.Mutex
 	execution     *execution
 	context       engine.AdapterContext
@@ -167,13 +171,13 @@ type outputSession struct {
 	activityLogs  map[domain.ID]string
 }
 
-func (e *execution) outputSession(plan engine.CommandLine) *outputSession {
+func (e *execution) outputSession(ctx context.Context, plan engine.CommandLine) *outputSession {
 	e.mu.Lock()
 	task := e.current
 	factories := append([]engine.LogAdapterFactory(nil), e.adapters...)
 	e.mu.Unlock()
 	var random [16]byte
-	session := &outputSession{execution: e, context: engine.AdapterContext{TaskID: task.ID, NodeID: task.OwnerNodeID, Phase: task.Phase}, failures: map[string]bool{}, activityLogs: map[domain.ID]string{}}
+	session := &outputSession{execution: e, traceContext: context.WithoutCancel(ctx), context: engine.AdapterContext{TaskID: task.ID, NodeID: task.OwnerNodeID, Phase: task.Phase}, failures: map[string]bool{}, activityLogs: map[domain.ID]string{}}
 	if _, err := rand.Read(random[:]); err != nil {
 		session.degrade("adapters")
 		return session
@@ -209,7 +213,7 @@ func (w outputWriter) Write(data []byte) (int, error) {
 	written := 0
 	for len(data) > 0 {
 		n := min(len(data), domain.LogEventLimit/2)
-		event, err := s.execution.scheduler.Store.Append(context.Background(), s.context.TaskID, nil, data[:n])
+		event, err := s.execution.scheduler.Store.Append(s.traceContext, s.context.TaskID, nil, data[:n])
 		if err != nil {
 			return written, err
 		}
@@ -338,7 +342,7 @@ func (s *outputSession) apply(name string, update engine.LogUpdate) error {
 		activity.NodeID = s.context.NodeID
 		if activity.LogRef != nil {
 			if _, exists := s.activityLogs[activity.ID]; !exists {
-				if _, err := j.Append(context.Background(), s.context.TaskID, &activity.ID, nil); err != nil {
+				if _, err := j.Append(s.traceContext, s.context.TaskID, &activity.ID, nil); err != nil {
 					return err
 				}
 				s.activityLogs[activity.ID] = name
@@ -376,7 +380,7 @@ func (s *outputSession) apply(name string, update engine.LogUpdate) error {
 		data := log.Data
 		for len(data) > 0 {
 			n := min(len(data), domain.LogEventLimit/2)
-			if _, err = j.Append(context.Background(), s.context.TaskID, &id, data[:n]); err != nil {
+			if _, err = j.Append(s.traceContext, s.context.TaskID, &id, data[:n]); err != nil {
 				return err
 			}
 			data = data[n:]

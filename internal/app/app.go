@@ -66,8 +66,14 @@ func Serve(ctx context.Context, config runtime.Config) error {
 	if err != nil {
 		return err
 	}
-	otelConfig := telemetry.OTelConfig{NodeID: id.NodeID, HostName: name, Logs: os.Stderr,
+	if config.NodeName != "" {
+		name = config.NodeName
+	}
+	otelConfig := telemetry.OTelConfig{NodeID: id.NodeID, NodeName: name, Logs: os.Stdout,
 		MetricsInterval: time.Duration(config.Telemetry.OTLP.MetricsIntervalMS) * time.Millisecond}
+	if id.ClusterID != nil {
+		otelConfig.ClusterID = *id.ClusterID
+	}
 	if config.Telemetry.OTLP.Enable {
 		otelConfig.Endpoint = *config.Telemetry.OTLP.Endpoint
 	}
@@ -76,6 +82,9 @@ func Serve(ctx context.Context, config runtime.Config) error {
 		return err
 	}
 	defer otel.Shutdown(context.Background())
+	if err = otel.Install(); err != nil {
+		return err
+	}
 	registration, err := otel.ObserveHost(sampler)
 	if err != nil {
 		return err
@@ -98,6 +107,7 @@ func Serve(ctx context.Context, config runtime.Config) error {
 		return err
 	}
 	defer s.Cluster.Close()
+	s.Cluster.ObserveMembership(otel.SetCluster)
 	if config.Discovery.Enable {
 		s.Discovery, err = platform.OpenDiscovery(config.Discovery.Port, config.Network.ManagementInterfaces, s.DiscoveryRecords)
 		if err != nil {

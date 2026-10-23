@@ -8,10 +8,14 @@ import (
 	"os"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/platform"
 	"nixmox/internal/engine/task"
+	"nixmox/internal/engine/telemetry"
+	"nixmox/internal/logging"
 )
 
 type Commands interface {
@@ -49,7 +53,10 @@ type Service struct {
 }
 
 func New() *Service { return &Service{Registry: Catalog()} }
-func (s *Service) Submit(ctx context.Context, command domain.Command) (domain.Receipt, error) {
+func (s *Service) Submit(ctx context.Context, command domain.Command) (_ domain.Receipt, result error) {
+	ctx, span := telemetry.Start(ctx, "command.admit", trace.WithAttributes(attribute.String("nixmox.command.id", string(command.ID))))
+	defer func() { telemetry.End(span, result) }()
+	ctx = logging.With(ctx, "command_id", string(command.ID))
 	if err := ctx.Err(); err != nil {
 		return domain.Receipt{}, err
 	}
@@ -57,6 +64,7 @@ func (s *Service) Submit(ctx context.Context, command domain.Command) (domain.Re
 	if err != nil {
 		return domain.Receipt{}, err
 	}
+	span.SetName("command.admit " + op.Name)
 	if s.Scheduler == nil {
 		return domain.Receipt{}, domain.Unavailable(command.Type)
 	}
@@ -101,7 +109,7 @@ func (s *Service) Submit(ctx context.Context, command domain.Command) (domain.Re
 	now := time.Now().UTC()
 	envelope := domain.Envelope{SchemaVersion: domain.SchemaVersion,
 		Command: command, Scope: op.Scope, OwnerNodeID: s.Identity.NodeID, RequestHash: hash,
-		AdmittedAt: now, ExpiresAt: now.Add(domain.CommandTTL)}
+		AdmittedAt: now, ExpiresAt: now.Add(domain.CommandTTL), Trace: telemetry.Inject(ctx)}
 	if op.Scope == domain.NodeLocal {
 		return s.Scheduler.Admit(ctx, envelope)
 	}

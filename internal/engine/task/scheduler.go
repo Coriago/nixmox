@@ -12,9 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/internal/shared"
+	"nixmox/internal/engine/telemetry"
+	"nixmox/internal/logging"
 )
 
 var ErrBlocked = errors.New("task blocked for review")
@@ -166,13 +170,20 @@ func (s *Scheduler) AdmitDelivery(ctx context.Context, delivery engine.Delivery)
 	return receipt, delivery.Ack(ctx)
 }
 
-func (s *Scheduler) admit(ctx context.Context, e domain.Envelope) (domain.Receipt, error) {
+func (s *Scheduler) admit(ctx context.Context, e domain.Envelope) (_ domain.Receipt, result error) {
+	if !trace.SpanContextFromContext(ctx).IsValid() {
+		ctx = telemetry.Extract(ctx, e.Trace)
+	}
+	ctx, span := telemetry.Start(ctx, "task.queue", trace.WithAttributes(attribute.String("nixmox.command.id", string(e.Command.ID))))
+	defer func() { telemetry.End(span, result) }()
+	e.Trace = telemetry.Inject(ctx)
 	if e.OwnerNodeID != s.Node || e.Command.ID == "" || (e.Scope == domain.NodeLocal && e.ClusterID != nil) {
 		return domain.Receipt{}, errors.New("invalid task ownership/scope")
 	}
 	if _, ok := s.Definitions[e.Command.Type]; !ok {
 		return domain.Receipt{}, domain.Unavailable(e.Command.Type)
 	}
+	span.SetName("task.queue " + e.Command.Type)
 	hash, err := RequestHash(e.Command)
 	if err != nil {
 		return domain.Receipt{}, err
@@ -206,12 +217,15 @@ func (s *Scheduler) admit(ctx context.Context, e domain.Envelope) (domain.Receip
 	task := domain.Task{MembershipEpoch: e.MembershipEpoch, Record: domain.Record{SchemaVersion: 1, ID: id, Version: 1}, CommandID: e.Command.ID, Kind: e.Command.Type, Scope: e.Scope, OwnerNodeID: s.Node, ClusterID: e.ClusterID, State: domain.Queued, TargetID: e.Command.TargetID, CreatedAt: now, UpdatedAt: now, Cancellation: domain.Cancellation{Allowed: true}, Effects: map[string]bool{}, Log: domain.LogReference{NodeID: s.Node}}
 	receipt := domain.Receipt{CommandID: e.Command.ID, Admission: "accepted", TaskID: &id}
 	record, err := s.Store.Admit(ctx, domain.AdmissionRecord{SchemaVersion: 1, Envelope: e, Receipt: receipt}, task)
+	if err == nil {
+		span.AddEvent("task.admitted", trace.WithAttributes(attribute.String("nixmox.task.id", string(id))))
+	}
 	return record.Receipt, err
 }
 
 // Execute may run concurrently for distinct tasks; exclusions are per phase and
 // retained on uncertain outcomes. A single journal process owns all local effects.
-func (s *Scheduler) Execute(ctx context.Context, id domain.ID) error {
+func (s *Scheduler) Execute(ctx context.Context, id domain.ID) (result error) {
 	s.mu.Lock()
 	if _, ok := s.active[id]; ok {
 		s.mu.Unlock()
@@ -248,6 +262,36 @@ func (s *Scheduler) Execute(ctx context.Context, id domain.ID) error {
 	if !ok {
 		return domain.Unavailable(task.Kind)
 	}
+	origin, err := s.Store.Receipt(life, task.CommandID)
+	if err != nil {
+		return err
+	}
+	life, options := telemetry.Origin(life, origin.Envelope.Trace, task.State == domain.Reconciling || len(task.Checkpoints) > 0)
+	options = append(options, trace.WithAttributes(attribute.String("nixmox.task.id", string(id)), attribute.String("nixmox.command.id", string(task.CommandID)), attribute.String("nixmox.task.kind", task.Kind)))
+	name := "task.execute "
+	if task.State == domain.Reconciling || len(task.Checkpoints) > 0 {
+		name = "task.recover "
+	}
+	life, span := telemetry.Start(life, name+def.Kind, options...)
+	life = logging.With(life, "task_id", string(id), "command_id", string(task.CommandID), "operation", task.Kind)
+	e.ctx = context.WithoutCancel(life)
+	log := logging.From(life)
+	log.Info("task started")
+	defer func() {
+		state := string(e.Task().State)
+		span.SetAttributes(attribute.String("nixmox.task.state", state))
+		failure := result
+		if errors.Is(failure, ErrBlocked) {
+			failure = nil
+			span.AddEvent("task.blocked")
+		}
+		if failure != nil {
+			log.Error("task attempt ended", "state", state, "error", failure)
+		} else {
+			log.Info("task attempt ended", "state", state)
+		}
+		telemetry.End(span, failure)
+	}()
 	for _, phase := range def.Phases {
 		current := e.Task()
 		checkpoint := findCheckpoint(current, phase.Name)
@@ -275,18 +319,29 @@ func (s *Scheduler) Execute(ctx context.Context, id domain.ID) error {
 		}); err != nil {
 			return err
 		}
+		phaseCtx, phaseSpan := telemetry.Start(life, "task.phase "+def.Kind+"/"+phase.Name, trace.WithAttributes(attribute.String("nixmox.task.phase", phase.Name), attribute.Bool("nixmox.task.recovering", recovering)))
+		phaseCtx = logging.With(phaseCtx, "phase", phase.Name)
+		e.mu.Lock()
+		e.ctx = context.WithoutCancel(phaseCtx)
+		e.mu.Unlock()
 		if !recovering {
-			err = e.Intent(life, domain.Checkpoint{Phase: phase.Name, State: "intent", IntentAt: time.Now().UTC()})
+			err = e.Intent(phaseCtx, domain.Checkpoint{Phase: phase.Name, State: "intent", IntentAt: time.Now().UTC()})
 		}
 		if err == nil {
 			e.mu.Lock()
 			e.adapters = append(append([]engine.LogAdapterFactory(nil), def.Adapters...), phase.Adapters...)
 			e.mu.Unlock()
 			if recovering {
-				err = phase.Reconcile(life, e)
+				err = phase.Reconcile(phaseCtx, e)
 			} else {
-				err = phase.Run(life, e)
+				err = phase.Run(phaseCtx, e)
 			}
+		}
+		if errors.Is(err, ErrBlocked) {
+			phaseSpan.AddEvent("task.blocked")
+			telemetry.End(phaseSpan, nil)
+		} else {
+			telemetry.End(phaseSpan, err)
 		}
 		current = e.Task()
 		checkpoint = findCheckpoint(current, phase.Name)
@@ -470,6 +525,7 @@ func (s *Scheduler) Cancel(ctx context.Context, id domain.ID, version domain.Ver
 }
 
 type execution struct {
+	ctx       context.Context
 	mu        sync.Mutex
 	scheduler *Scheduler
 	current   domain.Task
@@ -498,8 +554,8 @@ func (e *execution) update(change func(*domain.Task)) error {
 	return nil
 }
 
-func (e *execution) Intent(_ context.Context, cp domain.Checkpoint) error {
-	return e.update(func(t *domain.Task) {
+func (e *execution) Intent(ctx context.Context, cp domain.Checkpoint) error {
+	err := e.update(func(t *domain.Task) {
 		if prior := findCheckpoint(*t, cp.Phase); prior == nil {
 			cp.State = "intent"
 			t.Checkpoints = append(t.Checkpoints, cp)
@@ -509,10 +565,14 @@ func (e *execution) Intent(_ context.Context, cp domain.Checkpoint) error {
 			prior.Evidence = cp.Evidence
 		}
 	})
+	if err == nil {
+		trace.SpanFromContext(ctx).AddEvent("task.checkpoint.intent", trace.WithAttributes(attribute.String("nixmox.task.phase", cp.Phase)))
+	}
+	return err
 }
 
-func (e *execution) Observed(_ context.Context, cp domain.Checkpoint) error {
-	return e.update(func(t *domain.Task) {
+func (e *execution) Observed(ctx context.Context, cp domain.Checkpoint) error {
+	err := e.update(func(t *domain.Task) {
 		for i := range t.Checkpoints {
 			if t.Checkpoints[i].Phase == cp.Phase {
 				now := time.Now().UTC()
@@ -522,6 +582,10 @@ func (e *execution) Observed(_ context.Context, cp domain.Checkpoint) error {
 			}
 		}
 	})
+	if err == nil {
+		trace.SpanFromContext(ctx).AddEvent("task.checkpoint.observed", trace.WithAttributes(attribute.String("nixmox.task.phase", cp.Phase)))
+	}
+	return err
 }
 
 func (e *execution) Block(_ context.Context, review domain.Review) error {
@@ -541,19 +605,26 @@ func (e *execution) Block(_ context.Context, review domain.Review) error {
 	return ErrBlocked
 }
 
-func (e *execution) Log() io.Writer { return taskLogWriter{e} }
+func (e *execution) Log() io.Writer {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return taskLogWriter{e: e, ctx: e.ctx}
+}
 
 func (e *execution) Runner(base engine.Runner) engine.Runner {
 	return taskRunner{execution: e, base: base}
 }
 
-type taskLogWriter struct{ e *execution }
+type taskLogWriter struct {
+	e   *execution
+	ctx context.Context
+}
 
 func (w taskLogWriter) Write(data []byte) (int, error) {
 	written := 0
 	for len(data) > 0 {
 		n := min(len(data), domain.LogEventLimit/2)
-		if _, err := w.e.scheduler.Store.Append(context.Background(), w.e.Task().ID, nil, data[:n]); err != nil {
+		if _, err := w.e.scheduler.Store.Append(w.ctx, w.e.Task().ID, nil, data[:n]); err != nil {
 			return written, err
 		}
 		written += n

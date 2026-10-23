@@ -23,6 +23,9 @@ type EnrollmentStatus struct {
 // ClusterTrust is the durable local association. Its public material is safe to
 // exchange over enrollment HTTP; neither machine nor issuer private keys appear.
 type ClusterTrust struct {
+	BrokerTopology     *SignedTopology `json:"broker_topology,omitempty"` // Last applied local transport, separate from staged topology.
+	BrokerDirectory    string          `json:"broker_directory,omitempty"`
+	BrokerTransition   string          `json:"broker_transition,omitempty"`
 	Topology           *SignedTopology `json:"topology,omitempty"`
 	AuthorityAddress   string          `json:"authority_address"`
 	ControlInitialized bool            `json:"control_initialized"`
@@ -34,6 +37,7 @@ type ClusterTrust struct {
 }
 
 type Member struct {
+	TopologyCommand   ID      `json:"topology_command,omitempty"`
 	Full              bool    `json:"full"`
 	ForcedBy          ID      `json:"forced_by,omitempty"`
 	Version           Version `json:"version"`

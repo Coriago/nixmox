@@ -2,6 +2,7 @@
 package runtime
 
 type Config struct {
+	NodeName      string                `json:"node_name" yaml:"node_name"`
 	SchemaVersion int                   `json:"schema_version" yaml:"schema_version"`
 	DataDir       string                `json:"data_dir" yaml:"data_dir"`
 	HTTP          HTTP                  `json:"http" yaml:"http"`

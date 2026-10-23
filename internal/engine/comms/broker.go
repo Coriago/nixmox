@@ -3,7 +3,10 @@ package comms
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -47,6 +50,7 @@ type machineAuth struct {
 	keys   []domain.Digest
 	user   *server.User
 	broker *server.Server
+	secret string
 }
 
 func (a machineAuth) Check(c server.ClientAuthentication) bool {
@@ -57,11 +61,22 @@ func (a machineAuth) Check(c server.ClientAuthentication) bool {
 	key := shared.Fingerprint(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
 	for _, allowed := range a.keys {
 		if key == allowed {
-			account, err := a.broker.LookupAccount("NX")
+			user := *a.user
+			accountName := "NX"
+			if opts := c.GetOpts(); opts.Username != "" {
+				if (opts.Username != "nixmox-maintenance" && opts.Username != "nixmox-system") ||
+					subtle.ConstantTimeCompare([]byte(opts.Password), []byte(a.secret)) != 1 {
+					return false
+				}
+				user.Username, user.Permissions = opts.Username, nil
+				if opts.Username == "nixmox-system" {
+					accountName = "SYS"
+				}
+			}
+			account, err := a.broker.LookupAccount(accountName)
 			if err != nil {
 				return false
 			}
-			user := *a.user
 			user.Account = account
 			c.RegisterUser(&user)
 			return true
@@ -97,7 +112,35 @@ func PinnedTLS(base *tls.Config, keys []domain.Digest) (*tls.Config, error) {
 	return cfg, nil
 }
 
-type EmbeddedBroker struct{ server *server.Server }
+func routeTLS(cfg BrokerOptions) (*tls.Config, error) {
+	certificate, err := PinnedTLS(cfg.RouteTLS, cfg.BrokerKeys)
+	if err != nil {
+		return nil, err
+	}
+	if certificate.ClientAuth != tls.RequireAndVerifyClientCert || certificate.ClientCAs == nil || certificate.RootCAs == nil {
+		return nil, errors.New("route TLS must verify both directions")
+	}
+	prior := certificate.VerifyConnection
+	certificate.VerifyConnection = func(state tls.ConnectionState) error {
+		if err := prior(state); err != nil {
+			return err
+		}
+		pin := shared.Fingerprint(state.PeerCertificates[0].Raw)
+		for _, allowed := range cfg.RouteCertificates {
+			if pin == allowed {
+				return nil
+			}
+		}
+		return errors.New("route certificate is not authorized for this topology")
+	}
+	return certificate, nil
+}
+
+type EmbeddedBroker struct {
+	server  *server.Server
+	options *server.Options
+	secret  string // ephemeral, loopback + admitted daemon mTLS only
+}
 
 // BrokerOptions keeps transport setup independent of enrollment and topology policy.
 type BrokerOptions struct {
@@ -111,6 +154,7 @@ type BrokerOptions struct {
 	Routes                                            []*url.URL
 	LeafRemotes                                       []*server.RemoteLeafOpts
 	Pending                                           bool
+	Maintenance                                       bool // Core remains reachable; application JetStream access is fenced.
 	MaxStoreBytes                                     int64
 }
 
@@ -133,6 +177,14 @@ func listenAddress(address string, loopback bool) (string, int, error) {
 func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error) {
 	if cfg.NodeID == "" || cfg.ClusterID == "" || cfg.DataDir == "" || cfg.MaxStoreBytes <= 0 {
 		return nil, errors.New("broker identity, state directory and storage bound required")
+	}
+	if err := validateRoutes(cfg); err != nil {
+		return nil, err
+	}
+	if fenced, err := storeFenced(cfg.DataDir, cfg.NodeID, cfg.ClusterID); err != nil {
+		return nil, err
+	} else if fenced {
+		cfg.Maintenance = true
 	}
 	host, port, err := listenAddress(cfg.ClientAddress, true)
 	if err != nil {
@@ -163,10 +215,18 @@ func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error
 	if cfg.Pending {
 		grants = PendingGrants(cfg.ClusterID, cfg.NodeID)
 	}
+	if cfg.Maintenance {
+		grants = maintenanceGrants(grants, cfg.ClusterID)
+	}
+	secretBytes := make([]byte, 32)
+	if _, err = rand.Read(secretBytes); err != nil {
+		return nil, err
+	}
+	secret := hex.EncodeToString(secretBytes)
 	opts.Host, opts.Port, opts.ServerName = host, port, shared.Token(cfg.NodeID)
 	opts.NoSigs, opts.NoLog = true, true
 	opts.TLSConfig, opts.TLS, opts.TLSVerify, opts.TLSHandshakeFirst = clientTLS, true, true, true
-	auth := &machineAuth{keys: cfg.DaemonKeys, user: &server.User{Username: shared.Token(cfg.NodeID), Account: account, Permissions: permissions(grants)}}
+	auth := &machineAuth{secret: secret, keys: cfg.DaemonKeys, user: &server.User{Username: shared.Token(cfg.NodeID), Account: account, Permissions: permissions(grants)}}
 	opts.CustomClientAuthentication = auth
 	opts.JetStream, opts.StoreDir, opts.JetStreamMaxStore = !cfg.Pending, cfg.DataDir, cfg.MaxStoreBytes
 	opts.JetStreamMaxMemory, opts.MaxPayload, opts.MaxPending = 8<<20, 512<<10, 4<<20
@@ -180,25 +240,9 @@ func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error
 		if e != nil {
 			return nil, e
 		}
-		tlsCfg, e := PinnedTLS(cfg.RouteTLS, cfg.BrokerKeys)
+		tlsCfg, e := routeTLS(cfg)
 		if e != nil {
 			return nil, e
-		}
-		if tlsCfg.ClientAuth != tls.RequireAndVerifyClientCert || tlsCfg.ClientCAs == nil || tlsCfg.RootCAs == nil {
-			return nil, errors.New("route TLS must verify both directions")
-		}
-		prior := tlsCfg.VerifyConnection
-		tlsCfg.VerifyConnection = func(state tls.ConnectionState) error {
-			if err := prior(state); err != nil {
-				return err
-			}
-			pin := shared.Fingerprint(state.PeerCertificates[0].Raw)
-			for _, allowed := range cfg.RouteCertificates {
-				if pin == allowed {
-					return nil
-				}
-			}
-			return errors.New("route certificate is not authorized for this topology")
 		}
 		opts.Cluster = server.ClusterOpts{Name: shared.Token(cfg.ClusterID), Host: h, Port: p, TLSConfig: tlsCfg, PoolSize: 1}
 	} else if len(cfg.Routes) > 0 {
@@ -241,7 +285,11 @@ func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error
 		}
 		opts.LeafNode = server.LeafNodeOpts{Host: h, Port: p, TLSConfig: tlsCfg, TLSMap: true, TLSHandshakeFirst: true}
 		for id := range cfg.Leaves {
-			opts.LeafNode.Users = append(opts.LeafNode.Users, &server.User{Username: shared.Token(id), Account: account, Permissions: permissions(PendingGrants(cfg.ClusterID, id))})
+			grants := PendingGrants(cfg.ClusterID, id)
+			if cfg.Maintenance {
+				grants = maintenanceGrants(grants, cfg.ClusterID)
+			}
+			opts.LeafNode.Users = append(opts.LeafNode.Users, &server.User{Username: shared.Token(id), Account: account, Permissions: permissions(grants)})
 		}
 	}
 	for _, remote := range cfg.LeafRemotes {
@@ -250,6 +298,11 @@ func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error
 		}
 	}
 	opts.LeafNode.Remotes = cfg.LeafRemotes
+	if !cfg.Pending {
+		if err = ensureStoreMode(cfg); err != nil {
+			return nil, err
+		}
+	}
 	srv, err := server.NewServer(opts)
 	if err != nil {
 		return nil, err
@@ -264,7 +317,7 @@ func StartBroker(ctx context.Context, cfg BrokerOptions) (*EmbeddedBroker, error
 		srv.Shutdown()
 		return nil, err
 	}
-	return &EmbeddedBroker{srv}, nil
+	return &EmbeddedBroker{server: srv, options: opts, secret: secret}, nil
 }
 
 func (b *EmbeddedBroker) RouteConnections() int { return b.server.NumRoutes() }
@@ -274,8 +327,12 @@ func (b *EmbeddedBroker) LeafConnections() int { return b.server.NumLeafNodes() 
 func (b *EmbeddedBroker) Close() { b.server.Shutdown(); b.server.WaitForShutdown() }
 
 func ConnectBroker(address string, node domain.ID, cfg *tls.Config) (*nats.Conn, error) {
+	return connectBroker(address, node, cfg)
+}
+func connectBroker(address string, node domain.ID, cfg *tls.Config, extra ...nats.Option) (*nats.Conn, error) {
 	if cfg == nil || cfg.InsecureSkipVerify || cfg.MinVersion < tls.VersionTLS12 || len(cfg.Certificates) == 0 || cfg.RootCAs == nil {
 		return nil, errors.New("verified client TLS required")
 	}
-	return nats.Connect(address, nats.Secure(cfg), nats.TLSHandshakeFirst(), nats.CustomInboxPrefix("_INBOX."+shared.Token(node)), nats.ReconnectBufSize(-1), nats.Timeout(2*time.Second), nats.MaxReconnects(-1))
+	options := []nats.Option{nats.Secure(cfg), nats.TLSHandshakeFirst(), nats.CustomInboxPrefix("_INBOX." + shared.Token(node)), nats.ReconnectBufSize(-1), nats.Timeout(2 * time.Second), nats.MaxReconnects(-1)}
+	return nats.Connect(address, append(options, extra...)...)
 }

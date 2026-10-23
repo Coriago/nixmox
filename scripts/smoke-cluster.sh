@@ -13,6 +13,8 @@ cleanup() {
   if ((status)); then
     echo "Smoke check failed; logs/state retained in $work" >&2
     for log in "$work"/*.log; do [[ ! -f $log ]] || tail -n 20 "$log" >&2; done
+  elif [[ ${KEEP_SMOKE:-0} == 1 ]]; then
+    echo "Logs/state retained in $work"
   else
     rm -rf -- "$work"
   fi
@@ -26,6 +28,7 @@ for n in 0 1 2; do
   port=$((base+n*10))
   cat >"$work/$n.yaml" <<EOF
 data_dir: $work/node$n
+node_name: smoke-$n
 http:
   port: $port
 nats:
@@ -35,6 +38,9 @@ nats:
 network:
   management_interfaces: []
 EOF
+  if [[ -n ${OTLP_ENDPOINT:-} ]]; then
+    printf 'telemetry:\n  otlp:\n    enable: true\n    endpoint: %s\n    metrics_interval_ms: 1000\n' "$OTLP_ENDPOINT" >>"$work/$n.yaml"
+  fi
   "$work/nixmox" --config "$work/$n.yaml" serve >"$work/$n.log" 2>&1 &
   pids+=("$!")
   for attempt in {1..50}; do

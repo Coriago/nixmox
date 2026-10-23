@@ -12,6 +12,7 @@ import (
 
 	"nixmox/internal/domain"
 	"nixmox/internal/engine/task"
+	"nixmox/internal/engine/telemetry"
 )
 
 type logQuery struct {
@@ -111,35 +112,43 @@ func (s *Service) ReconcileTasks(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 		}
-		items, err := s.Cluster.projectedTasks(ctx)
-		if err != nil {
-			continue
-		}
-		for _, current := range items {
-			if taskTerminal(current.State) {
-				continue
-			}
-			if current.OwnerNodeID == s.Identity.NodeID {
-				observed, err := s.Journal.Task(ctx, current.ID)
-				if err != nil {
-					continue
-				}
-				record, err := s.Journal.Receipt(ctx, current.CommandID)
-				if err != nil {
-					continue
-				}
-				c := s.Cluster
-				c.mu.Lock()
-				if c.quorum(ctx) == nil {
-					_ = c.projectTask(ctx, record.Envelope, observed)
-				}
-				c.mu.Unlock()
-			} else {
-				_, _ = s.Cluster.refreshTask(ctx, current)
-			}
-		}
+		_ = s.reconcileTasks(ctx)
 	}
 }
+func (s *Service) reconcileTasks(ctx context.Context) (resultErr error) {
+	ctx, span := telemetry.Background(ctx, "tasks.reconcile")
+	defer func() { telemetry.End(span, resultErr) }()
+	items, err := s.Cluster.projectedTasks(ctx)
+	if err != nil {
+		return err
+	}
+	for _, current := range items {
+		if taskTerminal(current.State) {
+			continue
+		}
+		if current.OwnerNodeID == s.Identity.NodeID {
+			observed, err := s.Journal.Task(ctx, current.ID)
+			if err != nil {
+				continue
+			}
+			record, err := s.Journal.Receipt(ctx, current.CommandID)
+			if err != nil {
+				continue
+			}
+			c := s.Cluster
+			c.mu.Lock()
+			if c.quorum(ctx) == nil {
+				_ = c.projectTask(ctx, record.Envelope, observed)
+			}
+			c.mu.Unlock()
+		} else {
+			_, err := s.Cluster.refreshTask(ctx, current)
+			resultErr = errors.Join(resultErr, err)
+		}
+	}
+	return resultErr
+}
+
 func (s *Service) taskState(ctx context.Context, id domain.ID) (domain.Task, error) {
 	current, err := s.Journal.Task(ctx, id)
 	if !errors.Is(err, os.ErrNotExist) || s.Cluster == nil {

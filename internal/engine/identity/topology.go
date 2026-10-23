@@ -171,10 +171,19 @@ func (l *Local) validateTopology(trust domain.ClusterTrust) error {
 	return nil
 }
 func (l *Local) RouteTLS() (*tls.Config, error) {
-	if l.Trust == nil || l.Trust.Topology == nil {
+	if l.Trust == nil {
 		return nil, errors.New("routed topology unavailable")
 	}
-	peer, ok := l.Trust.Topology.Topology.Peers[l.Identity.NodeID]
+	return l.RouteTLSFor(l.Trust.Topology)
+}
+func (l *Local) RouteTLSFor(topology *domain.SignedTopology) (*tls.Config, error) {
+	if l.Trust == nil || topology == nil {
+		return nil, errors.New("routed topology unavailable")
+	}
+	if err := verifyTopology(*topology, *l.Trust); err != nil {
+		return nil, err
+	}
+	peer, ok := topology.Topology.Peers[l.Identity.NodeID]
 	if !ok {
 		return nil, errors.New("node has no route authorization")
 	}

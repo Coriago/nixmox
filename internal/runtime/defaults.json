@@ -1,6 +1,7 @@
 {
   "runtime": {
     "schema_version": 1,
+    "node_name": "",
     "data_dir": "/var/lib/nixmox",
     "http": {
       "port": 63170

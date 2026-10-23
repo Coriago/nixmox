@@ -24,20 +24,23 @@ import (
 // ClusterNode owns membership policy. Transport generations own their clients,
 // consumers and broker; inventory observations never authorize membership.
 type ClusterNode struct {
-	mu           sync.Mutex
-	life         context.Context
-	scope        context.Context
-	cancelScope  context.CancelFunc
-	scopeCluster domain.ID
-	scopeEpoch   uint64
-	config       runtime.Config
-	keys         *identity.Local
-	host         domain.Host
-	transport    *comms.Runtime
-	state        *domain.MembershipState
-	revision     engine.Revision
-	inventory    *inventory
-	limiter      *rate.Limiter
+	mu                 sync.Mutex
+	membershipObserver func(domain.ID)
+	topologyMu         sync.Mutex
+	transitioning      bool
+	life               context.Context
+	scope              context.Context
+	cancelScope        context.CancelFunc
+	scopeCluster       domain.ID
+	scopeEpoch         uint64
+	config             runtime.Config
+	keys               *identity.Local
+	host               domain.Host
+	transport          *comms.Runtime
+	state              *domain.MembershipState
+	revision           engine.Revision
+	inventory          *inventory
+	limiter            *rate.Limiter
 }
 
 func OpenCluster(ctx context.Context, config runtime.Config, keys *identity.Local, host domain.Host) (*ClusterNode, error) {
@@ -51,6 +54,15 @@ func OpenCluster(ctx context.Context, config runtime.Config, keys *identity.Loca
 func (c *ClusterNode) Close() { c.mu.Lock(); defer c.mu.Unlock(); c.transport.Close() }
 func (c *ClusterNode) creator() bool {
 	return c.keys.Trust != nil && c.keys.Trust.Cluster.IssuerNodeID == c.keys.Identity.NodeID
+}
+
+// ObserveMembership registers the process identity observer before workers start.
+// The callback runs under the membership lock and must not reenter services.
+func (c *ClusterNode) ObserveMembership(observer func(domain.ID)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.membershipObserver = observer
+	observer(c.scopeCluster)
 }
 func (c *ClusterNode) Identity() domain.Identity {
 	c.mu.Lock()
@@ -71,6 +83,16 @@ func (c *ClusterNode) leafAddress() string {
 }
 
 func (c *ClusterNode) brokerOptions() (comms.BrokerOptions, error) {
+	var topology *domain.SignedTopology
+	if c.keys.Trust != nil {
+		topology = c.keys.Trust.BrokerTopology
+		if topology == nil {
+			topology = c.keys.Trust.Topology
+		}
+	}
+	return c.transportOptions(topology)
+}
+func (c *ClusterNode) transportOptions(topology *domain.SignedTopology) (comms.BrokerOptions, error) {
 	id := c.keys.Identity.NodeID
 	opts := comms.BrokerOptions{NodeID: id, ClusterID: id, DataDir: filepath.Join(c.config.DataDir, "broker"), MaxStoreBytes: 64 << 20,
 		ClientAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(c.config.NATS.ClientPort)), ClientTLS: c.keys.ServerTLS(), DaemonKeys: []domain.Digest{c.keys.DaemonKey()}}
@@ -79,7 +101,10 @@ func (c *ClusterNode) brokerOptions() (comms.BrokerOptions, error) {
 		return opts, nil
 	}
 	opts.ClusterID, opts.Pending = trust.Cluster.ID, !c.creator()
-	if err := c.routeOptions(&opts); err != nil {
+	if trust.BrokerDirectory != "" {
+		opts.DataDir = trust.BrokerDirectory
+	}
+	if err := c.routeOptions(&opts, topology); err != nil {
 		return opts, err
 	}
 	if c.creator() {
@@ -124,7 +149,22 @@ func (c *ClusterNode) startTransport() error {
 	if c.creator() {
 		limits = &comms.StorageLimits{Commands: 16 << 20, Results: 16 << 20, State: 8 << 20, Git: 8 << 20, Replicas: 1, Existing: c.keys.Trust.ControlInitialized}
 	}
-	transport, err := comms.OpenRuntime(c.life, opts, c.keys.ClientTLS(), limits)
+	var transport *comms.Runtime
+	if c.keys.Trust != nil && c.keys.Trust.BrokerTransition != "" {
+		if transition, e := comms.OpenStoreTransition(c.keys.Trust.BrokerTransition); e == nil {
+			status := transition.Status()
+			if status.Phase != comms.TransitionPreparing && status.Phase != comms.TransitionPrepared {
+				opts, err = c.transportOptions(c.keys.Trust.Topology)
+				if err != nil {
+					return err
+				}
+				opts.DataDir = status.TargetDirectory
+			}
+		}
+		transport, err = comms.StartRuntime(c.life, opts, c.keys.ClientTLS())
+	} else {
+		transport, err = comms.OpenRuntime(c.life, opts, c.keys.ClientTLS(), limits)
+	}
 	if err == nil {
 		c.transport = transport
 	}
@@ -139,7 +179,7 @@ func (c *ClusterNode) configure(ctx context.Context) error {
 	if err := c.startTransport(); err != nil {
 		return err
 	}
-	if c.creator() && c.state == nil {
+	if c.creator() && c.state == nil && c.keys.Trust.BrokerTransition == "" {
 		if err := c.loadMembership(ctx); err != nil {
 			return err
 		}
@@ -187,7 +227,7 @@ func (c *ClusterNode) loadMembership(ctx context.Context) error {
 	return nil
 }
 func (c *ClusterNode) quorum(ctx context.Context) error {
-	if !c.creator() || c.transport.Store == nil || c.transport.Context.Err() != nil {
+	if c.transitioning || (c.keys.Trust != nil && c.keys.Trust.BrokerTransition != "") || !c.creator() || c.transport.Store == nil || c.transport.Context.Err() != nil {
 		return &domain.Error{Code: "QUORUM_UNAVAILABLE", Message: "Cluster authority is unavailable"}
 	}
 	q, err := c.transport.Store.Quorum(ctx)

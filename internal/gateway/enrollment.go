@@ -14,6 +14,18 @@ import (
 )
 
 func enrollment(api *gin.RouterGroup, s *service.Service) {
+	api.GET("/membership-topology", func(c *gin.Context) {
+		if s.Cluster == nil {
+			failure(c, domain.Unavailable("membership"), nil)
+			return
+		}
+		topology, err := s.Cluster.Topology()
+		if err != nil {
+			failure(c, err, nil)
+			return
+		}
+		c.JSON(http.StatusOK, topology)
+	})
 	api.GET("/membership-status", func(c *gin.Context) {
 		epoch, err := strconv.ParseUint(c.Query("membership_epoch"), 10, 64)
 		if err != nil || epoch == 0 || c.Query("node_id") == "" || !queries(c, "node_id", "membership_epoch") {

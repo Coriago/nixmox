@@ -7,6 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sync"
+
+	"go.opentelemetry.io/otel/trace"
+	"nixmox/internal/engine/telemetry"
 
 	"github.com/nats-io/nats.go"
 
@@ -46,7 +50,10 @@ func (c *Core) publish(ctx context.Context, subject string, v any, limit int) er
 	if !c.nc.IsConnected() {
 		return nats.ErrDisconnected
 	}
-	return c.nc.Publish(subject, data)
+	msg := nats.NewMsg(subject)
+	msg.Data = data
+	injectHeaders(ctx, msg.Header)
+	return c.nc.PublishMsg(msg)
 }
 
 func (c *Core) PublishLog(ctx context.Context, e domain.LogEvent) error {
@@ -123,7 +130,15 @@ func (c *Core) View(ctx context.Context, q engine.Query) (engine.Subscription[en
 	return c.query(ctx, q, Subject(c.Cluster, "view", c.Node), c.Node)
 }
 
-func (c *Core) query(ctx context.Context, q engine.Query, subject string, replyOwner domain.ID) (engine.Subscription[engine.QueryReply], error) {
+func (c *Core) query(ctx context.Context, q engine.Query, subject string, replyOwner domain.ID) (_ engine.Subscription[engine.QueryReply], result error) {
+	ctx, span := messageSpan(ctx, "query", "request", trace.SpanKindClient)
+	span.SetName(querySpanName("request", q.Type))
+	defer func() {
+		if result != nil {
+			telemetry.End(span, result)
+		}
+	}()
+	q.Trace = telemetry.Inject(ctx)
 	q.CallerID = c.Node
 	if q.ID == "" || q.TargetID == "" || len(q.Payload) > domain.CommandPayloadLimit {
 		return nil, errors.New("invalid query")
@@ -141,10 +156,13 @@ func (c *Core) query(ctx context.Context, q engine.Query, subject string, replyO
 		sub.Unsubscribe()
 		return nil, err
 	}
-	return &querySubscription{sub: sub, id: q.ID}, nil
+	return &querySubscription{sub: sub, id: q.ID, span: span, ctx: ctx}, nil
 }
 
 type querySubscription struct {
+	span     trace.Span
+	ctx      context.Context
+	once     sync.Once
 	sub      *nats.Subscription
 	id       domain.ID
 	next     uint64
@@ -152,9 +170,19 @@ type querySubscription struct {
 	complete bool
 }
 
-func (s *querySubscription) Close() error { return s.sub.Unsubscribe() }
+func (s *querySubscription) finish(err error) error {
+	var result error
+	s.once.Do(func() { result = s.sub.Unsubscribe(); telemetry.End(s.span, err) })
+	return result
+}
+func (s *querySubscription) Close() error { return s.finish(s.ctx.Err()) }
 
-func (s *querySubscription) Next(ctx context.Context) (engine.QueryReply, error) {
+func (s *querySubscription) Next(ctx context.Context) (_ engine.QueryReply, result error) {
+	defer func() {
+		if result != nil && result != io.EOF {
+			_ = s.finish(result)
+		}
+	}()
 	if s.complete {
 		return engine.QueryReply{}, io.EOF
 	}
@@ -167,14 +195,18 @@ func (s *querySubscription) Next(ctx context.Context) (engine.QueryReply, error)
 		return q, err
 	}
 	if q.RequestID != s.id || q.Sequence != s.next || len(q.Data) > domain.QueryChunkLimit || s.bytes+len(q.Data) > domain.QueryTotalLimit {
-		s.Close()
 		return q, errors.New("invalid query sequence/size")
 	}
 	s.next++
 	s.bytes += len(q.Data)
 	s.complete = q.Complete
 	if q.Complete {
-		s.Close()
+		s.span.AddEvent("messaging.reply.complete")
+		var failure error
+		if q.Error != nil {
+			failure = q.Error
+		}
+		_ = s.finish(failure)
 	}
 	return q, nil
 }
@@ -217,7 +249,13 @@ func (c *Core) serveQueries(ctx context.Context, view bool, handler func(context
 		if req.Reply != Subject(c.Cluster, "reply", replyOwner)+"."+shared.Token(req.Query.ID) {
 			continue
 		}
-		call, cancel := context.WithTimeout(ctx, domain.ExportTimeout)
+		origin := headerTrace(m.Header)
+		if len(origin) == 0 {
+			origin = req.Query.Trace
+		}
+		parent, span := messageSpan(telemetry.Extract(ctx, origin), "query", "process", trace.SpanKindServer)
+		span.SetName(querySpanName("handle", req.Query.Type))
+		call, cancel := context.WithTimeout(parent, domain.ExportTimeout)
 		reader, e := handler(call, req.Query)
 		if e != nil {
 			var detail *domain.Error
@@ -226,6 +264,7 @@ func (c *Core) serveQueries(ctx context.Context, view bool, handler func(context
 			}
 			c.publish(call, req.Reply, engine.QueryReply{RequestID: req.Query.ID, Complete: true, Error: detail}, domain.CommandPayloadLimit)
 			cancel()
+			telemetry.End(span, e)
 			continue
 		}
 		buf := make([]byte, domain.QueryChunkLimit)
@@ -241,12 +280,16 @@ func (c *Core) serveQueries(ctx context.Context, view bool, handler func(context
 				response.Error = &domain.Error{Code: "QUERY_FAILED", Message: "Query exceeds bounds or read failed"}
 			}
 			if e = c.publish(call, req.Reply, response, domain.CommandPayloadLimit); e != nil || response.Complete {
+				if e == nil && response.Error != nil {
+					e = response.Error
+				}
 				break
 			}
 			seq++
 		}
 		reader.Close()
 		cancel()
+		telemetry.End(span, e)
 	}
 }
 

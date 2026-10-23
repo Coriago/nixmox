@@ -81,6 +81,9 @@ in
     package =
       opt types.package self.packages.${pkgs.stdenv.hostPlatform.system}.default
         "Nixmox package.";
+    nodeName =
+      opt types.str d.node_name
+        "Friendly node name; empty uses the OS hostname without changing host.name.";
     dataDir = opt types.str d.data_dir "Persistent runtime state directory.";
     http.port = opt port d.http.port "Console, enrollment and cache HTTP port.";
     nats = {

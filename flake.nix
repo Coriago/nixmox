@@ -15,7 +15,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          vendorHash = "sha256-YkFDcq2gM4gVw9ICZ4ZFdcSyTURnKkAfzMT6ewVTOsM=";
+          vendorHash = "sha256-eDgtYVEs2KrbxjEyWbTSzbjeAZwQOdCc95Vh8zXSB/U=";
         in
         {
           default = pkgs.buildGoModule {
@@ -74,6 +74,9 @@
               python3 # Small PTY probe; no application runtime dependency.
               git
               jq # Disposable CLI-only multi-node smoke check.
+              greptimedb
+              opentelemetry-collector-contrib
+              curl
               nixfmt
               ripgrep
             ];

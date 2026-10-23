@@ -9,6 +9,7 @@ import (
 
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
+	"nixmox/internal/engine/telemetry"
 )
 
 func (s *Service) DiscoveryRecords() []domain.Discovery {
@@ -88,6 +89,8 @@ func (s *Service) Autojoin(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		_, _ = s.Submit(ctx, domain.Command{ID: commandID, Type: "cluster.join", TargetID: id.NodeID, Payload: data})
+		call, span := telemetry.Start(ctx, "enrollment.autojoin")
+		_, err = s.Submit(call, domain.Command{ID: commandID, Type: "cluster.join", TargetID: id.NodeID, Payload: data})
+		telemetry.End(span, err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
@@ -156,7 +157,7 @@ func LoadFile(path string, flags *pflag.FlagSet) (Config, error) {
 }
 
 var configFlags = map[string]string{
-	"data-dir": "data_dir", "http-port": "http.port",
+	"node-name": "node_name", "data-dir": "data_dir", "http-port": "http.port",
 	"nats-client-port": "nats.client_port", "nats-route-port": "nats.route_port", "nats-leaf-port": "nats.leaf_port",
 	"management-interfaces": "network.management_interfaces", "discovery": "discovery.enable",
 }
@@ -164,6 +165,7 @@ var configFlags = map[string]string{
 // AddFlags declares daemon settings using the same defaults as the NixOS module.
 func AddFlags(flags *pflag.FlagSet) {
 	c := Defaults()
+	flags.String("node-name", c.NodeName, "Friendly node name (default: OS hostname)")
 	flags.String("data-dir", c.DataDir, "Persistent state directory")
 	flags.Int("http-port", c.HTTP.Port, "Console HTTP port")
 	flags.Int("nats-client-port", c.NATS.ClientPort, "Loopback NATS TLS port")
@@ -177,6 +179,9 @@ func (c Config) Validate() error {
 	fail := func(key, message string) error { return fmt.Errorf("%s: %s", key, message) }
 	if c.SchemaVersion != 1 {
 		return fail("schema_version", "only version 1 is supported")
+	}
+	if len(c.NodeName) > 128 || strings.TrimSpace(c.NodeName) != c.NodeName || strings.ContainsFunc(c.NodeName, unicode.IsControl) {
+		return fail("node_name", "must be at most 128 bytes without control characters or surrounding whitespace")
 	}
 	if !filepath.IsAbs(c.DataDir) {
 		return fail("data_dir", "must be an absolute runtime path")

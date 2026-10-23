@@ -24,6 +24,7 @@ func Catalog() *Registry {
 		operation[domain.HostBootstrap]("host.bootstrap", domain.ClusterScope, "host", nil, []string{"credential"}),
 		operation[domain.HostTarget]("host.refresh", domain.ClusterScope, "host", nil, nil),
 		operation[domain.HostDiagnostics]("host.diagnostics", domain.ClusterScope, "diagnostic", nil, nil),
+		operation[domain.ForceFullMembership]("host.demote", domain.ClusterScope, "host", []string{"host"}, nil),
 		operation[domain.ForceFullMembership]("host.force_full_membership", domain.ClusterScope, "host", []string{"host"}, nil),
 		operation[domain.HostPower]("host.shutdown", domain.ClusterScope, "host", []string{"host"}, []string{"power"}),
 		operation[domain.HostPower]("host.reboot", domain.ClusterScope, "host", []string{"host"}, []string{"power"}),

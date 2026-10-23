@@ -17,6 +17,7 @@ import (
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/internal/shared"
+	"nixmox/internal/logging"
 )
 
 var (
@@ -392,6 +393,15 @@ func (j *Journal) Append(ctx context.Context, task domain.ID, activity *domain.I
 		return event, err
 	}
 	event.DataBase64 = base64.StdEncoding.EncodeToString(data)
+	// SensitiveOutput never reaches the journal. Export only retained chunks,
+	// with the same context as execution; no payloads/arguments are inspected.
+	if len(data) > 0 {
+		log := logging.From(ctx).With("event", "task.output", "task_id", string(task), "offset", event.Offset)
+		if activity != nil {
+			log = log.With("activity_id", string(*activity))
+		}
+		log.Info(string(data))
+	}
 	return event, nil
 }
 

@@ -81,7 +81,19 @@ type Quorum struct {
 	Required  int  `json:"required"`
 }
 
+type StreamReplication struct {
+	Replicas int  `json:"replicas"`
+	Current  int  `json:"current"`
+	Ready    bool `json:"ready"`
+}
+type BrokerStatus struct {
+	Mode           string                       `json:"mode"`
+	MetadataPeers  int                          `json:"metadata_peers"`
+	MetadataLeader string                       `json:"metadata_leader"`
+	Streams        map[string]StreamReplication `json:"streams"`
+}
 type ClusterStatus struct {
+	Broker BrokerStatus `json:"broker"`
 	Observed
 	ClusterID  *ID        `json:"cluster_id"`
 	Membership Membership `json:"membership"`
@@ -111,7 +123,9 @@ type Discovery struct {
 }
 
 type JoinRequest struct {
-	Signature string `json:"signature"`
+	// Diagnostic origin only; not part of signed proofs or authorization.
+	Trace     TraceContext `json:"trace,omitempty"`
+	Signature string       `json:"signature"`
 	Record
 	RequestID           ID            `json:"request_id"`
 	NodeID              ID            `json:"node_id"`

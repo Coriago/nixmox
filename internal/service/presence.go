@@ -79,6 +79,7 @@ func (c *ClusterNode) Status(ctx context.Context) domain.ClusterStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	status := domain.ClusterStatus{Membership: domain.Unjoined, Observed: domain.Observed{Freshness: domain.Unknown}, Health: domain.Health{Status: "unknown", Reasons: []domain.HealthReason{}}}
+	status.Broker = c.transport.Replication(ctx)
 	if trust := c.keys.Trust; trust != nil {
 		now := time.Now().UTC()
 		status.ClusterID, status.Membership = &trust.Cluster.ID, domain.Pending

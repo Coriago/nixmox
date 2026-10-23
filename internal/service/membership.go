@@ -8,8 +8,11 @@ import (
 	"maps"
 	"time"
 
+	"nixmox/internal/client"
 	"nixmox/internal/domain"
 	"nixmox/internal/engine/identity"
+	"nixmox/internal/engine/telemetry"
+	"os"
 )
 
 func (c *ClusterNode) completeMembership(ctx context.Context) error {
@@ -65,6 +68,9 @@ func (c *ClusterNode) syncMembershipContext() {
 	}
 	c.scope, c.cancelScope = context.WithCancel(c.life)
 	c.scopeCluster, c.scopeEpoch = cluster, epoch
+	if c.membershipObserver != nil {
+		c.membershipObserver(cluster)
+	}
 }
 func (c *ClusterNode) taskContext(current domain.Task) (context.Context, error) {
 	c.mu.Lock()
@@ -190,38 +196,52 @@ func (c *ClusterNode) ReconcileMembership(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 		}
-		c.mu.Lock()
-		trust := c.keys.Trust
-		if trust == nil || c.creator() {
-			c.mu.Unlock()
-			continue
-		}
-		address := trust.AuthorityAddress
-		if address == "" && len(trust.Cluster.GatewayEndpoints) > 0 {
-			address = trust.Cluster.GatewayEndpoints[len(trust.Cluster.GatewayEndpoints)-1].Address
-		}
-		node, epoch := c.keys.Identity.NodeID, trust.Issuance.MembershipEpoch
-		c.mu.Unlock()
-		api, err := enrollmentClient(address)
-		if err != nil {
-			continue
-		}
-		call, cancel := context.WithTimeout(ctx, domain.ExportTimeout)
-		notice, err := api.Removal(call, node, epoch)
-		cancel()
-		if err != nil {
-			continue
-		}
-		c.mu.Lock()
-		if c.keys.VerifyRemoval(notice) == nil {
-			if c.cancelScope != nil {
-				c.cancelScope()
-			}
-			c.transport.Close()
-			if c.keys.Retire(notice) == nil {
-				_ = c.configure(ctx)
-			}
-		}
-		c.mu.Unlock()
+		_ = c.pollMembership(ctx)
 	}
+}
+
+func (c *ClusterNode) pollMembership(ctx context.Context) (err error) {
+	c.mu.Lock()
+	trust := c.keys.Trust
+	if trust == nil || c.creator() {
+		c.mu.Unlock()
+		return nil
+	}
+	address := trust.AuthorityAddress
+	if address == "" && len(trust.Cluster.GatewayEndpoints) > 0 {
+		address = trust.Cluster.GatewayEndpoints[len(trust.Cluster.GatewayEndpoints)-1].Address
+	}
+	node, epoch := c.keys.Identity.NodeID, trust.Issuance.MembershipEpoch
+	c.mu.Unlock()
+	ctx, span := telemetry.Background(ctx, "membership.poll")
+	defer func() { telemetry.End(span, err) }()
+	api, err := enrollmentClient(address)
+	if err != nil {
+		return err
+	}
+	call, cancel := context.WithTimeout(ctx, domain.ExportTimeout)
+	notice, err := api.Removal(call, node, epoch)
+	cancel()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
+			return nil
+		}
+		return err
+	}
+	c.mu.Lock()
+	if err = c.keys.VerifyRemoval(notice); err == nil {
+		if c.cancelScope != nil {
+			c.cancelScope()
+		}
+		c.transport.Close()
+		if err = c.keys.Retire(notice); err == nil {
+			err = c.configure(ctx)
+		}
+	}
+	c.mu.Unlock()
+	return err
 }

@@ -7,14 +7,16 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
+
+	"github.com/go-logr/logr"
+	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
+	"go.opentelemetry.io/otel"
 	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -28,11 +30,14 @@ import (
 
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
+	"nixmox/internal/logging"
 )
 
 type OTelConfig struct {
+	ServiceName     string
 	NodeID          domain.ID
-	HostName        string
+	NodeName        string
+	ClusterID       domain.ID
 	Endpoint        string // Empty disables export, not local instrumentation.
 	MetricsInterval time.Duration
 	Logs            io.Writer
@@ -49,34 +54,46 @@ type OTel struct {
 	propagation propagation.TraceContext
 	counters    map[string]metric.Int64Counter
 	histograms  map[string]metric.Float64Histogram
-	logger      *slog.Logger
-	queue       chan logRecord
-	cancel      context.CancelFunc
-	done        chan struct{}
-	Dropped     atomic.Uint64
-	secrets     []string
-}
-
-type logRecord struct {
-	record slog.Record
-	span   trace.SpanContext
+	config      OTelConfig
+	resources   *resources
 }
 
 func NewOTel(ctx context.Context, c OTelConfig) (*OTel, error) {
-	if c.NodeID == "" || c.MetricsInterval < 250*time.Millisecond {
+	if c.ServiceName == "" {
+		c.ServiceName = ServiceDaemon
+	}
+	if (c.ServiceName == ServiceDaemon && c.NodeID == "") || c.MetricsInterval < 250*time.Millisecond {
 		return nil, errors.New("telemetry identity and export interval required")
 	}
 	if c.Logs == nil {
-		c.Logs = io.Discard
+		c.Logs = os.Stdout
 	}
-	resource := resource.NewWithAttributes("https://opentelemetry.io/schemas/1.37.0", attribute.String("service.name", "nixmox"), attribute.String("host.id", string(c.NodeID)), attribute.String("host.name", c.HostName))
-	t := &OTel{queue: make(chan logRecord, 1024), done: make(chan struct{}), secrets: append([]string(nil), c.Redact...), counters: map[string]metric.Int64Counter{}, histograms: map[string]metric.Float64Histogram{}}
-	tp := []sdktrace.TracerProviderOption{sdktrace.WithResource(resource)}
+
+	c.Endpoint = strings.TrimRight(c.Endpoint, "/")
+	attrs := []attribute.KeyValue{attribute.String("service.name", c.resourceServiceName())}
+	if c.ServiceName != ServiceBrowser {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return nil, err
+		}
+		attrs = append(attrs, attribute.String("host.name", hostname))
+	}
+	if c.ServiceName == ServiceDaemon {
+		attrs = append(attrs, attribute.String("service.instance.id", string(c.NodeID)), attribute.String("nixmox.node.id", string(c.NodeID)))
+		if c.NodeName != "" {
+			attrs = append(attrs, attribute.String("nixmox.node.name", c.NodeName))
+		}
+	} else {
+		c.ClusterID = ""
+	}
+	resource := resource.NewWithAttributes("https://opentelemetry.io/schemas/1.37.0", attrs...)
+	t := &OTel{resources: &resources{base: resource}, config: c, counters: map[string]metric.Int64Counter{}, histograms: map[string]metric.Float64Histogram{}}
+	tp := []sdktrace.TracerProviderOption{sdktrace.WithSampler(sdktrace.ParentBased(rootSampler{}))}
 	mp := []sdkmetric.Option{sdkmetric.WithResource(resource), sdkmetric.WithCardinalityLimit(128)}
-	lp := []sdklog.LoggerProviderOption{sdklog.WithResource(resource)}
+	var lp []sdklog.LoggerProviderOption
 	if c.Endpoint != "" {
 		endpoint, err := url.Parse(c.Endpoint)
-		if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
+		if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
 			return nil, errors.New("invalid OTLP endpoint")
 		}
 		traceExporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(c.Endpoint+"/v1/traces"), otlptracehttp.WithTimeout(domain.ExportTimeout), otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: false}))
@@ -95,13 +112,15 @@ func NewOTel(ctx context.Context, c OTelConfig) (*OTel, error) {
 			return nil, err
 		}
 		tp = append(tp, sdktrace.WithBatcher(traceExporter, sdktrace.WithMaxQueueSize(1024), sdktrace.WithMaxExportBatchSize(128), sdktrace.WithExportTimeout(domain.ExportTimeout)))
-		mp = append(mp, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter, sdkmetric.WithInterval(c.MetricsInterval), sdkmetric.WithTimeout(domain.ExportTimeout))))
+		mp = append(mp, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(resourceMetricExporter{Exporter: metricExporter, resources: t.resources}, sdkmetric.WithInterval(c.MetricsInterval), sdkmetric.WithTimeout(domain.ExportTimeout))))
 		lp = append(lp, sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter, sdklog.WithMaxQueueSize(1024), sdklog.WithExportMaxBatchSize(128), sdklog.WithExportTimeout(domain.ExportTimeout))))
 	}
-	t.Traces = sdktrace.NewTracerProvider(tp...)
+	t.resources.traces, t.resources.logs = tp, lp
+	t.resources.setCluster(c.ClusterID)
+	initial := t.resources.current.Load()
+	t.Traces, t.Logs = initial.traces, initial.logs
 	t.Metrics = sdkmetric.NewMeterProvider(mp...)
-	t.Logs = sdklog.NewLoggerProvider(lp...)
-	t.tracer = t.Traces.Tracer("nixmox")
+	t.tracer = resourceTracerProvider{TracerProvider: t.Traces, resources: t.resources}.Tracer("nixmox")
 	meter := t.Metrics.Meter("nixmox")
 	for _, name := range []string{"command.failures", "broker.reconnects", "git.bytes", "artifact.failures", "log.catchup.bytes", "cache.bytes", "cache.failures"} {
 		t.counters[name], _ = meter.Int64Counter("nixmox." + name)
@@ -109,29 +128,7 @@ func NewOTel(ctx context.Context, c OTelConfig) (*OTel, error) {
 	for _, name := range []string{"command.admission.seconds", "task.phase.seconds", "cache.lookup.seconds"} {
 		t.histograms[name], _ = meter.Float64Histogram("nixmox." + name)
 	}
-	dropped, _ := meter.Int64ObservableCounter("nixmox.telemetry.dropped")
-	meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
-		o.ObserveInt64(dropped, int64(t.Dropped.Load()))
-		return nil
-	}, dropped)
-	t.logger = slog.New(&boundedLogHandler{owner: t}).With("service.name", "nixmox", "node_id", string(c.NodeID))
-	life, cancel := context.WithCancel(context.Background())
-	t.cancel = cancel
-	local := slog.NewJSONHandler(c.Logs, nil)
-	export := otelslog.NewHandler("nixmox", otelslog.WithLoggerProvider(t.Logs))
-	go func() {
-		defer close(t.done)
-		for {
-			select {
-			case <-life.Done():
-				return
-			case item := <-t.queue:
-				ctx := trace.ContextWithSpanContext(context.Background(), item.span)
-				_ = local.Handle(ctx, item.record)
-				_ = export.Handle(ctx, item.record)
-			}
-		}
-	}()
+
 	return t, nil
 }
 
@@ -161,16 +158,10 @@ func (t *OTel) Inject(ctx context.Context) domain.TraceContext {
 
 type otelSpan struct{ trace.Span }
 
-func (s otelSpan) End(err error) {
-	if err != nil {
-		s.Span.SetStatus(codes.Error, "operation failed")
-	}
-	s.Span.End()
-}
+func (s otelSpan) End(err error) { End(s.Span, err) }
 
 func (t *OTel) Logger(ctx context.Context) *slog.Logger {
-	sc := trace.SpanContextFromContext(ctx)
-	return t.logger.With("trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+	return logging.From(ctx)
 }
 
 func metricAttributes(labels map[string]string) []attribute.KeyValue {
@@ -198,72 +189,41 @@ func (t *OTel) Observe(ctx context.Context, name string, v float64, labels map[s
 func (t *OTel) Shutdown(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, domain.ExportTimeout)
 	defer cancel()
-	t.cancel()
-	select {
-	case <-t.done:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	return errors.Join(t.Logs.Shutdown(ctx), t.Metrics.Shutdown(ctx), t.Traces.Shutdown(ctx))
-}
-
-func (t *OTel) sanitize(value string) string {
-	for _, secret := range t.secrets {
-		if secret != "" {
-			value = strings.ReplaceAll(value, secret, "[redacted]")
+	// All signals share one shutdown budget, but a slow exporter cannot consume
+	// the entire budget before the other providers even begin to flush.
+	results := make(chan error, 3)
+	go func() { results <- t.Logs.Shutdown(ctx) }()
+	go func() { results <- t.Metrics.Shutdown(ctx) }()
+	go func() { results <- t.Traces.Shutdown(ctx) }()
+	var err error
+	for range 3 {
+		select {
+		case result := <-results:
+			err = errors.Join(err, result)
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
 		}
 	}
-	return value
+	return err
 }
 
-type boundedLogHandler struct {
-	owner  *OTel
-	attrs  []slog.Attr
-	groups []string
-}
-
-func (h *boundedLogHandler) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h *boundedLogHandler) Handle(ctx context.Context, r slog.Record) error {
-	copy := slog.NewRecord(r.Time, r.Level, h.owner.sanitize(r.Message), r.PC)
-	clean := func(a slog.Attr) slog.Attr {
-		key := strings.ToLower(a.Key)
-		if strings.Contains(key, "password") || strings.Contains(key, "secret") || strings.Contains(key, "token") || strings.Contains(key, "private_key") {
-			return slog.String(a.Key, "[redacted]")
-		}
-		// Arbitrary structs/groups may contain hidden secrets: don't serialize them.
-		if a.Value.Kind() == slog.KindAny || a.Value.Kind() == slog.KindGroup {
-			return slog.String(a.Key, "[redacted]")
-		}
-		if a.Value.Kind() == slog.KindString {
-			a.Value = slog.StringValue(h.owner.sanitize(a.Value.String()))
-		}
-		return a
+// Install makes this process-owned pipeline available to libraries and callers.
+// Call once during application startup, before starting HTTP/NATS/workers.
+func (t *OTel) Install() error {
+	otel.SetTracerProvider(resourceTracerProvider{TracerProvider: t.Traces, resources: t.resources})
+	otel.SetMeterProvider(t.Metrics)
+	otel.SetLoggerProvider(resourceLoggerProvider{LoggerProvider: t.Logs, resources: t.resources})
+	// Baggage is intentionally excluded: untrusted arbitrary values must not
+	// travel through durable commands or become sensitive telemetry.
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	local := logging.Configure(t.config.Logs, otelslog.NewHandler("nixmox"), t.config.Redact)
+	logger := slog.Default().With("service.name", t.config.resourceServiceName())
+	if t.config.ServiceName == ServiceDaemon {
+		logger = logger.With("nixmox.node.id", string(t.config.NodeID))
 	}
-	attrs := append([]slog.Attr(nil), h.attrs...)
-	r.Attrs(func(a slog.Attr) bool { attrs = append(attrs, a); return true })
-	for _, a := range attrs {
-		a = clean(a)
-		if len(h.groups) > 0 {
-			a.Key = strings.Join(h.groups, ".") + "." + a.Key
-		}
-		copy.AddAttrs(a)
-	}
-	select {
-	case h.owner.queue <- logRecord{copy, trace.SpanContextFromContext(ctx)}:
-	default:
-		h.owner.Dropped.Add(1)
-	}
-	return nil
+	slog.SetDefault(logger)
+	// Includes SDK bounded-queue drop counts, without exporting recursively.
+	otel.SetLogger(logr.FromSlogHandler(local.Handler()))
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { local.Error("telemetry exporter failed", "error", err) }))
+	return otelruntime.Start(otelruntime.WithMeterProvider(t.Metrics))
 }
-
-func (h *boundedLogHandler) WithAttrs(a []slog.Attr) slog.Handler {
-	return &boundedLogHandler{owner: h.owner, attrs: append(append([]slog.Attr(nil), h.attrs...), a...), groups: append([]string(nil), h.groups...)}
-}
-
-func (h *boundedLogHandler) WithGroup(g string) slog.Handler {
-	return &boundedLogHandler{owner: h.owner, attrs: append([]slog.Attr(nil), h.attrs...), groups: append(append([]string(nil), h.groups...), g)}
-}
-
-// MetricReader serializes sampling callbacks; producers own the underlying cache.
-type MetricReader struct{ mu sync.Mutex }

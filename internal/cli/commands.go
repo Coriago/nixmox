@@ -37,7 +37,7 @@ func (o *options) hostCommands() *cobra.Command {
 		return domain.HostTarget{HostID: id}, nil, err
 	})
 	group.AddCommand(refresh)
-	for _, name := range []string{"leave", "remove", "shutdown", "reboot", "force-full-membership"} {
+	for _, name := range []string{"leave", "remove", "shutdown", "reboot", "force-full-membership", "demote"} {
 		var confirm string
 		var force bool
 		action := &cobra.Command{Use: name + " HOST", Args: cobra.ExactArgs(1)}
@@ -71,7 +71,7 @@ func (o *options) hostCommands() *cobra.Command {
 			}
 			versions := domain.Versions{"host:" + string(id): host.Version}
 			switch name {
-			case "force-full-membership":
+			case "force-full-membership", "demote":
 				return domain.ForceFullMembership{HostID: id, MembershipEpoch: *host.MembershipEpoch, ConfirmHost: confirm}, versions, nil
 			case "leave":
 				return domain.ClusterLeave{HostID: id, MembershipEpoch: *host.MembershipEpoch}, versions, nil

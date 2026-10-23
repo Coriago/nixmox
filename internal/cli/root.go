@@ -8,6 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
+
+	"go.opentelemetry.io/otel/trace"
+
+	"nixmox/internal/engine/telemetry"
+	"nixmox/internal/logging"
 
 	"github.com/spf13/cobra"
 
@@ -32,10 +38,41 @@ func (e *exitError) Unwrap() error { return e.err }
 
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	command := NewCommand()
+	var pipeline *telemetry.OTel
+	var span trace.Span
+	// Serve owns the daemon pipeline. CLI export is opt-in through standard OTLP
+	// environment configuration; stdout remains reserved for machine-readable data.
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		if cmd.Name() == "serve" {
+			return nil
+		}
+		var err error
+		pipeline, err = telemetry.NewOTel(ctx, telemetry.OTelConfig{ServiceName: telemetry.ServiceCLI, Endpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"), MetricsInterval: time.Second, Logs: stderr})
+		if err != nil {
+			return err
+		}
+		if err = pipeline.Install(); err != nil {
+			return err
+		}
+		call, current := telemetry.Start(cmd.Context(), "cli "+cmd.CommandPath())
+		span = current
+		cmd.SetContext(call)
+		logging.From(call).Info("CLI command started", "operation", cmd.CommandPath())
+		return nil
+	}
+	defer func() {
+		if pipeline != nil {
+			_ = pipeline.Shutdown(context.Background())
+		}
+	}()
 	command.SetArgs(args)
 	command.SetOut(stdout)
 	command.SetErr(stderr)
-	if err := command.ExecuteContext(ctx); err != nil {
+	err := command.ExecuteContext(ctx)
+	if span != nil {
+		telemetry.End(span, err)
+	}
+	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return ExitCode(err)
 	}

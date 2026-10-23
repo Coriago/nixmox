@@ -8,12 +8,13 @@ import (
 	"maps"
 	"net"
 	"net/url"
-	"path/filepath"
 	"time"
 
 	"nixmox/internal/domain"
 	"nixmox/internal/engine/comms"
 	"nixmox/internal/engine/identity"
+	"nixmox/internal/engine/telemetry"
+	"nixmox/internal/logging"
 )
 
 func (c *ClusterNode) routeAddress() string {
@@ -27,17 +28,12 @@ func (c *ClusterNode) initialTopology(cluster domain.Cluster, r domain.Enrollmen
 	}
 	return c.keys.SignTopology(domain.Topology{ClusterID: cluster.ID, Version: 1, Replicas: 1, Peers: map[domain.ID]domain.RoutePeer{r.NodeID: {NodeID: r.NodeID, Epoch: issued.MembershipEpoch, Address: c.routeAddress(), Certificate: cert}}})
 }
-func (c *ClusterNode) routeOptions(opts *comms.BrokerOptions) error {
-	if c.keys.Trust.Topology == nil {
+func (c *ClusterNode) routeOptions(opts *comms.BrokerOptions, signed *domain.SignedTopology) error {
+	if signed == nil || len(signed.Topology.Peers) == 1 {
 		return nil
 	}
-	topology := c.keys.Trust.Topology.Topology
-	// NATS cannot elect a metadata leader from a self-route alone. Keep the
-	// provisional store standalone until an explicit store migration exists.
-	if len(topology.Peers) == 1 {
-		return nil
-	}
-	local, ok := topology.Peers[c.keys.Identity.NodeID]
+	topology := signed.Topology
+	local, ok := topology.Peers[c.host.ID]
 	if !ok {
 		return nil
 	}
@@ -45,20 +41,22 @@ func (c *ClusterNode) routeOptions(opts *comms.BrokerOptions) error {
 		return errors.New("configured route listener differs from approved topology")
 	}
 	opts.Pending = false
-	opts.DataDir = filepath.Join(c.config.DataDir, "broker", "routed")
 	opts.RouteAddress = local.Address
 	var err error
-	opts.RouteTLS, err = c.keys.RouteTLS()
+	opts.RouteTLS, err = c.keys.RouteTLSFor(signed)
 	if err != nil {
 		return err
 	}
-	for _, peer := range topology.Peers {
+	for id, peer := range topology.Peers {
 		key, pin, err := identity.CertificatePins(peer.Certificate)
 		if err != nil {
 			return err
 		}
 		opts.BrokerKeys = append(opts.BrokerKeys, key)
 		opts.RouteCertificates = append(opts.RouteCertificates, pin)
+		if id == c.host.ID {
+			continue
+		}
 		route, err := url.Parse("nats-route://" + peer.Address)
 		if err != nil {
 			return err
@@ -68,17 +66,25 @@ func (c *ClusterNode) routeOptions(opts *comms.BrokerOptions) error {
 	return nil
 }
 func (c *ClusterNode) forced() bool {
-	return c.keys.Trust != nil && c.keys.Trust.Topology != nil && c.keys.Trust.Topology.Topology.Peers[c.keys.Identity.NodeID].ForcedBy != ""
+	return c.keys.Trust != nil && c.keys.Trust.Topology != nil && c.keys.Trust.Topology.Topology.Peers[c.host.ID].ForcedBy != ""
+}
+
+// Signed public topology remains reachable while NATS changes generations.
+// Recipients verify the pinned issuer, epoch, certificate and monotonic version.
+func (c *ClusterNode) Topology() (*domain.SignedTopology, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keys.Trust == nil || c.keys.Trust.Topology == nil {
+		return nil, notFound()
+	}
+	return c.keys.Trust.Topology, nil
 }
 func (c *ClusterNode) validatePromotion(ctx context.Context, command domain.Command, p domain.ForceFullMembership) error {
 	if err := c.quorum(ctx); err != nil {
 		return err
 	}
 	if c.state.Topology == nil {
-		return invalid("Legacy standalone store requires a supported backup/restore migration; it cannot be converted in place")
-	}
-	if len(c.state.Topology.Topology.Peers) == 1 {
-		return invalid("Forced promotion requires standalone-to-cluster store migration, which is not implemented; membership is unchanged")
+		return invalid("Cluster has no signed topology")
 	}
 	if c.state.Power != nil {
 		return invalid("A power transition is unresolved")
@@ -90,14 +96,24 @@ func (c *ClusterNode) validatePromotion(ctx context.Context, command domain.Comm
 	if err := c.validateHost(command, p.HostID, p.MembershipEpoch, p.ConfirmHost, name); err != nil {
 		return err
 	}
-	if c.state.Members[p.HostID].Full {
-		return invalid("Host is already a full member")
-	}
-	if p.HostID != c.host.ID && !c.state.Members[c.host.ID].Full {
-		return invalid("Force-promote the creator first")
-	}
-	if _, ok := c.state.Topology.Topology.Peers[p.HostID]; !ok && len(c.state.Topology.Topology.Peers) >= 3 {
-		return invalid("This topology currently supports three full brokers")
+	member := c.state.Members[p.HostID]
+	if command.Type == "host.demote" {
+		if !member.Full {
+			return invalid("Host is not a full member")
+		}
+		if p.HostID == c.host.ID {
+			return invalid("The issuer must retain its durable broker")
+		}
+	} else {
+		if member.Full {
+			return invalid("Host is already a full member")
+		}
+		if p.HostID != c.host.ID && !c.state.Members[c.host.ID].Full {
+			return invalid("Force-promote the creator first")
+		}
+		if _, ok := c.state.Topology.Topology.Peers[p.HostID]; !ok && len(c.state.Topology.Topology.Peers) >= 3 {
+			return invalid("This topology currently supports three full brokers")
+		}
 	}
 	return nil
 }
@@ -109,34 +125,44 @@ func (c *ClusterNode) commitPromotion(ctx context.Context, command domain.Comman
 		return err
 	}
 	member := c.state.Members[p.HostID]
-	if member.ForcedBy != command.ID {
+	if member.TopologyCommand != command.ID {
 		if err := c.validatePromotion(ctx, command, p); err != nil {
-			return err
-		}
-		address := c.routeAddress()
-		var request domain.EnrollmentSubmission
-		var err error
-		if p.HostID == c.host.ID {
-			request, err = c.keys.Request(member.RequestID, c.state.Cluster.Name)
-		} else {
-			request = submission(c.state.Requests[member.RequestID])
-			var data json.RawMessage
-			data, err = fetchQuery(ctx, c.transport, c.keys.Identity, p.HostID, "membership.route", []byte("{}"), false)
-			if err == nil {
-				err = json.Unmarshal(data, &address)
-			}
-		}
-		if err != nil {
-			return err
-		}
-		cert, err := c.keys.RouteCertificate(p.HostID, member.Epoch, request.BrokerCSR, member.BrokerKey)
-		if err != nil {
 			return err
 		}
 		topology := c.state.Topology.Topology
 		topology.Peers = maps.Clone(topology.Peers)
 		topology.Version++
-		topology.Peers[p.HostID] = domain.RoutePeer{NodeID: p.HostID, Epoch: member.Epoch, Address: address, Certificate: cert, ForcedBy: command.ID}
+		if command.Type == "host.demote" {
+			if err := c.transport.RemovePeer(ctx, p.HostID, len(topology.Peers)-1); err != nil {
+				return err
+			}
+			delete(topology.Peers, p.HostID)
+			member.Full, member.ForcedBy = false, ""
+		} else {
+			address := c.routeAddress()
+			var request domain.EnrollmentSubmission
+			var err error
+			if p.HostID == c.host.ID {
+				request, err = c.keys.Request(member.RequestID, c.state.Cluster.Name)
+			} else {
+				request = submission(c.state.Requests[member.RequestID])
+				var data json.RawMessage
+				data, err = fetchQuery(ctx, c.transport, c.keys.Identity, p.HostID, "membership.route", []byte("{}"), false)
+				if err == nil {
+					err = json.Unmarshal(data, &address)
+				}
+			}
+			if err != nil {
+				return err
+			}
+			cert, err := c.keys.RouteCertificate(p.HostID, member.Epoch, request.BrokerCSR, member.BrokerKey)
+			if err != nil {
+				return err
+			}
+			topology.Peers[p.HostID] = domain.RoutePeer{NodeID: p.HostID, Epoch: member.Epoch, Address: address, Certificate: cert, ForcedBy: command.ID}
+			member.Full, member.ForcedBy = true, command.ID
+		}
+		topology.Replicas = 1
 		if len(topology.Peers) == 3 {
 			topology.Replicas = 3
 		}
@@ -144,8 +170,8 @@ func (c *ClusterNode) commitPromotion(ctx context.Context, command domain.Comman
 		if err != nil {
 			return err
 		}
-		member.Full, member.ForcedBy = true, command.ID
 		member.Version++
+		member.TopologyCommand = command.ID
 		state := *c.state
 		state.Members = maps.Clone(state.Members)
 		state.Members[p.HostID] = member
@@ -154,20 +180,27 @@ func (c *ClusterNode) commitPromotion(ctx context.Context, command domain.Comman
 			return err
 		}
 	}
-	if c.keys.Trust.Topology.Topology.Version < c.state.Topology.Topology.Version {
-		if err := c.keys.ApplyTopology(*c.state.Topology); err != nil {
-			return err
-		}
-		return c.configure(ctx)
+	return c.stageTopology(*c.state.Topology)
+}
+func (c *ClusterNode) stageTopology(next domain.SignedTopology) error {
+	trust := *c.keys.Trust
+	if trust.BrokerTopology == nil {
+		trust.BrokerTopology = trust.Topology
 	}
-	return nil
+	trust.Topology = &next
+	return c.keys.Install(trust)
 }
 func (c *ClusterNode) promote(ctx context.Context, command domain.Command) (any, error) {
-	if err := c.commitPromotion(ctx, command); err != nil {
+	c.topologyMu.Lock()
+	defer c.topologyMu.Unlock()
+	wait, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	if err := c.commitPromotion(wait, command); err != nil {
 		return nil, err
 	}
-	wait, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	if err := c.applyTopology(wait); err != nil {
+		return nil, err
+	}
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	var last error
@@ -191,7 +224,11 @@ func (c *ClusterNode) promote(ctx context.Context, command domain.Command) (any,
 				last = transport.Store.ReplicasReady(wait, topology.Replicas)
 			}
 			if last == nil {
-				return map[string]any{"membership": "full", "deployment_verified": false, "forced_by": command.ID, "replicas": topology.Replicas}, nil
+				membership := "full"
+				if command.Type == "host.demote" {
+					membership = "pending"
+				}
+				return map[string]any{"membership": membership, "deployment_verified": false, "replicas": topology.Replicas}, nil
 			}
 		}
 		select {
@@ -210,30 +247,58 @@ func (c *ClusterNode) ReconcileTopology(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 		}
-		c.mu.Lock()
-		joined := c.keys.Trust != nil
-		creator := c.creator()
-		c.mu.Unlock()
-		if !joined || creator {
-			continue
+		_ = c.reconcileTopology(ctx)
+	}
+}
+
+func (c *ClusterNode) reconcileTopology(ctx context.Context) (err error) {
+	c.mu.Lock()
+	trust := c.keys.Trust
+	creator := c.creator()
+	c.mu.Unlock()
+	if trust == nil {
+		return nil
+	}
+	if !c.topologyMu.TryLock() {
+		return nil
+	}
+	ctx, span := telemetry.Background(ctx, "topology.reconcile")
+	defer func() { telemetry.End(span, err) }()
+	var pollErr error
+	if !creator {
+		address := trust.AuthorityAddress
+		if address == "" && len(trust.Cluster.GatewayEndpoints) > 0 {
+			address = trust.Cluster.GatewayEndpoints[0].Address
 		}
-		data, err := c.call(ctx, "", "membership.topology", domain.Empty{}, true)
-		if err != nil {
-			continue
-		}
-		var next *domain.SignedTopology
-		if json.Unmarshal(data, &next) != nil || next == nil {
-			continue
-		}
-		c.mu.Lock()
-		if c.keys.Trust != nil && (c.keys.Trust.Topology == nil || c.keys.Trust.Topology.Topology.Version < next.Topology.Version) {
-			if err = c.keys.ApplyTopology(*next); err == nil {
-				err = c.configure(ctx)
+		api, e := enrollmentClient(address)
+		if e == nil {
+			call, cancel := context.WithTimeout(ctx, domain.ExportTimeout)
+			next, e := api.Topology(call)
+			cancel()
+			if e == nil {
+				c.mu.Lock()
+				if c.keys.Trust != nil && (c.keys.Trust.Topology == nil || next.Topology.Version > c.keys.Trust.Topology.Topology.Version) {
+					err = c.stageTopology(next)
+				}
+				c.mu.Unlock()
 			}
-		}
-		c.mu.Unlock()
-		if err != nil {
-			return err
+			if e != nil {
+				pollErr = e
+			}
+		} else {
+			pollErr = e
 		}
 	}
+	if err == nil {
+		call, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err = c.applyTopology(call)
+		cancel()
+	}
+	c.topologyMu.Unlock()
+	// A failed poll does not prevent applying an already committed topology.
+	err = errors.Join(err, pollErr)
+	if err != nil {
+		logging.From(ctx).Error("topology reconciliation", "error", err)
+	}
+	return err
 }

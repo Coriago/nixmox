@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	"nixmox/internal/domain"
 	"nixmox/internal/service"
@@ -19,6 +20,7 @@ import (
 
 func New(s *service.Service) http.Handler {
 	router := gin.New()
+	router.Use(otelgin.Middleware("nixmox"))
 	_ = router.SetTrustedProxies(nil)
 	// Do not log request bodies, headers, credentials or panic values.
 	router.Use(gin.CustomRecoveryWithWriter(io.Discard, func(c *gin.Context, _ any) {
@@ -175,5 +177,8 @@ func failure(c *gin.Context, err error, command *domain.ID) {
 	case "UNSUPPORTED_CAPABILITY", "TARGET_UNREACHABLE", "QUORUM_UNAVAILABLE", "SUBMISSION_UNKNOWN":
 		status = http.StatusServiceUnavailable
 	}
+	// Only expose the sanitized domain error to instrumentation, never the
+	// underlying error (which may contain an untrusted body or credential).
+	_ = c.Error(detail)
 	c.AbortWithStatusJSON(status, domain.ErrorResponse{Error: detail, CommandID: command})
 }

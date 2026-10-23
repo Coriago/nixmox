@@ -15,9 +15,11 @@ import (
 	"github.com/nats-io/nats.go"
 	js "github.com/nats-io/nats.go/jetstream"
 
+	"go.opentelemetry.io/otel/trace"
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/internal/shared"
+	"nixmox/internal/engine/telemetry"
 )
 
 const commandStream = "nx_commands"
@@ -103,7 +105,10 @@ func OpenJetStream(ctx context.Context, nc *nats.Conn, cluster, node domain.ID, 
 	return j, nil
 }
 
-func (j *JetStream) Submit(ctx context.Context, e domain.Envelope) error {
+func (j *JetStream) Submit(ctx context.Context, e domain.Envelope) (result error) {
+	ctx, span := messageSpan(ctx, "command", "publish", trace.SpanKindProducer)
+	defer func() { telemetry.End(span, result) }()
+	e.Trace = telemetry.Inject(ctx)
 	if e.Scope != domain.ClusterScope || e.ClusterID == nil || *e.ClusterID != j.Cluster || e.Command.ID == "" || e.OwnerNodeID == "" || len(e.Command.Payload) > domain.CommandPayloadLimit || e.ExpiresAt.IsZero() {
 		return errors.New("invalid command envelope")
 	}
@@ -114,7 +119,10 @@ func (j *JetStream) Submit(ctx context.Context, e domain.Envelope) error {
 	if err != nil {
 		return err
 	}
-	_, err = j.API.Publish(ctx, Subject(j.Cluster, "command", e.OwnerNodeID), data, js.WithMsgID(string(e.Command.ID)))
+	msg := nats.NewMsg(Subject(j.Cluster, "command", e.OwnerNodeID))
+	msg.Data = data
+	injectHeaders(ctx, msg.Header)
+	_, err = j.API.PublishMsg(ctx, msg, js.WithMsgID(string(e.Command.ID)))
 	if err != nil {
 		return &domain.Error{Code: "SUBMISSION_UNKNOWN", Message: "No durable publish acknowledgement; query the receipt before retrying", Retryable: true}
 	}
@@ -155,6 +163,9 @@ func (s *commandSubscription) Next(ctx context.Context) (engine.Delivery, error)
 	if e.ClusterID == nil || *e.ClusterID != s.cluster || e.OwnerNodeID != s.node || e.Scope != domain.ClusterScope {
 		return nil, errors.New("command subject/owner mismatch")
 	}
+	if origin := headerTrace(msg.Headers()); len(origin) > 0 {
+		e.Trace = origin
+	}
 	// Expiry is evaluated by admission after consulting the durable receipt. An
 	// expired redelivery of accepted work must still reconcile/ack that receipt.
 	return &commandDelivery{msg: msg, envelope: e}, nil
@@ -167,7 +178,13 @@ type commandDelivery struct {
 
 func (d *commandDelivery) Envelope() domain.Envelope { return d.envelope }
 
-func (d *commandDelivery) Ack(ctx context.Context) error { return d.msg.DoubleAck(ctx) }
+func (d *commandDelivery) Ack(ctx context.Context) error {
+	err := d.msg.DoubleAck(ctx)
+	if err == nil {
+		trace.SpanFromContext(ctx).AddEvent("messaging.acknowledged")
+	}
+	return err
+}
 
 func (d *commandDelivery) Retry(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
