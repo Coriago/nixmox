@@ -1,0 +1,10 @@
+button{font:inherit;color:inherit;cursor:pointer;transition:background .12s,border-color .12s}
+button:disabled{cursor:not-allowed;opacity:.45}
+.button{padding:7px 12px;background:var(--raised);border:1px solid var(--border);font-size:12px;border-radius:0}
+.button:hover:not(:disabled){border-color:var(--accent);background:var(--surface)}
+.button[aria-pressed=true]{color:var(--accent);border-color:var(--accent)}
+.button-success{background:#30753c;color:#fff;border-color:#4f9b5a;font-weight:600}
+.button-success:hover:not(:disabled){background:#3b8949;border-color:#74be7e}
+.button-primary{background:var(--accent);border-color:var(--accent);color:#141414}
+.button-danger{background:#b83030;color:#fff;border-color:#d74b4b;font-weight:600}
+.button-danger:hover:not(:disabled){background:#d23a3a;border-color:#f47777}

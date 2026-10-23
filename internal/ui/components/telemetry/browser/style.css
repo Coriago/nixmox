@@ -1,0 +1,23 @@
+.telemetry{margin:20px 0}
+.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.metric{padding:10px 12px;min-width:0}
+.metric-heading{display:flex;justify-content:space-between;align-items:center}
+.metric h3{margin:0;font-size:11px;color:var(--muted);font-weight:500}
+.metric-heading small{font:8px ui-monospace,monospace;color:var(--muted)}
+.metric-value{display:block;font-size:20px;font-weight:500;letter-spacing:-.5px;margin:6px 0 3px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.metric-detail{font-size:9px;color:var(--muted);margin:0;min-height:20px}
+.metric-chart{width:100%;height:36px;display:block;margin-top:6px}
+.chart-grid{stroke:var(--border);stroke-width:.7;fill:none}
+.chart-area{fill:currentColor;fill-opacity:.08}
+.chart-line{fill:none;stroke:currentColor;stroke-width:1.5;vector-effect:non-scaling-stroke}
+.chart-empty{height:36px;display:flex;align-items:center;font-size:11px;color:var(--muted)}
+.capacity{height:42px;display:flex;flex-direction:column;justify-content:center;gap:12px}
+.capacity small{font-size:10px;color:var(--muted)}
+.capacity .progress{height:9px}
+.capacity .progress-fill{background:var(--success)}
+@media(max-width:1150px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.metric-grid{gap:8px}
+.metric{padding:10px}
+.metric-value{font-size:20px}
+.metric-detail{min-height:30px}
+.metric-heading small{display:none}}

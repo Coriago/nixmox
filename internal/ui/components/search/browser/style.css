@@ -1,0 +1,4 @@
+.search-bar{margin:14px 0}
+.query-input{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:0;width:min(400px,100%);padding:8px 12px}
+.query-input:focus{outline:1px solid var(--accent);border-color:var(--accent)}
+.query-input::placeholder{color:var(--muted)}

@@ -1,0 +1,4 @@
+.log-panel{border:1px solid var(--border);background:var(--surface);padding:14px}
+.log-panel pre,.live-preview pre{height:340px;max-height:55dvh;overflow:auto;background:var(--bg);padding:14px;color:var(--muted);font:11px/1.9 ui-monospace,monospace;white-space:pre}
+.log-panel>small{font-size:10px;color:var(--muted)}
+.live-preview pre{height:auto;max-height:160px;margin:0}
