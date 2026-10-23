@@ -55,9 +55,12 @@ type Execution interface {
 	Progress(context.Context, domain.TaskProgress) error
 }
 type TaskDefinition struct {
-	Kind     string
-	Adapters []LogAdapterFactory
-	Phases   []Phase
+	// SafeRetry is for read-only observations that need no original command payload.
+	// It also permits cancellation without external-effect reconciliation.
+	SafeRetry bool
+	Kind      string
+	Adapters  []LogAdapterFactory
+	Phases    []Phase
 }
 type Tasks interface {
 	Admit(context.Context, domain.Envelope) (domain.Receipt, error)

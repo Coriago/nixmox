@@ -15,7 +15,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          vendorHash = "sha256-OQPv4JQrXFh+EiaC/SVqOtaVIxwi6kk5C5H/VeNsH6U=";
+          vendorHash = "sha256-7Q5oa6MxFbtP6jOLd53mSJ6/Rs703JHYGvUqGrHHUWI=";
         in
         {
           default = pkgs.buildGoModule {

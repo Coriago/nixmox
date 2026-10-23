@@ -35,6 +35,7 @@ type Journal struct {
 type admissionFile struct {
 	Record  domain.AdmissionRecord `json:"record"`
 	Initial domain.Task            `json:"initial_task"`
+	Control bool                   `json:"control,omitempty"`
 }
 
 func OpenJournal(directory string) (*Journal, error) {
@@ -135,8 +136,14 @@ func (j *Journal) ensureTask(file admissionFile) error {
 	}
 	var task domain.Task
 	err := j.read(taskPath(file.Initial.ID), &task)
-	if errors.Is(err, os.ErrNotExist) {
-		return j.write(taskPath(file.Initial.ID), file.Initial)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && file.Control && task.Version < file.Initial.Version) {
+		err = j.write(taskPath(file.Initial.ID), file.Initial)
+	}
+	if err == nil && file.Control && file.Initial.State == domain.Cancelled {
+		path := logPath(file.Initial.ID, nil) + ".closed"
+		if _, err = j.root.Stat(path); errors.Is(err, os.ErrNotExist) {
+			err = j.write(path, true)
+		}
 	}
 	return err
 }
@@ -160,7 +167,7 @@ func (j *Journal) Admit(ctx context.Context, record domain.AdmissionRecord, task
 	if !errors.Is(err, os.ErrNotExist) {
 		return record, err
 	}
-	file := admissionFile{record, task}
+	file := admissionFile{Record: record, Initial: task}
 	// Initial task is in the same atomic record as the receipt. A crash before the
 	// separate mutable task projection is written reconstructs this exact task.
 	if err = j.write(receiptPath(record.Envelope.Command.ID), file); err != nil {
@@ -281,6 +288,7 @@ func (j *Journal) listTasks(ctx context.Context, page domain.PageRequest, recove
 	if err != nil {
 		return result, err
 	}
+	admissions := make([]admissionFile, 0, len(entries))
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -298,6 +306,12 @@ func (j *Journal) listTasks(ctx context.Context, page domain.PageRequest, recove
 		if err = j.ensureTask(admission); err != nil {
 			return result, err
 		}
+		if !admission.Control {
+			admissions = append(admissions, admission)
+		}
+	}
+	// Apply every durable control intent before exposing execution candidates.
+	for _, admission := range admissions {
 		var task domain.Task
 		if err = j.read(taskPath(admission.Initial.ID), &task); err != nil {
 			return result, err

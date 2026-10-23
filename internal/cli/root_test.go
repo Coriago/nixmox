@@ -15,6 +15,7 @@ import (
 func TestCobraValidationAndHelp(t *testing.T) {
 	for _, args := range [][]string{
 		{"unknown"}, {"hosts", "show"}, {"network", "check", "--wait", "--detach"},
+		{"tasks", "cancel", "task_1"}, {"tasks", "retry", "task_1", "--version", "0"},
 		{"serve", "--http-port=bad"}, {"identity", "show", "--endpoint=not-an-origin"},
 	} {
 		var out, diagnostics bytes.Buffer

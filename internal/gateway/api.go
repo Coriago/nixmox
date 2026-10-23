@@ -170,6 +170,8 @@ func failure(c *gin.Context, err error, command *domain.ID) {
 	switch detail.Code {
 	case "INVALID_INPUT":
 		status = http.StatusBadRequest
+	case "CANCELLATION_REFUSED", "CONFIRMATION_REQUIRED":
+		status = http.StatusUnprocessableEntity
 	case "REQUEST_LIMIT":
 		status = http.StatusTooManyRequests
 	case "NOT_FOUND":

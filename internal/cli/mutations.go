@@ -44,6 +44,8 @@ func (o *options) mutation(cmd *cobra.Command, kind string, payload func(*cobra.
 		fmt.Fprintln(cmd.ErrOrStderr(), "command_id:", id)
 		target := identity.NodeID
 		switch p := value.(type) {
+		case domain.TaskTarget:
+			target = p.TaskID
 		case domain.HostTarget:
 			target = p.HostID
 		case domain.ForceFullMembership:

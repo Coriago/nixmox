@@ -167,7 +167,13 @@ func (s *Service) assign(ctx context.Context, envelope domain.Envelope) (domain.
 	if _, _, err = s.Registry.Decode(envelope.Command); err != nil {
 		return domain.AssignmentOutcome{}, err
 	}
-	_, admitErr := s.Scheduler.AdmitAssigned(ctx, envelope)
+	var admitErr error
+	control := envelope.Command.Type == "task.cancel" || envelope.Command.Type == "task.retry"
+	if control {
+		_, admitErr = s.Scheduler.Control(ctx, envelope)
+	} else {
+		_, admitErr = s.Scheduler.AdmitAssigned(ctx, envelope)
+	}
 	record, err := s.Journal.Receipt(ctx, envelope.Command.ID)
 	if err != nil {
 		return domain.AssignmentOutcome{}, admitErr
@@ -176,7 +182,7 @@ func (s *Service) assign(ctx context.Context, envelope domain.Envelope) (domain.
 		return domain.AssignmentOutcome{}, &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Executor command ID already used"}
 	}
 	outcome := domain.AssignmentOutcome{Record: record}
-	if record.Receipt.TaskID != nil {
+	if record.Receipt.TaskID != nil && envelope.Command.Type != "task.cancel" {
 		current, err := s.Journal.Task(ctx, *record.Receipt.TaskID)
 		if err != nil {
 			return outcome, err

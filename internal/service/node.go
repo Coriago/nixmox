@@ -32,7 +32,7 @@ func (s *Service) StartNode(ctx context.Context) error {
 	}
 	definitions := []engine.TaskDefinition{}
 	for _, kind := range []string{"network.check", "host.refresh"} {
-		definitions = append(definitions, engine.TaskDefinition{Kind: kind, Phases: []engine.Phase{{Name: "observe", Interruptible: true, Run: check, Reconcile: check}}})
+		definitions = append(definitions, engine.TaskDefinition{Kind: kind, SafeRetry: true, Phases: []engine.Phase{{Name: "observe", Interruptible: true, Run: check, Reconcile: check}}})
 	}
 	if s.Discovery != nil {
 		definitions = append(definitions, s.discoveryDefinition())

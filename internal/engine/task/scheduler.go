@@ -344,6 +344,14 @@ func (s *Scheduler) Execute(ctx context.Context, id domain.ID) (result error) {
 			telemetry.End(phaseSpan, err)
 		}
 		current = e.Task()
+		if current.Cancellation.Requested && life.Err() != nil && def.SafeRetry {
+			// Read-only work has no uncertain external effect to reconcile.
+			if observeErr := e.Observed(context.Background(), domain.Checkpoint{Phase: phase.Name, Evidence: json.RawMessage(`{"cancelled":true}`)}); observeErr != nil {
+				return observeErr
+			}
+			err = life.Err()
+			current = e.Task()
+		}
 		checkpoint = findCheckpoint(current, phase.Name)
 		if errors.Is(err, ErrBlocked) {
 			_ = fence.Release(context.Background())
@@ -368,6 +376,7 @@ func (s *Scheduler) Execute(ctx context.Context, id domain.ID) (result error) {
 			}
 			if saveErr := e.update(func(t *domain.Task) {
 				t.State = state
+				t.Cancellation.Allowed = false
 				t.Error = &domain.Error{Code: "TASK_FAILED", Message: "Phase failed; see sanitized task logs"}
 			}); saveErr != nil {
 				return errors.Join(err, saveErr)
@@ -455,8 +464,18 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 				old := task.Version
 				task.Version++
 				task.State = domain.Reconciling
+				if task.Cancellation.Requested && s.Definitions[task.Kind].SafeRetry {
+					task.State = domain.Cancelled
+					task.Cancellation.Allowed = false
+				}
 				if err = s.Store.SaveTask(ctx, task, old); err != nil {
 					return err
+				}
+				if task.State == domain.Cancelled {
+					if err = s.Store.Close(ctx, task.ID, nil); err != nil {
+						return err
+					}
+					continue
 				}
 			}
 			// Reacquire uncertain exclusions before allowing ANY queued work to start.

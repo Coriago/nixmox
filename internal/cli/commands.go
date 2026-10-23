@@ -202,6 +202,21 @@ func (o *options) taskCommands() *cobra.Command {
 	logs.Flags().Int64Var(&offset, "offset", 0, "Absolute log byte offset")
 	logs.Flags().IntVar(&logLimit, "limit", domain.LogReadDefault, "Maximum log bytes (1–1048576)")
 	group.AddCommand(logs)
+	for _, action := range []string{"cancel", "retry"} {
+		var version uint64
+		command := &cobra.Command{Use: action + " TASK", Args: cobra.ExactArgs(1)}
+		command.Flags().Uint64Var(&version, "version", 0, "Reviewed task lifecycle version")
+		command.Flags().Uint64Var(&version, "expected-version", 0, "Reviewed task lifecycle version (alias for --version)")
+		command.MarkFlagsOneRequired("version", "expected-version")
+		command.MarkFlagsMutuallyExclusive("version", "expected-version")
+		o.mutation(command, "task."+action, func(_ *cobra.Command, _ *client.Client, args []string) (any, domain.Versions, error) {
+			if version == 0 {
+				return nil, nil, &domain.Error{Code: "INVALID_INPUT", Message: "Task version must be positive"}
+			}
+			return domain.TaskTarget{TaskID: domain.ID(args[0])}, domain.Versions{"task:" + args[0]: domain.Version(version)}, nil
+		})
+		group.AddCommand(command)
+	}
 	return group
 }
 

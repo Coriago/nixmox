@@ -72,22 +72,54 @@ func (s *Service) Submit(ctx context.Context, command domain.Command) (_ domain.
 	if err != nil {
 		return domain.Receipt{}, err
 	}
+	var controlled *domain.Task
+	if op.Scope == domain.Inherited {
+		p := value.(domain.TaskTarget)
+		if p.TaskID == "" || command.TargetID != p.TaskID || len(command.ExpectedVersions) != 1 || command.ExpectedVersions["task:"+string(p.TaskID)] == 0 {
+			return domain.Receipt{}, invalid("Task ID must match target_id and include exactly one positive task version")
+		}
+		current, err := s.Journal.Task(ctx, p.TaskID)
+		if err == nil {
+			controlled = &current
+			op.Scope = current.Scope
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return domain.Receipt{}, err
+		}
+	}
 	prior, err := s.Journal.Receipt(ctx, command.ID)
-	if errors.Is(err, os.ErrNotExist) && op.Scope == domain.ClusterScope && s.Cluster != nil {
+	if errors.Is(err, os.ErrNotExist) && op.Scope != domain.NodeLocal && s.Cluster != nil {
 		prior, err = s.Cluster.Receipt(ctx, command.ID)
 	}
 	if err == nil {
 		if prior.Envelope.RequestHash != hash {
 			return domain.Receipt{}, &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Command ID already used"}
 		}
-		return prior.Receipt, prior.Error
+		if controlled != nil && prior.Envelope.Scope == domain.NodeLocal && prior.Error == nil {
+			return s.Scheduler.Control(ctx, prior.Envelope)
+		}
+		if prior.Error != nil {
+			return prior.Receipt, prior.Error
+		}
+		return prior.Receipt, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return domain.Receipt{}, err
 	}
-	if op.Scope == domain.NodeLocal && command.TargetID != s.Identity.NodeID {
+	if op.Scope == domain.Inherited {
+		current, err := s.taskState(ctx, value.(domain.TaskTarget).TaskID)
+		if err != nil {
+			return domain.Receipt{}, err
+		}
+		controlled = &current
+		op.Scope = current.Scope
+	}
+	if controlled == nil && op.Scope == domain.NodeLocal && command.TargetID != s.Identity.NodeID {
 		return domain.Receipt{}, &domain.Error{Code: "TARGET_UNREACHABLE", Message: "Target is not this unjoined node"}
 	}
-	if command.Type == "discovery.search" {
+	if controlled != nil {
+		if controlled.Scope == domain.NodeLocal && controlled.OwnerNodeID != s.Identity.NodeID {
+			return domain.Receipt{}, invalid("Node-local task controls must be submitted to their owner")
+		}
+	} else if command.Type == "discovery.search" {
 		if s.Discovery == nil {
 			return domain.Receipt{}, invalid("Discovery is disabled")
 		}
@@ -110,8 +142,17 @@ func (s *Service) Submit(ctx context.Context, command domain.Command) (_ domain.
 	envelope := domain.Envelope{SchemaVersion: domain.SchemaVersion,
 		Command: command, Scope: op.Scope, OwnerNodeID: s.Identity.NodeID, RequestHash: hash,
 		AdmittedAt: now, ExpiresAt: now.Add(domain.CommandTTL), Trace: telemetry.Inject(ctx)}
+	if controlled != nil {
+		envelope.OwnerNodeID = controlled.OwnerNodeID
+	}
 	if op.Scope == domain.NodeLocal {
+		if controlled != nil {
+			return s.Scheduler.Control(ctx, envelope)
+		}
 		return s.Scheduler.Admit(ctx, envelope)
+	}
+	if s.Cluster == nil {
+		return domain.Receipt{}, domain.Unavailable(command.Type)
 	}
 	if command.Type == "host.refresh" || command.Type == "host.shutdown" || command.Type == "host.reboot" {
 		envelope.OwnerNodeID = command.TargetID

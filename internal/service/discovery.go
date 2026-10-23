@@ -39,7 +39,7 @@ func (s *Service) discoveryDefinition() engine.TaskDefinition {
 		}
 		return e.Observed(ctx, domain.Checkpoint{Phase: "search", Evidence: data})
 	}
-	return engine.TaskDefinition{Kind: "discovery.search", Phases: []engine.Phase{{Name: "search", Interruptible: true, Run: run, Reconcile: run}}}
+	return engine.TaskDefinition{Kind: "discovery.search", SafeRetry: true, Phases: []engine.Phase{{Name: "search", Interruptible: true, Run: run, Reconcile: run}}}
 }
 
 // One automatic intent per identity. Rejection/expiry never generates a new
