@@ -28,14 +28,14 @@ const (
 type TaskState string
 
 const (
-	Queued      TaskState = "queued"
-	Running     TaskState = "running"
-	Blocked     TaskState = "blocked"
-	Reconciling TaskState = "reconciling"
-	Cancelling  TaskState = "cancelling"
-	Cancelled   TaskState = "cancelled"
-	Succeeded   TaskState = "succeeded"
-	Failed      TaskState = "failed"
+	Queued  TaskState = "queued"
+	Running TaskState = "running"
+	Blocked TaskState = "blocked"
+
+	Cancelling TaskState = "cancelling"
+	Cancelled  TaskState = "cancelled"
+	Succeeded  TaskState = "succeeded"
+	Failed     TaskState = "failed"
 )
 
 type ActivationMode string

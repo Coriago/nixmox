@@ -20,7 +20,7 @@ func (c *ClusterNode) repositories(ctx context.Context) ([]domain.RepositoryStat
 	if c.transport.Store == nil {
 		return nil, domain.Unavailable("repository metadata")
 	}
-	items, err := listRecords[domain.RepositoryState](ctx, c.transport.Store, "repository.*")
+	items, err := listRecords[domain.RepositoryState](ctx, c.transport.Store.KV, "repository.*")
 	if err != nil {
 		return nil, err
 	}
@@ -92,27 +92,35 @@ func (c *ClusterNode) configurations(ctx context.Context, state domain.Repositor
 		}
 		return nil
 	})
-	var detail *domain.Error
-	if errors.As(err, &detail) && detail.Code == "SOURCE_UNAVAILABLE" && state.Repository.Remote.CredentialRef != nil && !c.leaf() {
-		c.mu.Lock()
-		record, _, lookupErr := c.credentialLocked(ctx, *state.Repository.Remote.CredentialRef)
-		var holder domain.ID
-		if lookupErr == nil {
-			holder, lookupErr = c.credentialHolderLocked(record)
-		}
-		c.mu.Unlock()
-		if lookupErr != nil {
-			return nil, lookupErr
-		}
-		if holder != c.keys.Identity.NodeID {
-			data, callErr := c.call(ctx, holder, "source.configurations", sourceCatalogRequest{State: state, RefID: refID, Commit: commit}, false)
-			if callErr != nil {
-				return nil, callErr
-			}
-			err = json.Unmarshal(data, &items)
-		}
+	if !c.leaf() {
+		err = c.onSourceHolder(ctx, state.Repository, err, func(holder domain.ID) error {
+			return c.callResult(ctx, holder, "source.configurations", sourceCatalogRequest{State: state, RefID: refID, Commit: commit}, false, &items)
+		})
 	}
 	return items, err
+}
+
+// Only missing local source permits holder fallback; evaluation failures and
+// revision conflicts must never select another source or hide their original error.
+func (c *ClusterNode) onSourceHolder(ctx context.Context, repository domain.Repository, localErr error, inspect func(domain.ID) error) error {
+	var detail *domain.Error
+	if !errors.As(localErr, &detail) || detail.Code != "SOURCE_UNAVAILABLE" || repository.Remote.CredentialRef == nil {
+		return localErr
+	}
+	c.mu.Lock()
+	record, _, err := c.credentialLocked(ctx, *repository.Remote.CredentialRef)
+	var holder domain.ID
+	if err == nil {
+		holder, err = c.credentialHolderLocked(record)
+	}
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if holder == c.keys.Identity.NodeID {
+		return localErr
+	}
+	return inspect(holder)
 }
 
 type sourceCatalogRequest struct {
@@ -140,10 +148,7 @@ func (c *ClusterNode) readSources(ctx context.Context, request ReadRequest) (jso
 			return cmp.Or(strings.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
 		})
 		page, err := pageItems(state.Refs, request.Page, "repositories/{id}/refs", func(r domain.Reference) []string { return []string{string(state.Repository.ID), r.Name, string(r.ID)} })
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(page)
+		return marshalResult(page, err)
 	}
 	states, err := c.repositories(ctx)
 	if err != nil {
@@ -155,10 +160,7 @@ func (c *ClusterNode) readSources(ctx context.Context, request ReadRequest) (jso
 			items = append(items, state.Repository)
 		}
 		page, err := pageItems(items, request.Page, "repositories", func(r domain.Repository) []string { return []string{r.Name, string(r.ID)} })
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(page)
+		return marshalResult(page, err)
 	}
 	filters := request.Page.Filters
 	repository, ref, commit := domain.ID(filters["repository_id"]), domain.ID(filters["ref_id"]), domain.Commit(filters["commit"])
@@ -214,8 +216,5 @@ func (c *ClusterNode) readSources(ctx context.Context, request ReadRequest) (jso
 	page, err := pageItems(items, request.Page, "configurations", func(v domain.Configuration) []string {
 		return []string{revision, v.Name, string(v.ID), string(v.InspectedCommit)}
 	})
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(page)
+	return marshalResult(page, err)
 }

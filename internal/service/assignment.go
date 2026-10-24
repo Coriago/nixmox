@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"maps"
 
 	"nixmox/internal/domain"
@@ -41,23 +40,18 @@ func (c *ClusterNode) validateAssignment(ctx context.Context, command domain.Com
 	return nil
 }
 
-func (c *ClusterNode) assignmentDefinition(journal engine.LocalStore) engine.TaskDefinition {
-	run := func(ctx context.Context, e engine.Execution) error { return c.assignConfiguration(ctx, journal, e) }
-	return engine.TaskDefinition{Kind: "host.assign", Phases: []engine.Phase{{Name: "assign", Interruptible: false, Resources: []engine.Resource{{Key: "membership", Capacity: 1}, {Key: "repositories", Capacity: 1}}, Run: run, Reconcile: run}}}
+func (c *ClusterNode) assignmentDefinition() engine.TaskDefinition {
+	return engine.TaskDefinition{Phase: "assign", Resources: []string{"membership", "repositories"}, Run: c.assignConfiguration}
 }
 
-func (c *ClusterNode) assignConfiguration(ctx context.Context, journal engine.LocalStore, e engine.Execution) error {
-	record, err := journal.Receipt(ctx, e.Task().CommandID)
-	if err != nil {
-		return err
-	}
-	command := record.Envelope.Command
+func (c *ClusterNode) assignConfiguration(ctx context.Context, e engine.Execution) error {
+	command := e.Envelope().Command
 	var p domain.HostAssign
 	if err := json.Unmarshal(command.Payload, &p); err != nil {
 		return err
 	}
 	c.mu.Lock()
-	err = c.quorum(ctx)
+	err := c.quorum(ctx)
 	if err == nil {
 		err = c.loadMembership(ctx)
 	}
@@ -73,18 +67,12 @@ func (c *ClusterNode) assignConfiguration(ctx context.Context, journal engine.Lo
 		binding, err = c.inspectAssignment(ctx, p)
 		if err == nil {
 			version, err = c.acceptAssignment(ctx, command, p, binding)
-			// Uncertain writes retain their intent until the acceptance proof is read.
-			if err != nil {
-				if detail, ok := err.(*domain.Error); !ok || detail.Code == "QUORUM_UNAVAILABLE" {
-					return err
-				}
-			}
 		}
 	}
 	if err != nil {
-		return observeFailure(context.WithoutCancel(ctx), e, "assign", err)
+		return err
 	}
-	return completePhase(ctx, e, "assign", map[string]any{"host_id": p.HostID, "version": version})
+	return e.Result(ctx, map[string]any{"host_id": p.HostID, "version": version})
 }
 
 // Inspect the catalog and its selected export in one pinned checkout.
@@ -105,22 +93,10 @@ func (c *ClusterNode) inspectAssignment(ctx context.Context, p domain.HostAssign
 	binding.RefID = *source.RefID
 	source.Configuration = p.Configuration
 	err = c.checkConfigurationSource(ctx, source)
-	var detail *domain.Error
-	if errors.As(err, &detail) && detail.Code == "SOURCE_UNAVAILABLE" && state.Repository.Remote.CredentialRef != nil {
-		c.mu.Lock()
-		credential, _, lookupErr := c.credentialLocked(ctx, *state.Repository.Remote.CredentialRef)
-		var holder domain.ID
-		if lookupErr == nil {
-			holder, lookupErr = c.credentialHolderLocked(credential)
-		}
-		c.mu.Unlock()
-		if lookupErr != nil {
-			return binding, lookupErr
-		}
-		if holder != c.keys.Identity.NodeID {
-			_, err = c.call(ctx, holder, "source.check", source, false)
-		}
-	}
+	err = c.onSourceHolder(ctx, state.Repository, err, func(holder domain.ID) error {
+		_, err := c.call(ctx, holder, "source.check", source, false)
+		return err
+	})
 	return binding, err
 }
 

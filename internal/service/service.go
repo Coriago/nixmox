@@ -1,235 +1,180 @@
+// Package service registers operations and adapts HTTP to NATS.
 package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
+	"nixmox/internal/engine/comms"
 	"nixmox/internal/engine/platform"
 	"nixmox/internal/engine/task"
 	"nixmox/internal/engine/telemetry"
-	"nixmox/internal/logging"
 )
 
-type Commands interface {
-	Submit(context.Context, domain.Command) (domain.Receipt, error)
-	Receipt(context.Context, domain.ID) (domain.Receipt, error)
-}
 type ReadRequest struct {
 	Collection  string
 	ID          *domain.ID
 	Subresource string
 	Page        domain.PageRequest
 }
-type Reads interface {
-	Read(context.Context, ReadRequest) (json.RawMessage, error)
-	Events(context.Context, domain.EventSelector) (engine.Subscription[domain.Event], error)
-	Download(context.Context, ReadRequest) (domain.Download, io.ReadCloser, error)
-}
-type SecretIngress interface {
-	Import(context.Context, engine.SecretIngress, io.Reader) (domain.Receipt, error)
-	WiFi(context.Context, domain.ID, io.Reader) (domain.SecretStaging, error)
-}
 type Service struct {
 	Cache     *Cache
 	Registry  *Registry
 	Cluster   *ClusterNode
 	Identity  domain.Identity
-	Host      domain.Host
-	Journal   *task.Journal
-	Scheduler *task.Scheduler
+	Tasks     *task.Manager
 	Sampler   engine.HostSampler
 	Discovery *platform.Discovery
 	Network   func(context.Context) (domain.NetworkStatus, error)
 }
 
 func New() *Service { return &Service{Registry: Catalog()} }
-func (s *Service) Submit(ctx context.Context, command domain.Command) (_ domain.Receipt, result error) {
-	ctx, span := telemetry.Start(ctx, "command.admit", trace.WithAttributes(attribute.String("nixmox.command.id", string(command.ID))))
-	defer func() { telemetry.End(span, result) }()
-	ctx = logging.With(ctx, "command_id", string(command.ID))
-	if err := ctx.Err(); err != nil {
+
+// Submit only forwards. Admission/routing run in the NATS request handler.
+func (s *Service) Submit(ctx context.Context, command domain.Command) (domain.Receipt, error) {
+	if s.Cluster == nil {
+		return domain.Receipt{}, domain.Unavailable("NATS command ingress")
+	}
+	var receipt domain.Receipt
+	s.Cluster.mu.Lock()
+	joined := s.Cluster.keys.Trust != nil
+	s.Cluster.mu.Unlock()
+	err := s.Cluster.callResult(ctx, "", "command.submit", command, joined, &receipt)
+	return receipt, err
+}
+
+func (s *Service) queueCommand(ctx context.Context, caller domain.ID, command domain.Command) (domain.Receipt, error) {
+	hash, err := task.RequestHash(command)
+	if err != nil {
 		return domain.Receipt{}, err
+	}
+	c := s.Cluster
+	if local, lookup := s.Tasks.Receipt(ctx, command.ID); lookup == nil {
+		if local.Hash != hash {
+			return domain.Receipt{}, &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Command ID already used in this session"}
+		}
+		return local.Receipt, nil
+	}
+	c.mu.Lock()
+	prior, err := c.commandReceiptLocked(command.ID, hash)
+	c.mu.Unlock()
+	if prior.TaskID != nil || err != nil {
+		return prior, err
 	}
 	op, value, err := s.Registry.Decode(command)
 	if err != nil {
 		return domain.Receipt{}, err
 	}
-	span.SetName("command.admit " + op.Name)
-	if (repositoryOperation(command.Type) || credentialOperation(command.Type) || command.Type == "host.assign") && s.Cluster != nil && s.Cluster.leaf() {
-		data, err := s.Cluster.call(ctx, "", "source.submit", command, true)
-		var receipt domain.Receipt
-		if err == nil {
-			err = json.Unmarshal(data, &receipt)
-		}
-		return receipt, err
-	}
-	if s.Scheduler == nil {
-		return domain.Receipt{}, domain.Unavailable(command.Type)
-	}
-	hash, err := task.RequestHash(command)
-	if err != nil {
-		return domain.Receipt{}, err
-	}
+	owner := s.Identity.NodeID
 	var controlled *domain.Task
-	if op.Scope == domain.Inherited {
-		p := value.(domain.TaskTarget)
-		if p.TaskID == "" || command.TargetID != p.TaskID || len(command.ExpectedVersions) != 1 || command.ExpectedVersions["task:"+string(p.TaskID)] == 0 {
-			return domain.Receipt{}, invalid("Task ID must match target_id and include exactly one positive task version")
-		}
-		current, err := s.Journal.Task(ctx, p.TaskID)
-		if err == nil {
-			controlled = &current
-			op.Scope = current.Scope
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return domain.Receipt{}, err
-		}
-	}
-	prior, err := s.Journal.Receipt(ctx, command.ID)
-	if errors.Is(err, os.ErrNotExist) && op.Scope != domain.NodeLocal && s.Cluster != nil {
-		prior, err = s.Cluster.Receipt(ctx, command.ID)
-	}
-	if err == nil {
-		if prior.Envelope.RequestHash != hash {
-			return domain.Receipt{}, &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Command ID already used"}
-		}
-		if controlled != nil && prior.Envelope.Scope == domain.NodeLocal && prior.Error == nil {
-			return s.Scheduler.Control(ctx, prior.Envelope)
-		}
-		if prior.Error != nil {
-			return prior.Receipt, prior.Error
-		}
-		return prior.Receipt, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return domain.Receipt{}, err
-	}
 	if op.Scope == domain.Inherited {
 		current, err := s.taskState(ctx, value.(domain.TaskTarget).TaskID)
 		if err != nil {
 			return domain.Receipt{}, err
 		}
-		controlled = &current
-		op.Scope = current.Scope
-	}
-	if controlled == nil && op.Scope == domain.NodeLocal && command.TargetID != s.Identity.NodeID {
-		return domain.Receipt{}, &domain.Error{Code: "TARGET_UNREACHABLE", Message: "Target is not this unjoined node"}
-	}
-	if controlled != nil {
-		if controlled.Scope == domain.NodeLocal && controlled.OwnerNodeID != s.Identity.NodeID {
-			return domain.Receipt{}, invalid("Node-local task controls must be submitted to their owner")
-		}
-	} else if command.Type == "discovery.search" {
-		if s.Discovery == nil {
-			return domain.Receipt{}, invalid("Discovery is disabled")
-		}
-		if len(command.ExpectedVersions) != 0 {
-			return domain.Receipt{}, invalid("Discovery has no version prerequisites")
-		}
-	} else if command.Type == "network.check" {
-		if len(command.ExpectedVersions) != 0 {
-			return domain.Receipt{}, invalid("network.check has no mutable version prerequisites")
-		}
+		controlled, op.Scope, owner = &current, current.Scope, current.OwnerNodeID
 	} else {
-		if s.Cluster == nil {
+		if op.validate == nil {
 			return domain.Receipt{}, domain.Unavailable(command.Type)
 		}
-		if err := s.Cluster.Validate(ctx, command, value); err != nil {
-			return domain.Receipt{}, err
+		if op.Scope == domain.NodeLocal {
+			if command.TargetID != caller {
+				return domain.Receipt{}, invalid("Node-local target must match requesting host")
+			}
+			owner = caller
 		}
 	}
 	now := time.Now().UTC()
-	envelope := domain.Envelope{SchemaVersion: domain.SchemaVersion,
-		Command: command, Scope: op.Scope, OwnerNodeID: s.Identity.NodeID, RequestHash: hash,
-		AdmittedAt: now, ExpiresAt: now.Add(domain.CommandTTL), Trace: telemetry.Inject(ctx)}
-	if controlled != nil {
-		envelope.OwnerNodeID = controlled.OwnerNodeID
+	envelope := domain.Envelope{SchemaVersion: 1, RequestHash: hash, Command: command, Scope: op.Scope, OwnerNodeID: owner, AdmittedAt: now, ExpiresAt: now.Add(domain.CommandTTL), Trace: telemetry.Inject(ctx)}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Recheck duplicates and validate/resolve/publish against one generation.
+	if prior, err := c.commandReceiptLocked(command.ID, hash); prior.TaskID != nil || err != nil {
+		return prior, err
 	}
-	if op.Scope == domain.NodeLocal {
-		if controlled != nil {
-			return s.Scheduler.Control(ctx, envelope)
+	if controlled == nil {
+		if err := op.validate(c, ctx, command, value); err != nil {
+			return domain.Receipt{}, err
 		}
-		return s.Scheduler.Admit(ctx, envelope)
 	}
-	if s.Cluster == nil {
-		return domain.Receipt{}, domain.Unavailable(command.Type)
+	if op.Scope == domain.ClusterScope {
+		if err := c.quorum(ctx); err != nil {
+			return domain.Receipt{}, err
+		}
+		envelope.ClusterID = &c.state.Cluster.ID
+		if op.resolve != nil {
+			if err := op.resolve(c, ctx, &envelope, value); err != nil {
+				return domain.Receipt{}, err
+			}
+		}
+		member, ok := c.state.Members[envelope.OwnerNodeID]
+		if !ok || member.Removed {
+			return domain.Receipt{}, invalid("Executor is not an active member")
+		}
+		envelope.MembershipEpoch = member.Epoch
 	}
-	if command.Type == "host.refresh" || command.Type == "host.shutdown" || command.Type == "host.reboot" {
-		envelope.OwnerNodeID = command.TargetID
+	if c.transport.Core == nil {
+		return domain.Receipt{}, unreachable()
 	}
-	if err := s.Cluster.PublishCommand(ctx, envelope); err != nil {
+	publisher := &comms.JetStream{API: c.transport.API, Cluster: c.transport.Core.Cluster, Node: s.Identity.NodeID}
+	if err := publisher.Submit(ctx, envelope); err != nil {
 		return domain.Receipt{}, err
 	}
-	// Acceptance is the executor's persisted receipt, not just a broker ack.
-	wait, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if receipt, err := s.Receipt(wait, command.ID); err == nil || receipt.Admission == "rejected" {
-			return receipt, err
-		}
-		select {
-		case <-wait.Done():
-			return domain.Receipt{}, &domain.Error{Code: "SUBMISSION_UNKNOWN", Message: "Command published; reconcile the original command ID", Retryable: true}
-		case <-ticker.C:
-		}
+	id := task.TaskID(command.ID)
+	receipt := domain.Receipt{CommandID: command.ID, Admission: "queued", TaskID: &id}
+	kind := command.Type
+	if controlled != nil && command.Type == "task.retry" {
+		kind = controlled.Kind
 	}
+	c.observeTaskLocked(domain.Task{Record: domain.Record{SchemaVersion: 1, ID: id}, CommandID: command.ID, Kind: kind, Scope: op.Scope, ClusterID: envelope.ClusterID, OwnerNodeID: envelope.OwnerNodeID, TargetID: command.TargetID, MembershipEpoch: envelope.MembershipEpoch, State: domain.Queued, CreatedAt: now, UpdatedAt: now}, hash)
+	return receipt, nil
 }
+func (c *ClusterNode) commandReceiptLocked(id domain.ID, hash domain.Digest) (domain.Receipt, error) {
+	prior, exists := c.taskViews[task.TaskID(id)]
+	if !exists {
+		return domain.Receipt{}, nil
+	}
+	if prior.Hash == "" {
+		return domain.Receipt{}, &domain.Error{Code: "COMMAND_ALREADY_QUEUED", Message: "Prior task was observed without its request fingerprint; inspect it before submitting fresh work"}
+	}
+	if prior.Hash != hash {
+		return domain.Receipt{}, &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Command ID already used in this session"}
+	}
+	return prior.receipt(), nil
+}
+
 func (s *Service) Receipt(ctx context.Context, id domain.ID) (domain.Receipt, error) {
-	if s.Journal == nil {
-		return domain.Receipt{}, domain.Unavailable("durable receipts")
+	if s.Tasks != nil {
+		record, err := s.Tasks.Receipt(ctx, id)
+		if !errors.Is(err, os.ErrNotExist) {
+			return record.Receipt, err
+		}
 	}
-	record, err := s.Journal.Receipt(ctx, id)
-	if errors.Is(err, os.ErrNotExist) && s.Cluster != nil {
-		record, err = s.Cluster.Receipt(ctx, id)
+	c := s.Cluster
+	if c == nil {
+		return domain.Receipt{}, os.ErrNotExist
 	}
-	if err == nil && record.Error != nil {
-		err = record.Error
+	if c.leaf() {
+		var receipt domain.Receipt
+		err := c.callResult(ctx, "", "command.receipt", id, true, &receipt)
+		return receipt, err
 	}
-	return record.Receipt, err
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	observation, ok := c.taskViews[task.TaskID(id)]
+	if !ok {
+		return domain.Receipt{}, os.ErrNotExist
+	}
+	return observation.receipt(), nil
 }
 
-// Feature orchestration ports keep presentation and adapters out of domain rules.
-type Configurations interface {
-	Catalog(context.Context, domain.ID, *domain.ID, *domain.Commit) (domain.Page[domain.Configuration], error)
-	Templates(context.Context, domain.Source) ([]domain.Template, error)
-	Render(context.Context, domain.ConfigurationGenerate) (domain.Draft, error)
-	Validate(context.Context, domain.Draft) (domain.Validation, error)
-	Commit(context.Context, domain.Draft, domain.Versions) (domain.Recipe, error)
-}
-
-// Recipes describes future versioned reads; it does not imply implemented routes.
-// List and a nil Get version return latest only. Versions is explicit, pinned history.
-type Recipes interface {
-	List(context.Context, domain.PageRequest) (domain.Page[domain.Recipe], error)
-	Get(context.Context, domain.ID, *domain.Version) (domain.Recipe, error)
-	Versions(context.Context, domain.ID, domain.PageRequest) (domain.Page[domain.RecipePin], error)
-}
-type Sources interface {
-	Resolve(context.Context, domain.ID, domain.SourceSelector) (domain.Source, error)
-	Accept(context.Context, domain.ID, domain.Draft, domain.Versions) (domain.Recipe, error)
-	PlanGC(context.Context, domain.RepositoryGCPlan) (domain.GCPlan, error)
-}
-type Membership interface {
-	Approve(context.Context, domain.JoinRequest, domain.Version) (domain.Issuance, error)
-	Promote(context.Context, domain.Host, domain.Generation) error
-	Remove(context.Context, domain.HostRemove) (domain.SignedRemoval, error)
-}
 type Deployments interface {
 	Resolve(context.Context, domain.ID, domain.DeploymentApply) (domain.Source, error)
 	Review(context.Context, domain.Candidate, domain.Generation) (domain.PackageDiff, error)
 	Approve(context.Context, domain.DeploymentApprove) error
 	Observe(context.Context, domain.Deployment) (domain.Deployment, error)
-}
-type Onboarding interface {
-	Prepare(context.Context, domain.OnboardingPrepare) (domain.Preparation, error)
-	Review(context.Context, domain.Preparation, domain.Observation) (domain.Review, error)
-	Verify(context.Context, domain.Preparation, domain.Candidate) error
 }

@@ -14,7 +14,7 @@ func TestStartsEmptyAndDisconnected(t *testing.T) {
 	if len(m.Hosts)+len(m.Tasks)+len(m.Discoveries) != 0 || m.Cluster != (Cluster{}) {
 		t.Fatal("controller manufactured observations")
 	}
-	if m.View().Connection != BackendUnavailable {
+	if m.View().Connection != "Connecting…" {
 		t.Fatal("connection state is misleading")
 	}
 	for _, b := range m.View().Toolbar {
@@ -41,7 +41,7 @@ func TestFramesAndUnwiredActionsNeverChangeObservations(t *testing.T) {
 	}
 	m.Dispatch(Action{Kind: "host", ID: "node"})
 	for _, b := range m.View().HeaderActions {
-		if !b.Disabled || b.Hint != BackendUnavailable {
+		if !b.Disabled || b.Hint != "Backend is not connected" {
 			t.Fatal("unwired action is enabled", b)
 		}
 	}

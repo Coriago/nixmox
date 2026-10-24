@@ -21,13 +21,10 @@ const (
 	TelemetryPendingMessages = 128
 	TelemetryPendingBytes    = 4 << 20
 	ExportTimeout            = 2 * time.Second
-	ObservationTTL           = 5 * time.Minute
 	EnrollmentTTL            = 10 * time.Minute
 	DiscoveryInterval        = 5 * time.Second
 	DiscoveryTTL             = 30 * time.Second
 	DiscoverySearchWindow    = 30 * time.Second
-	WiFiCredentialTTL        = 5 * time.Minute
-	DiagnosticRetention      = 24 * time.Hour
 	CertificateLifetime      = 30 * 24 * time.Hour
 	CertificateRenewal       = 20 * 24 * time.Hour
 	StateBucket              = "nx_state"

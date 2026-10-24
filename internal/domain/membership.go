@@ -61,12 +61,8 @@ type MembershipState struct {
 	Requests map[ID]JoinRequest   `json:"requests"`
 }
 
-type AssignmentOutcome struct {
-	Record AdmissionRecord `json:"record"`
-	Task   *Task           `json:"task"`
-}
-
 type Heartbeat struct {
+	BootID          string  `json:"boot_id,omitempty"`
 	TopologyVersion Version `json:"topology_version"`
 	Host            Host    `json:"host"`
 	StreamID        ID      `json:"stream_id"`

@@ -131,7 +131,7 @@ func (c *Client) Submit(ctx context.Context, command domain.Command) (domain.Rec
 	var receipt domain.Receipt
 	err := c.request(ctx, http.MethodPost, "commands", command, &receipt)
 	if err == nil {
-		if receipt.CommandID != command.ID || receipt.Admission != "accepted" || receipt.TaskID == nil {
+		if receipt.CommandID != command.ID || (receipt.Admission != "accepted" && receipt.Admission != "queued") || receipt.TaskID == nil {
 			return receipt, &UnknownSubmission{CommandID: command.ID}
 		}
 		return receipt, nil
@@ -143,7 +143,7 @@ func (c *Client) Submit(ctx context.Context, command domain.Command) (domain.Rec
 	// The same command ID is authoritative, including after a caller timeout.
 	lookup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	if receipt, lookupErr := c.Receipt(lookup, command.ID); lookupErr == nil && receipt.Admission == "accepted" && receipt.TaskID != nil {
+	if receipt, lookupErr := c.Receipt(lookup, command.ID); lookupErr == nil && (receipt.Admission == "accepted" || receipt.Admission == "queued") && receipt.TaskID != nil {
 		return receipt, nil
 	}
 	if failure != nil && failure.Response.Error.Code == "UNSUPPORTED_CAPABILITY" {
@@ -265,7 +265,7 @@ func (c *Client) Wait(ctx context.Context, id domain.ID) (domain.Task, error) {
 			return current, err
 		}
 		switch current.State {
-		case domain.Succeeded, domain.Failed, domain.Cancelled, domain.Blocked, domain.Reconciling:
+		case domain.Succeeded, domain.Failed, domain.Cancelled, domain.Blocked:
 			return current, nil
 		}
 		select {

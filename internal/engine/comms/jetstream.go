@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"time"
@@ -22,14 +21,9 @@ import (
 	"nixmox/internal/engine/telemetry"
 )
 
-const commandStream = "nx_commands"
+const TaskStream = "nx_tasks"
 
-const resultStream = "nx_results"
-
-var (
-	_ engine.StateStore  = (*JetStream)(nil)
-	_ engine.ObjectStore = (*JetStream)(nil)
-)
+var _ engine.ObjectStore = (*JetStream)(nil)
 
 type JetStream struct {
 	API           js.JetStream
@@ -39,13 +33,13 @@ type JetStream struct {
 }
 
 type StorageLimits struct {
-	Existing                          bool
-	Commands, Results, State, Objects int64
-	Replicas                          int
+	Existing                 bool
+	Commands, State, Objects int64
+	Replicas                 int
 }
 
 func OpenJetStream(ctx context.Context, nc *nats.Conn, cluster, node domain.ID, limits StorageLimits) (*JetStream, error) {
-	if cluster == "" || node == "" || (limits.Replicas != 1 && limits.Replicas != 3) || limits.Commands <= 0 || limits.Results <= 0 || limits.State <= 0 || limits.Objects <= 0 {
+	if cluster == "" || node == "" || (limits.Replicas != 1 && limits.Replicas != 3) || limits.Commands <= 0 || limits.State <= 0 || limits.Objects <= 0 {
 		return nil, errors.New("positive storage limits and 1 or 3 replicas required")
 	}
 	api, err := js.New(nc)
@@ -68,8 +62,7 @@ func OpenJetStream(ctx context.Context, nc *nats.Conn, cluster, node domain.ID, 
 	}
 	prefix := "nx." + shared.Token(cluster) + "."
 	for _, cfg := range []js.StreamConfig{
-		{Name: commandStream, Subjects: []string{prefix + "command.*"}, Storage: js.FileStorage, Retention: js.WorkQueuePolicy, Discard: js.DiscardNew, MaxBytes: limits.Commands, MaxMsgSize: 512 << 10, Replicas: limits.Replicas, Duplicates: domain.CommandTTL},
-		{Name: resultStream, Subjects: []string{prefix + "result.*"}, Storage: js.FileStorage, Discard: js.DiscardNew, MaxBytes: limits.Results, MaxMsgSize: 512 << 10, Replicas: limits.Replicas},
+		{Name: TaskStream, Subjects: []string{prefix + "task.submit.*", prefix + "task.control.*"}, Storage: js.FileStorage, Retention: js.WorkQueuePolicy, Discard: js.DiscardNew, MaxBytes: limits.Commands, MaxMsgSize: 512 << 10, Replicas: limits.Replicas, MaxAge: domain.CommandTTL, Duplicates: domain.CommandTTL},
 	} {
 		// CreateStream is idempotent only for matching configuration: restart cannot
 		// silently lower replicas or change retention after a topology change.
@@ -109,7 +102,7 @@ func (j *JetStream) Submit(ctx context.Context, e domain.Envelope) (result error
 	ctx, span := messageSpan(ctx, "command", "publish", trace.SpanKindProducer)
 	defer func() { telemetry.End(span, result) }()
 	e.Trace = telemetry.Inject(ctx)
-	if e.Scope != domain.ClusterScope || e.ClusterID == nil || *e.ClusterID != j.Cluster || e.Command.ID == "" || e.OwnerNodeID == "" || len(e.Command.Payload) > domain.CommandPayloadLimit || e.ExpiresAt.IsZero() {
+	if (e.Scope == domain.ClusterScope && (e.ClusterID == nil || *e.ClusterID != j.Cluster)) || e.Command.ID == "" || e.OwnerNodeID == "" || len(e.Command.Payload) > domain.CommandPayloadLimit || e.ExpiresAt.IsZero() {
 		return errors.New("invalid command envelope")
 	}
 	if time.Now().After(e.ExpiresAt) {
@@ -119,165 +112,44 @@ func (j *JetStream) Submit(ctx context.Context, e domain.Envelope) (result error
 	if err != nil {
 		return err
 	}
-	msg := nats.NewMsg(Subject(j.Cluster, "command", e.OwnerNodeID))
+	kind := "task.submit"
+	if e.Command.Type == "task.cancel" || e.Command.Type == "task.retry" {
+		kind = "task.control"
+	}
+	msg := nats.NewMsg(Subject(j.Cluster, kind, e.OwnerNodeID))
 	msg.Data = data
 	injectHeaders(ctx, msg.Header)
-	_, err = j.API.PublishMsg(ctx, msg, js.WithMsgID(string(e.Command.ID)))
+	ack, err := j.API.PublishMsg(ctx, msg, js.WithMsgID(string(e.Command.ID)))
 	if err != nil {
 		return &domain.Error{Code: "SUBMISSION_UNKNOWN", Message: "No durable publish acknowledgement; query the receipt before retrying", Retryable: true}
+	}
+	if ack.Duplicate {
+		return &domain.Error{Code: "COMMAND_ALREADY_QUEUED", Message: "Command ID was already queued; its previous outcome may be unavailable. Review before submitting fresh work."}
 	}
 	return nil
 }
 
-func (j *JetStream) Commands(ctx context.Context, node domain.ID) (engine.Subscription[engine.Delivery], error) {
-	c, err := j.API.CreateConsumer(ctx, commandStream, js.ConsumerConfig{Durable: "exec_" + shared.Token(node), FilterSubject: Subject(j.Cluster, "command", node), AckPolicy: js.AckExplicitPolicy, MaxAckPending: 32, MaxWaiting: 8, BackOff: []time.Duration{5 * time.Second, 30 * time.Second, time.Minute}})
-	if err != nil {
-		return nil, err
+// Consumer names bind pull and ack permissions to a single host.
+func TaskConsumer(node domain.ID, control bool) string {
+	prefix := "submit_"
+	if control {
+		prefix = "control_"
 	}
-	life, cancel := context.WithCancel(ctx)
-	return &commandSubscription{consumer: c, ctx: life, cancel: cancel, cluster: j.Cluster, node: node}, nil
+	return prefix + shared.Token(node)
 }
 
-type commandSubscription struct {
-	consumer      js.Consumer
-	ctx           context.Context
-	cancel        context.CancelFunc
-	cluster, node domain.ID
-}
-
-func (s *commandSubscription) Close() error { s.cancel(); return nil }
-
-func (s *commandSubscription) Next(ctx context.Context) (engine.Delivery, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stop := context.AfterFunc(s.ctx, cancel)
-	defer stop()
-	msg, err := s.consumer.Next(js.FetchContext(ctx))
-	if err != nil {
-		return nil, err
-	}
-	var e domain.Envelope
-	if err = json.Unmarshal(msg.Data(), &e); err != nil {
-		return nil, err
-	}
-	if e.ClusterID == nil || *e.ClusterID != s.cluster || e.OwnerNodeID != s.node || e.Scope != domain.ClusterScope {
-		return nil, errors.New("command subject/owner mismatch")
-	}
-	if origin := headerTrace(msg.Headers()); len(origin) > 0 {
-		e.Trace = origin
-	}
-	// Expiry is evaluated by admission after consulting the durable receipt. An
-	// expired redelivery of accepted work must still reconcile/ack that receipt.
-	return &commandDelivery{msg: msg, envelope: e}, nil
-}
-
-type commandDelivery struct {
-	msg      js.Msg
-	envelope domain.Envelope
-}
-
-func (d *commandDelivery) Envelope() domain.Envelope { return d.envelope }
-
-func (d *commandDelivery) Ack(ctx context.Context) error {
-	err := d.msg.DoubleAck(ctx)
-	if err == nil {
-		trace.SpanFromContext(ctx).AddEvent("messaging.acknowledged")
-	}
-	return err
-}
-
-func (d *commandDelivery) Retry(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return d.msg.NakWithDelay(time.Second)
-}
-
-func (j *JetStream) Result(ctx context.Context, t domain.Task) error {
-	if t.OwnerNodeID != j.Node {
-		return errors.New("result owner mismatch")
-	}
-	data, err := json.Marshal(t)
-	if err != nil {
-		return err
-	}
-	_, err = j.API.Publish(ctx, Subject(j.Cluster, "result", j.Node), data, js.WithMsgID(fmt.Sprintf("%s:%d", t.ID, t.Version)))
-	return err
-}
-
-// Entries consumes the bounded initial KV watch snapshot, not a polling cache.
-func (j *JetStream) Entries(ctx context.Context, pattern string) ([]engine.StateEntry, error) {
-	watch, err := j.Watch(ctx, pattern)
-	if err != nil {
-		return nil, err
-	}
-	defer watch.Close()
-	var entries []engine.StateEntry
-	for {
-		entry, err := watch.Next(ctx)
+func (j *JetStream) PrepareTasks(ctx context.Context, node domain.ID) error {
+	for _, control := range []bool{false, true} {
+		kind := "task.submit"
+		if control {
+			kind = "task.control"
+		}
+		_, err := j.API.CreateConsumer(ctx, TaskStream, js.ConsumerConfig{Durable: TaskConsumer(node, control), FilterSubject: Subject(j.Cluster, kind, node), AckPolicy: js.AckExplicitPolicy, MaxAckPending: 8, MaxWaiting: 8, AckWait: 30 * time.Second})
 		if err != nil {
-			return nil, err
-		}
-		if entry.SnapshotComplete {
-			return entries, nil
-		}
-		if !entry.Deleted {
-			entries = append(entries, entry)
-		}
-		if len(entries) > 5000 {
-			return nil, errors.New("state snapshot exceeds bound")
+			return err
 		}
 	}
-}
-
-func (j *JetStream) Get(ctx context.Context, key string) (engine.StateEntry, error) {
-	e, err := j.KV.Get(ctx, key)
-	if err != nil {
-		return engine.StateEntry{}, err
-	}
-	return stateEntry(e), nil
-}
-
-func (j *JetStream) CompareAndSwap(ctx context.Context, key string, rev engine.Revision, value json.RawMessage) (engine.Revision, error) {
-	var n uint64
-	var err error
-	if rev == 0 {
-		n, err = j.KV.Create(ctx, key, value)
-	} else {
-		n, err = j.KV.Update(ctx, key, value, uint64(rev))
-	}
-	return engine.Revision(n), err
-}
-
-func stateEntry(e js.KeyValueEntry) engine.StateEntry {
-	if e == nil {
-		return engine.StateEntry{SnapshotComplete: true}
-	}
-	return engine.StateEntry{Key: e.Key(), Revision: engine.Revision(e.Revision()), Value: e.Value(), Deleted: e.Operation() != js.KeyValuePut}
-}
-
-func (j *JetStream) Watch(ctx context.Context, key string) (engine.Subscription[engine.StateEntry], error) {
-	w, err := j.KV.Watch(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	return &stateWatcher{w}, nil
-}
-
-type stateWatcher struct{ watch js.KeyWatcher }
-
-func (w *stateWatcher) Close() error { return w.watch.Stop() }
-
-func (w *stateWatcher) Next(ctx context.Context) (engine.StateEntry, error) {
-	select {
-	case <-ctx.Done():
-		return engine.StateEntry{}, ctx.Err()
-	case e, ok := <-w.watch.Updates():
-		if !ok {
-			return engine.StateEntry{}, io.EOF
-		}
-		return stateEntry(e), nil
-	}
+	return nil
 }
 
 func (j *JetStream) Put(ctx context.Context, b domain.StoredObject, r io.Reader) error {
@@ -346,7 +218,7 @@ func (j *JetStream) Delete(ctx context.Context, b domain.StoredObject) error {
 
 // Quorum is an observation, never a substitute for the write acknowledgement.
 func (j *JetStream) Quorum(ctx context.Context) (domain.Quorum, error) {
-	s, err := j.API.Stream(ctx, commandStream)
+	s, err := j.API.Stream(ctx, TaskStream)
 	if err != nil {
 		return domain.Quorum{}, err
 	}

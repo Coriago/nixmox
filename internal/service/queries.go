@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,113 +32,93 @@ func (c *ClusterNode) call(ctx context.Context, target domain.ID, kind string, i
 	}
 	c.mu.Lock()
 	transport, identity := c.transport, c.keys.Identity
-	if target == "" && c.keys.Trust != nil {
-		target = c.keys.Trust.Cluster.IssuerNodeID
+	if target == "" {
+		target = c.keys.Identity.NodeID
+		if c.keys.Trust != nil {
+			target = c.keys.Trust.Cluster.IssuerNodeID
+		}
 	}
 	c.mu.Unlock()
 	return fetchQuery(ctx, transport, identity, target, kind, data, view)
 }
 
+func (c *ClusterNode) callResult(ctx context.Context, target domain.ID, kind string, input any, view bool, result any) error {
+	data, err := c.call(ctx, target, kind, input, view)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, result)
+}
+
 func fetchQuery(ctx context.Context, transport *comms.Runtime, identity domain.Identity, target domain.ID, kind string, data []byte, view bool) (json.RawMessage, error) {
-	var err error
-	if identity.ClusterID == nil || identity.MembershipEpoch == nil || transport.Core == nil {
+	if transport.Core == nil {
 		return nil, unreachable()
 	}
 	ctx, cancel := context.WithTimeout(ctx, domain.ExportTimeout)
 	defer cancel()
-	q := engine.Query{ID: domain.ID(uuid.NewString()), Type: kind, TargetID: target, MembershipEpoch: *identity.MembershipEpoch, Payload: data}
-	var replies engine.Subscription[engine.QueryReply]
-	if view {
-		replies, err = transport.Core.View(ctx, q)
-	} else {
-		replies, err = transport.Core.Query(ctx, q)
+	epoch := uint64(0)
+	if identity.MembershipEpoch != nil {
+		epoch = *identity.MembershipEpoch
 	}
-	if err != nil {
+	q := engine.Query{ID: domain.ID(uuid.NewString()), Type: kind, TargetID: target, MembershipEpoch: epoch, Payload: data}
+	result, err := transport.Core.Request(ctx, q, view)
+	var detail *domain.Error
+	if err != nil && !errors.As(err, &detail) {
 		return nil, unreachable()
 	}
-	defer replies.Close()
-	var result []byte
-	for {
-		reply, err := replies.Next(ctx)
-		if err != nil {
-			return nil, unreachable()
-		}
-		if reply.Error != nil {
-			return nil, reply.Error
-		}
-		result = append(result, reply.Data...)
-		if reply.Complete {
-			return result, nil
-		}
-	}
-}
-
-// Query workers follow transport generations, so authorization changes close old
-// subscriptions before exposing the next generation's grants.
-func (s *Service) ServeQueries(ctx context.Context, views bool) error {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-		c := s.Cluster
-		c.mu.Lock()
-		transport, joined, creator := c.transport, c.keys.Trust != nil, c.creator()
-		c.mu.Unlock()
-		if !joined || transport.Core == nil || (views && !creator) {
-			continue
-		}
-		handler := func(call context.Context, q engine.Query) (io.ReadCloser, error) {
-			value, err := s.query(call, transport.Core, q, views)
-			if err != nil {
-				return nil, err
-			}
-			return io.NopCloser(bytes.NewReader(value)), nil
-		}
-		if views {
-			_ = transport.Core.ServeViews(transport.Context, handler)
-		} else {
-			_ = transport.Core.ServeQueries(transport.Context, handler)
-		}
-	}
+	return result, err
 }
 
 func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, view bool) (json.RawMessage, error) {
 	c := s.Cluster
 	c.mu.Lock()
-	valid := c.transport.Core == core && c.keys.Trust != nil && (!view || c.state != nil)
+	valid := c.transport.Core == core && (!view || c.state != nil)
 	if valid && view {
 		member, exists := c.state.Members[q.CallerID]
 		valid = exists && !member.Removed && member.Epoch == q.MembershipEpoch
 	} else if valid {
-		valid = q.CallerID == c.keys.Trust.Cluster.IssuerNodeID
+		valid = q.CallerID == c.keys.Identity.NodeID || (c.keys.Trust != nil && q.CallerID == c.keys.Trust.Cluster.IssuerNodeID)
 	}
 	c.mu.Unlock()
 	if !valid {
 		return nil, &domain.Error{Code: "MEMBERSHIP_REQUIRED", Message: "Current authenticated membership is required"}
 	}
-	if view && q.Type == "source.submit" {
-		c.mu.Lock()
-		full := c.state.Members[q.CallerID].Full
-		c.mu.Unlock()
-		if !full {
-			return nil, invalid("Source mutations require a full-member console")
+	if strings.HasPrefix(q.Type, "api.") {
+		if view || q.CallerID != s.Identity.NodeID {
+			return nil, invalid("API ingress is local")
 		}
+		q.Type = strings.TrimPrefix(q.Type, "api.")
+	}
+	if q.Type == "command.submit" {
 		var command domain.Command
 		if err := decodeQuery(q.Payload, &command); err != nil {
 			return nil, err
 		}
-		if !repositoryOperation(command.Type) && !credentialOperation(command.Type) && command.Type != "host.assign" {
-			return nil, invalid("Operation is not a source command")
-		}
-		receipt, err := s.Submit(ctx, command)
+		op, _, err := s.Registry.Decode(command)
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(receipt)
+		if view && op.Scope != domain.NodeLocal {
+			c.mu.Lock()
+			full := c.state.Members[q.CallerID].Full
+			c.mu.Unlock()
+			if !full {
+				return nil, invalid("Cluster mutations require full membership")
+			}
+		}
+		result, err := s.queueCommand(ctx, q.CallerID, command)
+		return marshalResult(result, err)
+	}
+	if q.Type == "command.receipt" {
+		return queryJSON(ctx, q.Payload, s.Receipt)
+	}
+	if view && q.Type == "tasks.prepare" {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.transport.Store == nil {
+			return nil, unreachable()
+		}
+		return marshalResult(domain.Empty{}, c.transport.Store.PrepareTasks(ctx, q.CallerID))
 	}
 	if view && (q.Type == "source.prepare" || q.Type == "source.accept") {
 		var command domain.Command
@@ -152,168 +133,85 @@ func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, v
 			}
 			command.ID = accepted.CommandID
 		}
-		c.mu.Lock()
-		envelope, _, err := readRecord[domain.Envelope](ctx, c.transport.Store, recordKey("command", command.ID))
-		if err == nil && (envelope.OwnerNodeID != q.CallerID || !repositoryOperation(envelope.Command.Type)) {
-			err = invalid("Source executor assignment mismatch")
-		}
-		var state domain.RepositoryState
-		if err == nil && q.Type == "source.prepare" {
-			_, value, decodeErr := Catalog().Decode(envelope.Command)
-			err = decodeErr
-			if err == nil {
-				state, err = c.repositoryInput(ctx, envelope.Command, value)
-			}
-		}
-		c.mu.Unlock()
-		if err != nil {
+		var input domain.Envelope
+		if err := c.callResult(ctx, q.CallerID, "task.input", taskengine.TaskID(command.ID), false, &input); err != nil {
 			return nil, err
+		}
+		if input.Command.ID != command.ID || input.OwnerNodeID != q.CallerID || !repositoryOperation(input.Command.Type) {
+			return nil, invalid("Source executor mismatch")
 		}
 		if q.Type == "source.prepare" {
-			return json.Marshal(state)
-		}
-		// Reconcile against the executor's checkpoint, not a caller-selected candidate.
-		var task domain.Task
-		data, err := c.call(ctx, q.CallerID, "task.state", taskengine.TaskID(command.ID), false)
-		if err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(data, &task); err != nil {
-			return nil, err
-		}
-		matched := false
-		for _, cp := range task.Checkpoints {
-			if cp.Phase == "fetch" {
-				var checkpoint domain.RepositoryState
-				if json.Unmarshal(cp.Evidence, &checkpoint) == nil {
-					a, _ := json.Marshal(checkpoint)
-					b, _ := json.Marshal(accepted.State)
-					matched = bytes.Equal(a, b)
-				}
+			_, value, err := s.Registry.Decode(input.Command)
+			if err != nil {
+				return nil, err
 			}
+			c.mu.Lock()
+			state, err := c.repositoryInput(ctx, input.Command, value)
+			c.mu.Unlock()
+			return marshalResult(state, err)
 		}
-		if !matched {
-			return nil, invalid("Pinned source checkpoint unavailable")
-		}
-		result, err := c.acceptSource(ctx, command.ID, envelope.Command.Type, accepted.State)
-		if err != nil {
+		var current domain.Task
+		if err := c.callResult(ctx, q.CallerID, "task.state", taskengine.TaskID(command.ID), false, &current); err != nil {
 			return nil, err
 		}
-		return json.Marshal(result)
-	}
-	if q.Type == "membership.topology" {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.state == nil {
-			return nil, notFound()
+		expected, _ := json.Marshal(accepted.State)
+		if !bytes.Equal(current.Result, expected) {
+			return nil, invalid("Pinned source result mismatch")
 		}
-		return json.Marshal(c.state.Topology)
+		result, err := c.acceptSource(ctx, command.ID, input.Command.Type, accepted.State)
+		return marshalResult(result, err)
 	}
 	if view && q.Type == "power.authorize" {
-		var id domain.ID
-		if err := decodeQuery(q.Payload, &id); err != nil {
-			return nil, err
-		}
-		reservation, err := c.authorizePower(ctx, q.CallerID, id)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(reservation)
+		return queryJSON(ctx, q.Payload, func(ctx context.Context, id domain.ID) (domain.PowerReservation, error) {
+			return c.authorizePower(ctx, q.CallerID, id)
+		})
 	}
 	if !view {
-		if q.Type == "credential.inventory" || q.Type == "credential.consume" || q.Type == "credential.remove" || q.Type == "credential.removable" || q.Type == "credential.expired" || q.Type == "credential.expire" {
-			var input credentialLocalRequest
-			if err := decodeQuery(q.Payload, &input); err != nil {
-				return nil, err
-			}
-			value, err := c.credentialLocal(ctx, q.Type, input)
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(value)
+		if q.Type == "credential.inventory" || q.Type == "credential.consume" || q.Type == "credential.remove" || q.Type == "credential.removable" {
+			return queryJSON(ctx, q.Payload, func(ctx context.Context, input credentialLocalRequest) (any, error) {
+				return c.credentialLocal(ctx, q.Type, input)
+			})
 		}
 		switch q.Type {
+		case "source.upstream":
+			return queryJSON(ctx, q.Payload, func(ctx context.Context, repository domain.Repository) (domain.Commit, error) {
+				head, err := c.git.RemoteHead(ctx, repository)
+				if err != nil {
+					return "", &domain.Error{Code: "SOURCE_UNAVAILABLE", Message: "Upstream observation failed"}
+				}
+				return head, nil
+			})
 		case "source.check":
-			var source domain.Source
-			if err := decodeQuery(q.Payload, &source); err != nil {
-				return nil, err
-			}
-			if err := c.checkConfigurationSource(ctx, source); err != nil {
-				return nil, err
-			}
-			return json.Marshal(domain.Empty{})
+			return queryJSON(ctx, q.Payload, func(ctx context.Context, source domain.Source) (domain.Empty, error) {
+				return domain.Empty{}, c.checkConfigurationSource(ctx, source)
+			})
 		case "source.configurations":
-			var input sourceCatalogRequest
-			if err := decodeQuery(q.Payload, &input); err != nil {
-				return nil, err
-			}
-			items, err := c.configurations(ctx, input.State, input.RefID, input.Commit)
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(items)
+			return queryJSON(ctx, q.Payload, func(ctx context.Context, input sourceCatalogRequest) ([]domain.Configuration, error) {
+				return c.configurations(ctx, input.State, input.RefID, input.Commit)
+			})
 		case "power.inspect":
 			info, err := c.powerInfo()
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(info)
+			return marshalResult(info, err)
 		case "membership.route":
 			c.mu.Lock()
 			address := c.routeAddress()
 			c.mu.Unlock()
 			return json.Marshal(address)
 		case "membership.prepare_leave":
-			page, err := s.Journal.Recoverable(ctx, domain.PageRequest{Limit: domain.PageLimit})
-			if err != nil {
-				return nil, err
-			}
-			for _, current := range page.Items {
-				if current.Scope == domain.ClusterScope {
+			for _, current := range s.Tasks.List() {
+				if current.Scope == domain.ClusterScope && !taskTerminal(current.State) {
 					return nil, invalid("Host still owns unfinished cluster tasks")
 				}
 			}
 			return json.Marshal(domain.Empty{})
-		case "command.admit":
-			var envelope domain.Envelope
-			if err := decodeQuery(q.Payload, &envelope); err != nil {
-				return nil, err
-			}
-			result, err := s.assign(ctx, envelope)
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(result)
+		case "task.input":
+			return queryJSON(ctx, q.Payload, s.Tasks.Input)
 		case "task.state":
-			var id domain.ID
-			if err := decodeQuery(q.Payload, &id); err != nil {
-				return nil, err
-			}
-			current, err := s.Journal.Task(ctx, id)
-			if err != nil {
-				return nil, err
-			}
-			if current.ClusterID == nil || *current.ClusterID != core.Cluster {
-				return nil, invalid("Task is outside this cluster")
-			}
-			return json.Marshal(current)
+			return queryJSON(ctx, q.Payload, s.Tasks.Task)
 		case "task.logs":
-			var request logQuery
-			if err := decodeQuery(q.Payload, &request); err != nil {
-				return nil, err
-			}
-			current, err := s.Journal.Task(ctx, request.TaskID)
-			if err != nil {
-				return nil, err
-			}
-			if current.ClusterID == nil || *current.ClusterID != core.Cluster {
-				return nil, invalid("Task is outside this cluster")
-			}
-			chunk, err := s.Journal.Read(ctx, request.TaskID, nil, request.Offset, request.Limit)
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(chunk)
+			return queryJSON(ctx, q.Payload, func(ctx context.Context, request logQuery) (domain.LogChunk, error) {
+				return s.Tasks.Read(ctx, request.TaskID, nil, request.Offset, request.Limit)
+			})
 		}
 	}
 	if q.Type == "read" {
@@ -321,17 +219,25 @@ func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, v
 		if err := decodeQuery(q.Payload, &request); err != nil {
 			return nil, err
 		}
-		if view && request.Collection != "hosts" && request.Collection != "cluster/status" && request.Collection != "repositories" && request.Collection != "configurations" && request.Collection != "credentials" {
+		if view && request.Collection != "hosts" && request.Collection != "cluster/status" && request.Collection != "repositories" && request.Collection != "configurations" && request.Collection != "credentials" && request.Collection != "tasks" {
 			return nil, invalid("This leaf view is not permitted")
 		}
-		if request.Collection == "identity" || request.Collection == "network/status" {
+		if (request.Collection == "identity" || request.Collection == "network/status") && (view || q.CallerID != s.Identity.NodeID) {
 			return nil, invalid("Owner-local read is not a cluster view")
 		}
-		return s.Read(ctx, request)
+		return s.read(ctx, request)
 	}
 	return nil, domain.Unavailable(q.Type)
 }
 
+func queryJSON[T, R any](ctx context.Context, data []byte, handle func(context.Context, T) (R, error)) (json.RawMessage, error) {
+	var input T
+	if err := decodeQuery(data, &input); err != nil {
+		return nil, err
+	}
+	result, err := handle(ctx, input)
+	return marshalResult(result, err)
+}
 func decodeQuery(data []byte, value any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -350,6 +256,7 @@ type remoteTelemetry struct {
 	cluster  *ClusterNode
 	host     domain.ID
 	interval time.Duration
+	next     time.Time
 	last     domain.HostTelemetry
 	closed   context.Context
 	cancel   context.CancelFunc
@@ -358,21 +265,16 @@ type remoteTelemetry struct {
 func (s *remoteTelemetry) Close() error { s.cancel(); return nil }
 func (s *remoteTelemetry) Next(ctx context.Context) (domain.HostTelemetry, error) {
 	for {
-		if s.last.StreamID != "" {
-			select {
-			case <-ctx.Done():
-				return domain.HostTelemetry{}, ctx.Err()
-			case <-s.closed.Done():
-				return domain.HostTelemetry{}, s.closed.Err()
-			case <-time.After(s.interval):
-			}
+		select {
+		case <-ctx.Done():
+			return domain.HostTelemetry{}, ctx.Err()
+		case <-s.closed.Done():
+			return domain.HostTelemetry{}, s.closed.Err()
+		case <-time.After(time.Until(s.next)):
 		}
-		value, err := s.cluster.call(ctx, "", "read", ReadRequest{Collection: "hosts", ID: &s.host, Subresource: "telemetry"}, true)
-		if err != nil {
-			return domain.HostTelemetry{}, err
-		}
+		s.next = time.Now().Add(s.interval)
 		var sample domain.HostTelemetry
-		if err = json.Unmarshal(value, &sample); err != nil {
+		if err := s.cluster.callResult(ctx, "", "read", ReadRequest{Collection: "hosts", ID: &s.host, Subresource: "telemetry"}, true, &sample); err != nil {
 			return sample, err
 		}
 		if sample.HostID != s.host {
@@ -382,13 +284,6 @@ func (s *remoteTelemetry) Next(ctx context.Context) (domain.HostTelemetry, error
 			s.last = sample
 			return sample, nil
 		}
-		// Unknown samples have no stream ID; still bound polling when unchanged.
-		select {
-		case <-ctx.Done():
-			return sample, ctx.Err()
-		case <-s.closed.Done():
-			return sample, s.closed.Err()
-		case <-time.After(s.interval):
-		}
+
 	}
 }

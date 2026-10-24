@@ -12,8 +12,29 @@ import (
 	"nixmox/internal/engine"
 )
 
-func credentialOperation(kind string) bool {
-	return kind == "credential.import" || kind == "credential.check" || kind == "credential.remove"
+func (c *ClusterNode) resolveCredential(ctx context.Context, envelope *domain.Envelope, value any) error {
+	p, check := value.(domain.CredentialCheckPayload)
+	if !check {
+		return nil
+	}
+	record, _, err := c.credentialLocked(ctx, p.CredentialID)
+	if err != nil {
+		return err
+	}
+	envelope.OwnerNodeID, err = c.credentialHolderLocked(record)
+	if err != nil {
+		return err
+	}
+	input := credentialLocalRequest{CredentialID: p.CredentialID}
+	if p.RepositoryID != nil {
+		state, _, err := c.repositoryLocked(ctx, *p.RepositoryID)
+		if err != nil {
+			return err
+		}
+		input.Repository = &state.Repository
+	}
+	envelope.Resolved, err = json.Marshal(input)
+	return err
 }
 
 func (c *ClusterNode) credentialInput(ctx context.Context, command domain.Command, value any) (credentialRecord, error) {
@@ -76,7 +97,7 @@ func (c *ClusterNode) credentialInput(ctx context.Context, command domain.Comman
 				return record, invalid("Declared credentials cannot be removed")
 			}
 		}
-		repositories, err := listRecords[domain.RepositoryState](ctx, c.transport.Store, "repository.*")
+		repositories, err := listRecords[domain.RepositoryState](ctx, c.transport.Store.KV, "repository.*")
 		if err != nil {
 			return record, err
 		}
@@ -108,107 +129,97 @@ func (c *ClusterNode) credentialInput(ctx context.Context, command domain.Comman
 	return record, nil
 }
 
-func (c *ClusterNode) credentialDefinitions(journal engine.LocalStore) []engine.TaskDefinition {
-	var result []engine.TaskDefinition
-	for _, kind := range []string{"credential.import", "credential.check", "credential.remove"} {
-		run := func(ctx context.Context, e engine.Execution) error {
-			admission, err := journal.Receipt(ctx, e.Task().CommandID)
+func (c *ClusterNode) credentialDefinition() engine.TaskDefinition {
+	run := func(ctx context.Context, e engine.Execution) error {
+		envelope := e.Envelope()
+		kind := envelope.Command.Type
+		if kind == "credential.check" {
+			var input credentialLocalRequest
+			if err := json.Unmarshal(envelope.Resolved, &input); err != nil {
+				return err
+			}
+			value, err := c.credentialLocal(ctx, kind, input)
 			if err != nil {
 				return err
 			}
-			if kind == "credential.check" {
-				var input credentialLocalRequest
-				if err := json.Unmarshal(admission.Envelope.Resolved, &input); err != nil {
-					return err
-				}
-				value, err := c.credentialLocal(ctx, kind, input)
-				if err != nil {
-					return observeFailure(ctx, e, "credential", err)
-				}
-				return completePhase(ctx, e, "credential", value)
-			}
-			_, value, err := Catalog().Decode(admission.Envelope.Command)
-			if err != nil {
-				return err
-			}
-			c.mu.Lock()
-			record, err := c.credentialInput(ctx, admission.Envelope.Command, value)
-			c.mu.Unlock()
-			if err != nil {
-				return observeFailure(ctx, e, "credential", err)
-			}
-			if record.Applied[e.Task().CommandID] {
-				return completePhase(ctx, e, "credential", record.Credential)
-			}
-			if kind == "credential.import" {
-				p := value.(domain.CredentialImport)
-				var item domain.Credential
-				if err := c.credentialCall(ctx, p.StorageNodeID, "credential.consume", credentialLocalRequest{CommandID: e.Task().CommandID, Import: &p}, &item); err != nil {
-					return err
-				}
-				if err := c.registerCredential(ctx, item); err != nil {
-					return err
-				}
-				record.Credential.ID = item.ID
-			} else {
-				for _, replica := range record.Credential.Replicas {
-					var result domain.Empty
-					if err := c.credentialCall(ctx, replica.NodeID, "credential.removable", credentialLocalRequest{CredentialID: record.Credential.ID}, &result); err != nil {
-						var detail *domain.Error
-						if errors.As(err, &detail) && detail.Code == "INVALID_INPUT" && record.Removing == "" {
-							return observeFailure(ctx, e, "credential", err)
-						}
-						return err
-					}
-				}
-				// Fence new uses before deleting any replica. This marker survives an
-				// unavailable holder or uncertain deletion acknowledgement.
-				c.mu.Lock()
-				_, inputErr := c.credentialInput(ctx, admission.Envelope.Command, value)
-				if inputErr != nil {
-					c.mu.Unlock()
-					return observeFailure(ctx, e, "credential", inputErr)
-				}
-				current, revision, readErr := c.credentialLocked(ctx, record.Credential.ID)
-				if readErr == nil {
-					current.Removing = e.Task().CommandID
-					_, readErr = writeRecord(ctx, c.transport.Store, recordKey("credential", current.Credential.ID), revision, current)
-				}
-				c.mu.Unlock()
-				if readErr != nil {
-					return readErr
-				}
-				for _, replica := range record.Credential.Replicas {
-					var result domain.Empty
-					if err := c.credentialCall(ctx, replica.NodeID, "credential.remove", credentialLocalRequest{CommandID: e.Task().CommandID, CredentialID: record.Credential.ID}, &result); err != nil {
-						return err
-					}
-				}
-			}
-			c.mu.Lock()
-			current, revision, err := c.credentialLocked(ctx, record.Credential.ID)
-			if err == nil {
-				if current.Applied == nil {
-					current.Applied = map[domain.ID]bool{}
-				}
-				current.Applied[e.Task().CommandID] = true
-				if kind == "credential.remove" {
-					current.Removed = true
-					current.Removing = ""
-					current.Credential.Replicas = []domain.CredentialReplica{}
-					current.Credential.Version++
-				}
-				_, err = writeRecord(ctx, c.transport.Store, recordKey("credential", current.Credential.ID), revision, current)
-			}
-			c.mu.Unlock()
-			if err != nil {
-				return err
-			}
-			return completePhase(ctx, e, "credential", current.Credential)
+			return e.Result(ctx, value)
 		}
-		result = append(result, engine.TaskDefinition{Kind: kind, Phases: []engine.Phase{{Name: "credential", Interruptible: false, Resources: []engine.Resource{{Key: "credentials", Capacity: 1}, {Key: "repositories", Capacity: 1}}, Run: run, Reconcile: run}}})
+		_, value, err := Catalog().Decode(envelope.Command)
+		if err != nil {
+			return err
+		}
+		c.mu.Lock()
+		record, err := c.credentialInput(ctx, envelope.Command, value)
+		c.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		if record.Applied[e.Task().CommandID] {
+			return e.Result(ctx, record.Credential)
+		}
+		if kind == "credential.import" {
+			p := value.(domain.CredentialImport)
+			var item domain.Credential
+			if err := c.credentialCall(ctx, p.StorageNodeID, "credential.consume", credentialLocalRequest{CommandID: e.Task().CommandID, Import: &p}, &item); err != nil {
+				return err
+			}
+			if err := c.registerCredential(ctx, item); err != nil {
+				return err
+			}
+			record.Credential.ID = item.ID
+		} else {
+			for _, replica := range record.Credential.Replicas {
+				var result domain.Empty
+				if err := c.credentialCall(ctx, replica.NodeID, "credential.removable", credentialLocalRequest{CredentialID: record.Credential.ID}, &result); err != nil {
+					return err
+				}
+			}
+			// Fence new uses before deleting any replica. This marker survives an
+			// unavailable holder or uncertain deletion acknowledgement.
+			c.mu.Lock()
+			_, inputErr := c.credentialInput(ctx, envelope.Command, value)
+			if inputErr != nil {
+				c.mu.Unlock()
+				return inputErr
+			}
+			current, revision, readErr := c.credentialLocked(ctx, record.Credential.ID)
+			if readErr == nil {
+				current.Removing = e.Task().CommandID
+				_, readErr = writeRecord(ctx, c.transport.Store.KV, recordKey("credential", current.Credential.ID), revision, current)
+			}
+			c.mu.Unlock()
+			if readErr != nil {
+				return readErr
+			}
+			for _, replica := range record.Credential.Replicas {
+				var result domain.Empty
+				if err := c.credentialCall(ctx, replica.NodeID, "credential.remove", credentialLocalRequest{CommandID: e.Task().CommandID, CredentialID: record.Credential.ID}, &result); err != nil {
+					return err
+				}
+			}
+		}
+		c.mu.Lock()
+		current, revision, err := c.credentialLocked(ctx, record.Credential.ID)
+		if err == nil {
+			if current.Applied == nil {
+				current.Applied = map[domain.ID]bool{}
+			}
+			current.Applied[e.Task().CommandID] = true
+			if kind == "credential.remove" {
+				current.Removed = true
+				current.Removing = ""
+				current.Credential.Replicas = []domain.CredentialReplica{}
+				current.Credential.Version++
+			}
+			_, err = writeRecord(ctx, c.transport.Store.KV, recordKey("credential", current.Credential.ID), revision, current)
+		}
+		c.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		return e.Result(ctx, current.Credential)
 	}
-	return result
+	return engine.TaskDefinition{Phase: "credential", Resources: []string{"credentials", "repositories"}, Run: run}
 }
 
 func (c *ClusterNode) readCredentials(ctx context.Context, request ReadRequest) (json.RawMessage, error) {
@@ -217,11 +228,11 @@ func (c *ClusterNode) readCredentials(ctx context.Context, request ReadRequest) 
 	if c.transport.Store == nil {
 		return nil, credentialMissing()
 	}
-	records, err := listRecords[credentialRecord](ctx, c.transport.Store, "credential.*")
+	records, err := listRecords[credentialRecord](ctx, c.transport.Store.KV, "credential.*")
 	if err != nil {
 		return nil, err
 	}
-	repositories, err := listRecords[domain.RepositoryState](ctx, c.transport.Store, "repository.*")
+	repositories, err := listRecords[domain.RepositoryState](ctx, c.transport.Store.KV, "repository.*")
 	if err != nil {
 		return nil, err
 	}
@@ -253,8 +264,5 @@ func (c *ClusterNode) readCredentials(ctx context.Context, request ReadRequest) 
 	}
 	slices.SortFunc(items, func(a, b domain.Credential) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID)) })
 	page, err := pageItems(items, request.Page, "credentials", func(item domain.Credential) []string { return []string{item.Name, string(item.ID)} })
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(page)
+	return marshalResult(page, err)
 }

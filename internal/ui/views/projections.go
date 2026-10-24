@@ -134,7 +134,7 @@ func (m *Model) discoveryTable() table.Model {
 			continue
 		}
 		label, tone := "Discovered", "muted"
-		controls := []button.Model{m.resourceControl("Add", "add", d.ID)}
+		var controls []button.Model
 		if d.Requested {
 			label, tone = "Awaiting approval", "warning"
 			controls = []button.Model{m.resourceControl("Approve", "approve", d.ID), m.resourceControl("Reject", "reject", d.ID)}

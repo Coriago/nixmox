@@ -12,7 +12,16 @@ import (
 	"sort"
 )
 
+// operationBehavior connects admission, routing and execution in one registration.
+// Feature handlers own ordinary execution functions, not workflow definitions.
+type operationBehavior struct {
+	validate func(*ClusterNode, context.Context, domain.Command, any) error
+	resolve  func(*ClusterNode, context.Context, *domain.Envelope, any) error
+	define   func(*Service) engine.TaskDefinition
+}
+
 type Operation struct {
+	operationBehavior
 	Name             string
 	Scope            domain.Scope
 	Capabilities     []string
@@ -21,18 +30,14 @@ type Operation struct {
 	decode           func(json.RawMessage) (any, error)
 }
 
-// Handler implementations validate typed payloads, resolve selectors exactly once,
-// and recheck evidence under exclusion. An operation without a handler cannot run.
-type Handler interface {
-	Validate(context.Context, domain.Command, any) error
-	Resolve(context.Context, domain.Command, any) (json.RawMessage, error)
-	Resources(context.Context, domain.Envelope) ([]engine.Resource, error)
-	Definition() engine.TaskDefinition
-}
 type Registry struct{ operations map[string]Operation }
 
-func operation[T any](name string, scope domain.Scope, result string, versions, capabilities []string) Operation {
-	return Operation{Name: name, Scope: scope, ResultResource: result,
+func operation[T any](name string, scope domain.Scope, result string, versions, capabilities []string, behavior ...operationBehavior) Operation {
+	var policy operationBehavior
+	if len(behavior) > 0 {
+		policy = behavior[0]
+	}
+	return Operation{operationBehavior: policy, Name: name, Scope: scope, ResultResource: result,
 		VersionResources: versions, Capabilities: capabilities,
 		decode: func(data json.RawMessage) (any, error) {
 			if len(data) > domain.CommandPayloadLimit {

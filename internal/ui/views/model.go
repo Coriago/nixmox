@@ -154,7 +154,7 @@ func (m *Model) Dispatch(a Action) {
 		m.AccentIndex = (m.AccentIndex + 1) % 4
 	case "motion":
 		m.Reduced = !m.Reduced
-	case "refresh", "network-check", "shutdown", "cancel", "approve", "reject", "add", "credential-check", "credential-remove", "repository-fetch":
+	case "refresh", "network-check", "shutdown", "cancel", "approve", "reject", "credential-check", "credential-remove", "repository-fetch":
 		m.prepare(a)
 	case "reconcile":
 		if m.uncertain != "" && !m.busy {

@@ -55,12 +55,6 @@ type Upstream struct {
 	FetchedAt *time.Time `json:"fetched_at"`
 }
 
-type RepositoryRefs struct {
-	Record
-	RepositoryID ID          `json:"repository_id"`
-	Refs         []Reference `json:"refs"`
-}
-
 type Reference struct {
 	ID            ID             `json:"id"`
 	RepositoryID  ID             `json:"repository_id"`
@@ -100,17 +94,6 @@ type Publication struct {
 	IntegrationBase Commit     `json:"integration_base"`
 	State           string     `json:"state"`
 	CreatedAt       time.Time  `json:"created_at"`
-}
-
-type GCPlan struct {
-	Record
-	RepositoryID              ID              `json:"repository_id"`
-	RecipeVersions            []RecipeVersion `json:"recipe_versions"`
-	ReclaimedBytes            int64           `json:"reclaimed_bytes"`
-	ProtectedReferences       []string        `json:"protected_references"`
-	UnpublishedRecipeVersions []RecipeVersion `json:"unpublished_recipe_versions"`
-	Review                    Review          `json:"review"`
-	ExpectedVersions          Versions        `json:"expected_versions"`
 }
 
 type FileManifest struct {

@@ -35,7 +35,7 @@ func Cycle(index, step, count int) int {
 
 func Active(state string) bool {
 	switch domain.TaskState(state) {
-	case domain.Running, domain.Reconciling, domain.Cancelling:
+	case domain.Running, domain.Cancelling:
 		return true
 	}
 	return false

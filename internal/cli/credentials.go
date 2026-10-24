@@ -62,26 +62,23 @@ func (o *options) credentialCommands() *cobra.Command {
 	group.AddCommand(add)
 	for _, name := range []string{"list", "show"} {
 		command := &cobra.Command{Use: name + " CREDENTIAL", Args: cobra.ExactArgs(1)}
-		var cursor, kind string
-		var limit int
+		var kind string
+		var page domain.PageRequest
 		if name == "list" {
 			command.Use, command.Args = "list", cobra.NoArgs
-			command.Flags().StringVar(&cursor, "cursor", "", "Previous page cursor")
+			pageFlags(command, &page)
 			command.Flags().StringVar(&kind, "kind", "", "Filter credential kind")
-			command.Flags().IntVar(&limit, "limit", domain.PageDefault, "Page size")
 		}
-		command.RunE = func(cmd *cobra.Command, args []string) error {
-			api, err := o.api()
-			if err != nil {
-				return err
-			}
+		command.RunE = o.read(func(cmd *cobra.Command, api *client.Client, args []string) (any, error) {
 			if name == "list" {
-				value, err := api.Credentials(cmd.Context(), domain.PageRequest{Cursor: cursor, Limit: limit, Filters: map[string]string{"kind": kind}})
-				return o.print(cmd, value, err)
+				page.Filters = map[string]string{}
+				if kind != "" {
+					page.Filters["kind"] = kind
+				}
+				return api.Credentials(cmd.Context(), page)
 			}
-			value, err := resolveCredential(cmd, api, args[0])
-			return o.print(cmd, value, err)
-		}
+			return resolveCredential(cmd, api, args[0])
+		})
 		group.AddCommand(command)
 	}
 	var repository string

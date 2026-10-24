@@ -26,13 +26,12 @@ type SecretStore struct {
 	mu     sync.Mutex
 }
 
-var _ engine.Secrets = (*SecretStore)(nil)
-
 type stagedSecret struct {
 	Ingress      engine.SecretIngress
 	Stage        domain.SecretStaging
 	Value        []byte
 	CredentialID domain.ID
+	Expired      bool
 }
 
 func (s *SecretStore) root() (*os.Root, error) {
@@ -82,6 +81,9 @@ func (s *SecretStore) Stage(ctx context.Context, in engine.SecretIngress, r io.R
 		if old.Ingress != in {
 			return domain.SecretStaging{}, secretConflict()
 		}
+		if old.CredentialID == "" && (old.Expired || time.Now().After(old.Stage.ExpiresAt)) {
+			return domain.SecretStaging{}, &domain.Error{Code: "STAGING_EXPIRED", Message: "Staging expired; use a new command ID"}
+		}
 		prior := old.Value
 		if old.CredentialID != "" {
 			prior, err = root.ReadFile(shared.Filename(old.CredentialID))
@@ -128,6 +130,7 @@ func readStaged(root *os.Root, path string) (stagedSecret, error) {
 	defer clear(data)
 	var record stagedSecret
 	if json.Unmarshal(data, &record) != nil {
+		clear(record.Value)
 		return stagedSecret{}, errors.New("invalid private staging record")
 	}
 	return record, nil
@@ -137,8 +140,7 @@ func secretConflict() error {
 	return &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Import command ID already used"}
 }
 
-// Inspect returns public staging metadata only. Expiry cleanup must consult the
-// durable command claim first: accepted but unfinished imports cannot be erased.
+// Inspect returns public staging metadata only.
 func (s *SecretStore) Inspect(ctx context.Context, ref domain.ID) (engine.SecretIngress, domain.SecretStaging, error) {
 	if err := ctx.Err(); err != nil {
 		return engine.SecretIngress{}, domain.SecretStaging{}, err
@@ -155,8 +157,7 @@ func (s *SecretStore) Inspect(ctx context.Context, ref domain.ID) (engine.Secret
 	return record.Ingress, record.Stage, err
 }
 
-// Consume is called only after durable admission. An interrupted promotion can be
-// retried; an existing different value is never silently replaced.
+// Consume and expiry share the holder lock; expired bytes can never be promoted.
 func (s *SecretStore) Consume(ctx context.Context, ref, id domain.ID) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -183,6 +184,9 @@ func (s *SecretStore) Consume(ctx context.Context, ref, id domain.ID) error {
 		}
 		_, err := root.Stat(shared.Filename(id))
 		return err
+	}
+	if time.Now().After(record.Stage.ExpiresAt) {
+		return &domain.Error{Code: "STAGING_EXPIRED", Message: "Credential staging expired; start a new import"}
 	}
 	prior, err := root.ReadFile(shared.Filename(id))
 	defer clear(prior)
@@ -236,50 +240,21 @@ func (r *secretReader) Close() error { clear(r.value); r.value = nil; r.Reader.R
 
 // Inventory exposes only consumed values and never their private staging records.
 func (s *SecretStore) Inventory(ctx context.Context) ([]domain.Credential, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	root, err := s.root()
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	dir, err := root.Open("staging")
-	if errors.Is(err, os.ErrNotExist) {
-		return []domain.Credential{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer dir.Close()
-	entries, err := dir.ReadDir(5001)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	if len(entries) > 5000 {
-		return nil, errors.New("credential staging inventory exceeds bound")
-	}
 	items := map[domain.ID]domain.Credential{}
-	for _, entry := range entries {
-		if entry.IsDir() || strings.HasSuffix(entry.Name(), ".new") {
-			continue
-		}
-		record, err := readStaged(root, "staging/"+entry.Name())
-		clear(record.Value)
-		if err != nil {
-			return nil, err
-		}
+	err := s.walkStaging(ctx, func(root *os.Root, record stagedSecret) error {
 		if record.CredentialID == "" {
-			continue
+			return nil
 		}
 		if _, err := root.Stat(shared.Filename(record.CredentialID)); errors.Is(err, os.ErrNotExist) {
-			continue
+			return nil
 		} else if err != nil {
-			return nil, err
+			return err
 		}
 		items[record.CredentialID] = domain.Credential{Record: domain.Record{SchemaVersion: 1, ID: record.CredentialID, Version: 1}, Name: record.Ingress.Name, Kind: record.Ingress.Kind, Scope: domain.CredentialScope{RepositoryIDs: []domain.ID{}}, Replicas: []domain.CredentialReplica{{NodeID: s.NodeID, State: "available", Source: "managed"}}}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	result := make([]domain.Credential, 0, len(items))
 	for _, item := range items {
@@ -288,88 +263,65 @@ func (s *SecretStore) Inventory(ctx context.Context) ([]domain.Credential, error
 	return result, nil
 }
 
-// PendingSecret contains only public ingress metadata, never secret bytes.
-type PendingSecret struct {
-	Ingress engine.SecretIngress
-	Stage   domain.SecretStaging
+// Expire clears overdue bytes under the same holder lock as promotion. Only
+// private expiry markers survive; no authority RPC or task receipt is involved.
+func (s *SecretStore) Expire(ctx context.Context) error {
+	return s.walkStaging(ctx, func(root *os.Root, record stagedSecret) error {
+		if record.CredentialID != "" || record.Expired || time.Now().Before(record.Stage.ExpiresAt) {
+			return nil
+		}
+		record.Expired = true
+		data, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		return writeFile(root, "staging/"+shared.Filename(record.Stage.Reference), data)
+	})
 }
 
-func (s *SecretStore) Expired(ctx context.Context) ([]PendingSecret, error) {
+// walkStaging serializes bounded metadata scans with imports/removals. Private
+// values are cleared before visiting a record and never accumulated in a snapshot.
+func (s *SecretStore) walkStaging(ctx context.Context, visit func(*os.Root, stagedSecret) error) error {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	root, err := s.root()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer root.Close()
 	dir, err := root.Open("staging")
-	if errors.Is(err, os.ErrNotExist) {
-		return []PendingSecret{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer dir.Close()
-	entries, err := dir.ReadDir(5001)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	if len(entries) > 5000 {
-		return nil, errors.New("credential staging inventory exceeds bound")
-	}
-	result := []PendingSecret{}
-	for _, entry := range entries {
-		if entry.IsDir() || strings.HasSuffix(entry.Name(), ".new") {
-			continue
-		}
-		record, err := readStaged(root, "staging/"+entry.Name())
-		clear(record.Value)
-		if err != nil {
-			return nil, err
-		}
-		if record.CredentialID == "" && time.Now().After(record.Stage.ExpiresAt) {
-			result = append(result, PendingSecret{Ingress: record.Ingress, Stage: record.Stage})
-		}
-	}
-	return result, nil
-}
-
-// DiscardExpired requires the authority to have fenced the command ID first.
-// Accepted work is protected by the durable command claim, not a local timer.
-func (s *SecretStore) DiscardExpired(ctx context.Context, ref, command domain.ID) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	root, err := s.root()
-	if err != nil {
-		return err
-	}
-	defer root.Close()
-	path := "staging/" + shared.Filename(ref)
-	record, err := readStaged(root, path)
-	clear(record.Value)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if record.CredentialID != "" || record.Stage.CommandID != command || !time.Now().After(record.Stage.ExpiresAt) {
-		return errors.New("staging is not eligible for expiry")
-	}
-	if err = root.Remove(path); err != nil {
+	defer dir.Close()
+	entries, err := dir.ReadDir(5001)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
-	dir, err := root.Open("staging")
-	if err != nil {
-		return err
+	if len(entries) > 5000 {
+		return errors.New("credential staging inventory exceeds bound")
 	}
-	return errors.Join(dir.Sync(), dir.Close())
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasSuffix(entry.Name(), ".new") {
+			continue
+		}
+		record, err := readStaged(root, "staging/"+entry.Name())
+		clear(record.Value)
+		record.Value = nil
+		if err != nil {
+			return err
+		}
+		if err := visit(root, record); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SecretStore) Remove(ctx context.Context, id domain.ID) error {

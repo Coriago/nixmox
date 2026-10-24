@@ -1,7 +1,5 @@
 package domain
 
-import "time"
-
 type HostTelemetry struct {
 	SchemaVersion   int     `json:"schema_version"`
 	HostID          ID      `json:"host_id"`
@@ -69,18 +67,4 @@ type NetworkIO struct {
 type MeasurementError struct {
 	Field  string `json:"field"`
 	Reason string `json:"reason"`
-}
-
-type Diagnostic struct {
-	Record
-	HostID      ID        `json:"host_id"`
-	OwnerNodeID ID        `json:"owner_node_id"`
-	CreatedAt   time.Time `json:"created_at"`
-	Since       time.Time `json:"since"`
-	Until       time.Time `json:"until"`
-	Bytes       int64     `json:"bytes"`
-	SHA256      Digest    `json:"sha256"`
-	State       string    `json:"state"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	DownloadURL string    `json:"download_url"`
 }

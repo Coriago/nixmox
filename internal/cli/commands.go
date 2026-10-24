@@ -12,28 +12,18 @@ import (
 
 func (o *options) identityCommand() *cobra.Command {
 	group := &cobra.Command{Use: "identity", Short: "Inspect this daemon's identity"}
-	group.AddCommand(&cobra.Command{Use: "show", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Identity(cmd.Context())
-		return o.print(cmd, value, err)
-	}})
+	group.AddCommand(&cobra.Command{Use: "show", Args: cobra.NoArgs, RunE: o.read(func(cmd *cobra.Command, api *client.Client, _ []string) (any, error) {
+		return api.Identity(cmd.Context())
+	})})
 	return group
 }
 
 func (o *options) hostCommands() *cobra.Command {
 	group := &cobra.Command{Use: "hosts", Short: "Read host inventory and live measurements"}
 	group.AddCommand(o.assignmentCommand())
-	group.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Hosts(cmd.Context())
-		return o.print(cmd, value, err)
-	}})
+	group.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: o.read(func(cmd *cobra.Command, api *client.Client, _ []string) (any, error) {
+		return api.Hosts(cmd.Context())
+	})})
 	refresh := &cobra.Command{Use: "refresh HOST", Args: cobra.ExactArgs(1), Short: "Refresh observed connectivity at the selected executor"}
 	o.mutation(refresh, "host.refresh", func(cmd *cobra.Command, api *client.Client, args []string) (any, domain.Versions, error) {
 		id, err := resolveHost(cmd, api, args[0])
@@ -87,22 +77,16 @@ func (o *options) hostCommands() *cobra.Command {
 		group.AddCommand(action)
 	}
 	for _, name := range []string{"show", "endpoints", "telemetry"} {
-		group.AddCommand(&cobra.Command{Use: name + " HOST", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-			api, err := o.api()
-			if err != nil {
-				return err
-			}
+		group.AddCommand(&cobra.Command{Use: name + " HOST", Args: cobra.ExactArgs(1), RunE: o.read(func(cmd *cobra.Command, api *client.Client, args []string) (any, error) {
 			id, err := resolveHost(cmd, api, args[0])
 			if err != nil {
-				return operationError(err)
+				return nil, err
 			}
 			if name == "telemetry" {
-				value, err := api.Telemetry(cmd.Context(), id)
-				return o.print(cmd, value, err)
+				return api.Telemetry(cmd.Context(), id)
 			}
-			value, err := api.Host(cmd.Context(), id)
-			return o.print(cmd, value, err)
-		}})
+			return api.Host(cmd.Context(), id)
+		})})
 	}
 	return group
 }
@@ -145,14 +129,9 @@ func resolveSelector[T any](ctx context.Context, selector string, page domain.Pa
 
 func (o *options) discoveryCommands() *cobra.Command {
 	group := &cobra.Command{Use: "discovery", Short: "Inspect expiring management-network hints"}
-	group.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Discoveries(cmd.Context())
-		return o.print(cmd, value, err)
-	}})
+	group.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: o.read(func(cmd *cobra.Command, api *client.Client, _ []string) (any, error) {
+		return api.Discoveries(cmd.Context())
+	})})
 	search := &cobra.Command{Use: "search", Args: cobra.NoArgs, Short: "Search for 30 seconds; passive discovery continues afterward"}
 	o.mutation(search, "discovery.search", func(*cobra.Command, *client.Client, []string) (any, domain.Versions, error) {
 		return domain.Empty{}, nil, nil
@@ -162,14 +141,9 @@ func (o *options) discoveryCommands() *cobra.Command {
 }
 func (o *options) networkCommands() *cobra.Command {
 	group := &cobra.Command{Use: "network", Short: "Observe the addressed node's management network"}
-	group.AddCommand(&cobra.Command{Use: "status", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Network(cmd.Context())
-		return o.print(cmd, value, err)
-	}})
+	group.AddCommand(&cobra.Command{Use: "status", Args: cobra.NoArgs, RunE: o.read(func(cmd *cobra.Command, api *client.Client, _ []string) (any, error) {
+		return api.Network(cmd.Context())
+	})})
 	check := &cobra.Command{Use: "check", Args: cobra.NoArgs, Short: "Persist and execute a network observation task"}
 	o.mutation(check, "network.check", func(*cobra.Command, *client.Client, []string) (any, domain.Versions, error) {
 		return domain.Empty{}, nil, nil
@@ -180,26 +154,14 @@ func (o *options) networkCommands() *cobra.Command {
 
 func (o *options) taskCommands() *cobra.Command {
 	group := &cobra.Command{Use: "tasks", Short: "Read durable execution state and logs"}
-	var cursor string
-	var limit int
-	list := &cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Tasks(cmd.Context(), domain.PageRequest{Cursor: cursor, Limit: limit})
-		return o.print(cmd, value, err)
-	}}
-	list.Flags().StringVar(&cursor, "cursor", "", "Cursor from the previous page")
-	list.Flags().IntVar(&limit, "limit", domain.PageDefault, "Page size (1–500)")
-	group.AddCommand(list, &cobra.Command{Use: "show TASK", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Task(cmd.Context(), domain.ID(args[0]))
-		return o.print(cmd, value, err)
-	}})
+	var page domain.PageRequest
+	list := &cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: o.read(func(cmd *cobra.Command, api *client.Client, _ []string) (any, error) {
+		return api.Tasks(cmd.Context(), page)
+	})}
+	pageFlags(list, &page)
+	group.AddCommand(list, &cobra.Command{Use: "show TASK", Args: cobra.ExactArgs(1), RunE: o.read(func(cmd *cobra.Command, api *client.Client, args []string) (any, error) {
+		return api.Task(cmd.Context(), domain.ID(args[0]))
+	})})
 	watch := &cobra.Command{Use: "watch TASK", Args: cobra.ExactArgs(1), Short: "Watch task state until terminal; Ctrl-C only stops watching"}
 	watch.RunE = func(cmd *cobra.Command, args []string) error {
 		return o.watchTask(cmd, args[0], false, 0)
@@ -273,13 +235,8 @@ func (o *options) watchTask(cmd *cobra.Command, id string, logs bool, offset int
 
 func (o *options) receiptCommand() *cobra.Command {
 	group := &cobra.Command{Use: "commands", Short: "Reconcile a submitted command's identity"}
-	group.AddCommand(&cobra.Command{Use: "show COMMAND", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Receipt(cmd.Context(), domain.ID(args[0]))
-		return o.print(cmd, value, err)
-	}})
+	group.AddCommand(&cobra.Command{Use: "show COMMAND", Args: cobra.ExactArgs(1), RunE: o.read(func(cmd *cobra.Command, api *client.Client, args []string) (any, error) {
+		return api.Receipt(cmd.Context(), domain.ID(args[0]))
+	})})
 	return group
 }

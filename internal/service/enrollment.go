@@ -3,7 +3,6 @@ package service
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	js "github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -134,24 +132,9 @@ func (c *ClusterNode) Certificates(ctx context.Context, id domain.ID) (domain.Is
 	return issued, err
 }
 
-func (c *ClusterNode) Validate(ctx context.Context, command domain.Command, value any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// The registry owns dispatch and locking; this is membership-specific policy.
+func (c *ClusterNode) validateMembership(ctx context.Context, command domain.Command, value any) error {
 	switch p := value.(type) {
-	case domain.CredentialImport, domain.CredentialCheckPayload, domain.CredentialTarget:
-		if !credentialOperation(command.Type) {
-			return domain.Unavailable(command.Type)
-		}
-		_, err := c.credentialInput(ctx, command, value)
-		return err
-	case domain.RepositoryImport, domain.RepositoryTarget, domain.RepositoryRemoteSet, domain.RepositoryCredentialSet:
-		if !repositoryOperation(command.Type) {
-			return domain.Unavailable(command.Type)
-		}
-		_, err := c.repositoryInput(ctx, command, value)
-		return err
-	case domain.HostAssign:
-		return c.validateAssignment(ctx, command, p)
 	case domain.ClusterCreate:
 		if strings.TrimSpace(p.Name) != p.Name || p.Name == "" || len(p.Name) > 128 {
 			return invalid("Cluster name must contain 1–128 characters without surrounding whitespace")
@@ -181,9 +164,6 @@ func (c *ClusterNode) Validate(ctx context.Context, command domain.Command, valu
 		return c.validateDeparture(command, p.HostID, p.MembershipEpoch, p.Force, p.ConfirmHost)
 	case domain.ForceFullMembership:
 		return c.validatePromotion(ctx, command, p)
-	case domain.HostPower:
-		_, err := c.validatePower(ctx, command, p)
-		return err
 	case domain.HostTarget:
 		if command.Type != "host.refresh" {
 			return domain.Unavailable(command.Type)
@@ -233,7 +213,7 @@ func enrollmentClient(address string) (*client.Client, error) {
 	return client.New(address, nil)
 }
 
-func (c *ClusterNode) create(ctx context.Context, command domain.Command) (any, error) {
+func (c *ClusterNode) create(ctx context.Context, command domain.Command, _ engine.Execution) (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var p domain.ClusterCreate
@@ -268,7 +248,7 @@ func (c *ClusterNode) create(ctx context.Context, command domain.Command) (any, 
 	return c.keys.Trust.Cluster, nil
 }
 
-func (c *ClusterNode) decide(ctx context.Context, command domain.Command) (_ any, resultErr error) {
+func (c *ClusterNode) decide(ctx context.Context, command domain.Command, _ engine.Execution) (_ any, resultErr error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.quorum(ctx); err != nil {
@@ -461,150 +441,21 @@ func (c *ClusterNode) awaitLeaf(ctx context.Context) (resultErr error) {
 	}
 }
 
-func (c *ClusterNode) Definitions(journal engine.LocalStore) []engine.TaskDefinition {
-	definitions := c.repositoryDefinitions(journal)
-	definitions = append(definitions, c.credentialDefinitions(journal)...)
-	definitions = append(definitions, c.assignmentDefinition(journal))
-	for _, kind := range []string{"cluster.create", "cluster.join", "cluster.request.approve", "cluster.request.reject", "cluster.leave", "host.remove", "host.force_full_membership", "host.demote"} {
-		run := func(ctx context.Context, e engine.Execution) (resultErr error) {
-			record, err := journal.Receipt(ctx, e.Task().CommandID)
-			if err != nil {
-				return err
-			}
-			ctx, span := telemetry.Start(ctx, kind)
-			defer func() { telemetry.End(span, resultErr) }()
-			logging.From(ctx).Info("membership operation", "operation", kind, "command_id", string(record.Envelope.Command.ID))
-			var result any
-			switch kind {
-			case "cluster.create":
-				result, err = c.create(ctx, record.Envelope.Command)
-			case "cluster.join":
-				result, err = c.join(ctx, record.Envelope.Command, e)
-			case "host.force_full_membership", "host.demote":
-				result, err = c.promote(ctx, record.Envelope.Command)
-			case "cluster.leave", "host.remove":
-				result, err = c.depart(ctx, record.Envelope.Command)
-			default:
-				result, err = c.decide(ctx, record.Envelope.Command)
-			}
-			if err != nil {
-				fmt.Fprintf(e.Log(), "Membership reconciliation: %v\n", err)
-				logging.From(ctx).Error("membership reconciliation", "error", err)
-			}
-			var failure *domain.Error
-			// Definitive rejected/expired/version outcomes are observed failures.
-			// Transport/storage uncertainty retains the intent for reconciliation.
-			if err == nil || (errors.As(err, &failure) && (failure.Code == "INVALID_INPUT" || failure.Code == "VERSION_CONFLICT" || failure.Code == "TRUST_MISMATCH")) {
-				evidence, _ := json.Marshal(struct {
-					Result any           `json:"result"`
-					Error  *domain.Error `json:"error"`
-				}{result, failure})
-				if observeErr := e.Observed(ctx, domain.Checkpoint{Phase: "membership", Evidence: evidence}); observeErr != nil {
-					return observeErr
-				}
-			}
-			return err
+func (c *ClusterNode) membershipDefinition(action membershipAction) engine.TaskDefinition {
+	run := func(ctx context.Context, e engine.Execution) (resultErr error) {
+		command := e.Envelope().Command
+		ctx, span := telemetry.Start(ctx, command.Type)
+		defer func() { telemetry.End(span, resultErr) }()
+		logging.From(ctx).Info("membership operation", "operation", command.Type, "command_id", string(command.ID))
+		result, err := action(c, ctx, command, e)
+		if err != nil {
+			fmt.Fprintf(e.Log(), "Membership operation failed: %v\n", err)
+			logging.From(ctx).Error("membership operation failed", "error", err)
 		}
-		definitions = append(definitions, engine.TaskDefinition{Kind: kind, Phases: []engine.Phase{{Name: "membership", Interruptible: true, Resources: []engine.Resource{{Key: "membership", Capacity: 1}}, Run: run, Reconcile: run}}})
-	}
-	return definitions
-}
-
-func (c *ClusterNode) PublishCommand(ctx context.Context, envelope domain.Envelope) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := c.quorum(ctx); err != nil {
+		if err == nil {
+			return e.Result(ctx, result)
+		}
 		return err
 	}
-	envelope.Scope, envelope.ClusterID = domain.ClusterScope, &c.state.Cluster.ID
-	if envelope.Command.Type == "credential.check" {
-		var p domain.CredentialCheckPayload
-		if err := json.Unmarshal(envelope.Command.Payload, &p); err != nil {
-			return err
-		}
-		record, _, err := c.credentialLocked(ctx, p.CredentialID)
-		if err != nil {
-			return err
-		}
-		holder, err := c.credentialHolderLocked(record)
-		if err != nil {
-			return err
-		}
-		envelope.OwnerNodeID = holder
-		input := credentialLocalRequest{CredentialID: p.CredentialID}
-		if p.RepositoryID != nil {
-			state, _, err := c.repositoryLocked(ctx, *p.RepositoryID)
-			if err != nil {
-				return err
-			}
-			input.Repository = &state.Repository
-		}
-		envelope.Resolved, err = json.Marshal(input)
-		if err != nil {
-			return err
-		}
-	}
-	if envelope.Command.Type == "repository.import" || envelope.Command.Type == "repository.fetch" {
-		_, value, err := Catalog().Decode(envelope.Command)
-		if err != nil {
-			return err
-		}
-		state, err := c.repositoryInput(ctx, envelope.Command, value)
-		if err != nil {
-			return err
-		}
-		if ref := state.Repository.Remote.CredentialRef; ref != nil {
-			record, _, err := c.credentialLocked(ctx, *ref)
-			if err != nil {
-				return err
-			}
-			envelope.OwnerNodeID, err = c.credentialHolderLocked(record)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	member, exists := c.state.Members[envelope.OwnerNodeID]
-	if !exists || member.Removed {
-		return invalid("Executor is not an active member")
-	}
-	envelope.MembershipEpoch = member.Epoch
-	if isPower(envelope.Command.Type) {
-		if err := c.reservePower(ctx, envelope.Command); err != nil {
-			return err
-		}
-	}
-	// Expired unclaimed staging is fenced by a durable rejected receipt before
-	// its private bytes are erased. Do not admit a late replay behind that fence.
-	priorReceipt, _, receiptErr := readRecord[domain.AdmissionRecord](ctx, c.transport.Store, recordKey("receipt", envelope.Command.ID))
-	if receiptErr == nil && priorReceipt.Error != nil {
-		return priorReceipt.Error
-	}
-	if receiptErr != nil && !errors.Is(receiptErr, js.ErrKeyNotFound) {
-		return receiptErr
-	}
-	// A durable claim binds the ID before JetStream's time-bounded deduplication.
-	key := fmt.Sprintf("command.%x", sha256.Sum256([]byte(envelope.Command.ID)))
-	entry, err := c.transport.Store.Get(ctx, key)
-	if err == nil {
-		var old domain.Envelope
-		if err = json.Unmarshal(entry.Value, &old); err != nil {
-			return err
-		}
-		if old.RequestHash != envelope.RequestHash {
-			return &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "Command ID already used"}
-		}
-		envelope = old
-	} else if errors.Is(err, js.ErrKeyNotFound) {
-		data, err := json.Marshal(envelope)
-		if err != nil {
-			return err
-		}
-		if _, err = c.transport.Store.CompareAndSwap(ctx, key, 0, data); err != nil {
-			return err
-		}
-	} else {
-		return err
-	}
-	return c.transport.Store.Submit(ctx, envelope)
+	return engine.TaskDefinition{Phase: "membership", Interruptible: true, Resources: []string{"membership"}, Run: run}
 }

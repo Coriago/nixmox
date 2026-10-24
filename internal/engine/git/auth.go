@@ -57,8 +57,7 @@ func ManagedAuthentication(remote domain.Remote, kind string, value []byte) (Aut
 
 // CheckRead lists refs without fetching, pushing, or changing accepted metadata.
 func (g *Engine) CheckRead(ctx context.Context, repository domain.Repository) error {
-	remote, auth, cleanup, err := g.remote(ctx, repository, memory.NewStorage())
-	defer cleanup()
+	remote, auth, err := g.remote(ctx, repository, memory.NewStorage())
 	if err != nil {
 		return err
 	}

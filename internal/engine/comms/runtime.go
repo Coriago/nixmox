@@ -25,8 +25,8 @@ type Runtime struct {
 	Context    context.Context
 	Broker     *EmbeddedBroker
 	Core       *Core
-	Secrets    *Core
 	Store      *JetStream
+	API        js.JetStream
 	cancel     context.CancelFunc
 	connection *nats.Conn
 	parent     context.Context
@@ -55,10 +55,9 @@ func StartRuntime(ctx context.Context, options BrokerOptions, clientTLS *tls.Con
 	if r.connection, err = ConnectBroker(address, options.NodeID, clientTLS); err != nil {
 		return nil, err
 	}
-	if r.Core, err = OpenCore(address, options.NodeID, options.ClusterID, clientTLS); err != nil {
-		return nil, err
-	}
-	if r.Secrets, err = OpenCore(address, options.NodeID, options.ClusterID, clientTLS); err != nil {
+	r.Core = &Core{nc: r.connection, Node: options.NodeID, Cluster: options.ClusterID}
+	r.API, err = js.New(r.connection)
+	if err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -109,12 +108,6 @@ func (r *Runtime) Close() {
 	r.closeOnce.Do(func() {
 		if r.cancel != nil {
 			r.cancel()
-		}
-		if r.Secrets != nil {
-			r.Secrets.Close()
-		}
-		if r.Core != nil {
-			r.Core.Close()
 		}
 		if r.connection != nil {
 			r.connection.Close()

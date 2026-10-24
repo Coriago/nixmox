@@ -43,32 +43,23 @@ func (o *options) repositoryCommands() *cobra.Command {
 			command.Use = "list"
 			command.Args = cobra.NoArgs
 		}
-		var cursor string
-		var limit int
+		var page domain.PageRequest
 		if name != "show" {
-			command.Flags().StringVar(&cursor, "cursor", "", "Cursor from the previous page")
-			command.Flags().IntVar(&limit, "limit", domain.PageDefault, "Page size (1–500)")
+			pageFlags(command, &page)
 		}
-		command.RunE = func(cmd *cobra.Command, args []string) error {
-			api, err := o.api()
-			if err != nil {
-				return err
-			}
-			page := domain.PageRequest{Cursor: cursor, Limit: limit}
+		command.RunE = o.read(func(cmd *cobra.Command, api *client.Client, args []string) (any, error) {
 			if name == "list" {
-				value, err := api.Repositories(cmd.Context(), page)
-				return o.print(cmd, value, err)
+				return api.Repositories(cmd.Context(), page)
 			}
 			repo, err := resolveRepository(cmd, api, args[0])
 			if err != nil {
-				return operationError(err)
+				return nil, err
 			}
 			if name == "refs" {
-				value, err := api.References(cmd.Context(), repo.ID, page)
-				return o.print(cmd, value, err)
+				return api.References(cmd.Context(), repo.ID, page)
 			}
-			return o.print(cmd, repo, nil)
-		}
+			return repo, nil
+		})
 		group.AddCommand(command)
 	}
 	remoteGroup := &cobra.Command{Use: "remote", Short: "Change reviewed remote settings without fetching or publishing"}
@@ -101,18 +92,14 @@ func (o *options) repositoryCommands() *cobra.Command {
 
 func (o *options) configurationCommands() *cobra.Command {
 	group := &cobra.Command{Use: "configurations", Short: "Inspect configuration catalogs at accepted or explicit cached revisions"}
-	var repository, ref, commit, cursor string
-	var limit int
-	list := &cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		page := domain.PageRequest{Cursor: cursor, Limit: limit, Filters: map[string]string{}}
+	var repository, ref, commit string
+	var page domain.PageRequest
+	list := &cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: o.read(func(cmd *cobra.Command, api *client.Client, _ []string) (any, error) {
+		page.Filters = map[string]string{}
 		if repository != "" {
 			repo, err := resolveRepository(cmd, api, repository)
 			if err != nil {
-				return operationError(err)
+				return nil, err
 			}
 			page.Filters["repository_id"] = string(repo.ID)
 		}
@@ -122,23 +109,16 @@ func (o *options) configurationCommands() *cobra.Command {
 		if commit != "" {
 			page.Filters["commit"] = commit
 		}
-		value, err := api.Configurations(cmd.Context(), page)
-		return o.print(cmd, value, err)
-	}}
+		return api.Configurations(cmd.Context(), page)
+	})}
 	list.Flags().StringVar(&repository, "repository", "", "Repository ID or unambiguous name")
 	list.Flags().StringVar(&ref, "ref", "", "Accepted reference ID (requires --repository)")
 	list.Flags().StringVar(&commit, "commit", "", "Exact cached commit (requires --repository)")
-	list.Flags().StringVar(&cursor, "cursor", "", "Cursor from the previous page")
-	list.Flags().IntVar(&limit, "limit", domain.PageDefault, "Page size (1–500)")
+	pageFlags(list, &page)
 	list.MarkFlagsMutuallyExclusive("ref", "commit")
-	group.AddCommand(list, &cobra.Command{Use: "show CONFIGURATION", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Configuration(cmd.Context(), domain.ID(args[0]))
-		return o.print(cmd, value, err)
-	}})
+	group.AddCommand(list, &cobra.Command{Use: "show CONFIGURATION", Args: cobra.ExactArgs(1), RunE: o.read(func(cmd *cobra.Command, api *client.Client, args []string) (any, error) {
+		return api.Configuration(cmd.Context(), domain.ID(args[0]))
+	})})
 	return group
 }
 

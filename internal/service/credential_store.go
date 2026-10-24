@@ -98,27 +98,27 @@ func credentialMissing() error {
 	return &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "No available credential holder; no secret was copied to this node"}
 }
 
-func (c *ClusterNode) gitAuthentication(ctx context.Context, repository domain.Repository) (gitengine.Authentication, func(), error) {
+func (c *ClusterNode) gitAuthentication(ctx context.Context, repository domain.Repository) (gitengine.Authentication, error) {
 	if repository.Remote.CredentialRef == nil {
-		return gitengine.Authentication{}, nil, credentialMissing()
+		return gitengine.Authentication{}, credentialMissing()
 	}
 	value, kind, err := c.credentialValue(ctx, *repository.Remote.CredentialRef)
 	if err != nil {
-		return gitengine.Authentication{}, nil, err
+		return gitengine.Authentication{}, err
 	}
 	defer clear(value)
 	auth, err := gitengine.ManagedAuthentication(repository.Remote, kind, value)
 	if err != nil {
-		return gitengine.Authentication{}, nil, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git authentication settings or credential are invalid"}
+		return gitengine.Authentication{}, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git authentication settings or credential are invalid"}
 	}
-	return auth, nil, nil
+	return auth, nil
 }
 
-func (c *ClusterNode) credentialLocked(ctx context.Context, id domain.ID) (credentialRecord, engine.Revision, error) {
+func (c *ClusterNode) credentialLocked(ctx context.Context, id domain.ID) (credentialRecord, uint64, error) {
 	if c.transport.Store == nil {
 		return credentialRecord{}, 0, credentialMissing()
 	}
-	record, revision, err := readRecord[credentialRecord](ctx, c.transport.Store, recordKey("credential", id))
+	record, revision, err := readRecord[credentialRecord](ctx, c.transport.Store.KV, recordKey("credential", id))
 	if errors.Is(err, js.ErrKeyNotFound) {
 		err = notFound()
 	}
@@ -169,7 +169,7 @@ func (c *ClusterNode) registerCredential(ctx context.Context, item domain.Creden
 			old.Credential.Version++
 		}
 	}
-	_, err = writeRecord(ctx, c.transport.Store, recordKey("credential", item.ID), revision, old)
+	_, err = writeRecord(ctx, c.transport.Store.KV, recordKey("credential", item.ID), revision, old)
 	return err
 }
 
@@ -220,10 +220,10 @@ func (s *Service) Import(ctx context.Context, in engine.SecretIngress, reader io
 		return domain.Receipt{}, invalid("Command ID, holder and printable credential name are required")
 	}
 	if in.HolderID != local {
-		if transport.Secrets == nil {
+		if transport.Core == nil {
 			return domain.Receipt{}, credentialMissing()
 		}
-		return transport.Secrets.Import(ctx, in, reader)
+		return transport.Core.Import(ctx, in, reader)
 	}
 	if _, declared := c.config.Credentials[in.Name]; declared {
 		return domain.Receipt{}, invalid("Credential is owned by runtime configuration")
@@ -240,6 +240,10 @@ func (s *Service) Import(ctx context.Context, in engine.SecretIngress, reader io
 	if c.keys.Trust == nil || !c.forced() {
 		c.mu.Unlock()
 		return domain.Receipt{}, credentialMissing()
+	}
+	if err := c.secrets.Expire(ctx); err != nil {
+		c.mu.Unlock()
+		return domain.Receipt{}, err
 	}
 	stage, err := c.secrets.Stage(ctx, in, bytes.NewReader(value))
 	c.mu.Unlock()

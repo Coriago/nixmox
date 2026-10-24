@@ -1,19 +1,8 @@
 package domain
 
-import "time"
-
 // Optional fields use pointers when omission differs from an explicit value.
 // Semantic validation and version checks belong to the operation handler.
 type Empty struct {
-}
-
-type NetworkConnect struct {
-	NetworkID     ID  `json:"network_id"`
-	CredentialRef *ID `json:"credential_ref,omitempty"`
-}
-
-type IdentityReset struct {
-	ConfirmHost string `json:"confirm_host"`
 }
 
 type ClusterCreate struct {
@@ -27,12 +16,6 @@ type ClusterJoin struct {
 
 type JoinDecisionPayload struct {
 	RequestID ID `json:"request_id"`
-}
-
-type ClusterAdd struct {
-	DiscoveryID            ID     `json:"discovery_id"`
-	ExpectedNodeID         ID     `json:"expected_node_id"`
-	ExpectedKeyFingerprint Digest `json:"expected_key_fingerprint"`
 }
 
 type HostAssign struct {
@@ -76,18 +59,6 @@ type HostPower struct {
 	ConfirmHost     string `json:"confirm_host"`
 }
 
-type HostDiagnostics struct {
-	HostID ID         `json:"host_id"`
-	Since  *time.Time `json:"since,omitempty"`
-	Until  *time.Time `json:"until,omitempty"`
-}
-
-type HostBootstrap struct {
-	SSHTarget          string `json:"ssh_target"`
-	CredentialRef      ID     `json:"credential_ref"`
-	HostKeyFingerprint Digest `json:"host_key_fingerprint"`
-}
-
 type RepositoryImport struct {
 	Username       string `json:"username,omitempty"`
 	HostKey        string `json:"host_key,omitempty"`
@@ -108,84 +79,14 @@ type RepositoryRemoteSet struct {
 }
 
 type RepositoryCredentialSet struct {
-	Username      string `json:"username,omitempty"`
-	HostKey       string `json:"host_key,omitempty"`
-	RepositoryID  ID     `json:"repository_id"`
-	CredentialRef ID     `json:"credential_ref"`
+	Username     string `json:"username,omitempty"`
+	HostKey      string `json:"host_key,omitempty"`
+	RepositoryID ID     `json:"repository_id"`
+	CredentialID ID     `json:"credential_ref"`
 }
 
 type TaskTarget struct {
 	TaskID ID `json:"task_id"`
-}
-
-type RecipeVersionDelete struct {
-	RecipeID ID      `json:"recipe_id"`
-	Version  Version `json:"version"`
-	PlanID   *ID     `json:"plan_id,omitempty"`
-	TaskID   *ID     `json:"task_id,omitempty"`
-}
-
-type RepositoryGCPlan struct {
-	RepositoryID   ID              `json:"repository_id"`
-	RecipeVersions []RecipeVersion `json:"recipe_versions,omitempty"`
-}
-
-type RepositoryGC struct {
-	RepositoryID ID `json:"repository_id"`
-	PlanID       ID `json:"plan_id"`
-}
-
-type RepositoryPublish struct {
-	RepositoryID      ID             `json:"repository_id"`
-	RefID             *ID            `json:"ref_id,omitempty"`
-	Recipe            *RecipeVersion `json:"recipe,omitempty"`
-	CreatePullRequest bool           `json:"create_pull_request"`
-}
-
-type PublicationMerge struct {
-	PublicationID      ID     `json:"publication_id"`
-	ExpectedRemoteHead Commit `json:"expected_remote_head"`
-}
-
-type ConfigurationGenerate struct {
-	RepositoryID ID      `json:"repository_id"`
-	Values       Values  `json:"values"`
-	TemplateID   *string `json:"template_id,omitempty"`
-	RefID        *ID     `json:"ref_id,omitempty"`
-	BaseCommit   *Commit `json:"base_commit,omitempty"`
-}
-
-type DraftEdit struct {
-	DraftID ID        `json:"draft_id"`
-	Values  *Values   `json:"values,omitempty"`
-	File    *FileEdit `json:"file,omitempty"`
-}
-
-type FileEdit struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-}
-
-type ConfigurationValidate struct {
-	DraftID *ID     `json:"draft_id,omitempty"`
-	Source  *Source `json:"source,omitempty"`
-}
-
-type DraftTarget struct {
-	DraftID ID `json:"draft_id"`
-}
-
-type OnboardingPrepare struct {
-	HostID             ID                `json:"host_id"`
-	ConfigurationID    ID                `json:"configuration_id"`
-	ObservationID      ID                `json:"observation_id"`
-	TemplateValues     map[string]Values `json:"template_values"`
-	HardwareTemplateID *string           `json:"hardware_template_id,omitempty"`
-	DiskTemplateID     *string           `json:"disk_template_id,omitempty"`
-}
-
-type PreparationCommit struct {
-	PreparationID ID `json:"preparation_id"`
 }
 
 type DeploymentPreview struct {
@@ -243,32 +144,6 @@ type DeploymentInstall struct {
 	TaskID           *ID               `json:"task_id,omitempty"`
 	ReviewID         *ID               `json:"review_id,omitempty"`
 	Acknowledgements *Acknowledgements `json:"acknowledgements,omitempty"`
-}
-
-type MediaBuild struct {
-	ProfileID string `json:"profile_id"`
-	WriterID  *ID    `json:"writer_id,omitempty"`
-	BuilderID *ID    `json:"builder_id,omitempty"`
-}
-
-type MediaFetch struct {
-	ProfileID string  `json:"profile_id"`
-	Release   *string `json:"release,omitempty"`
-}
-
-type MediaProfileRegister struct {
-	Profile MediaProfile `json:"profile"`
-}
-
-type MediaPlanCreate struct {
-	ImageID    ID     `json:"image_id"`
-	WriterID   ID     `json:"writer_id"`
-	DevicePath string `json:"device_path"`
-}
-
-type MediaWrite struct {
-	PlanID          ID     `json:"plan_id"`
-	TypedDevicePath string `json:"typed_device_path"`
 }
 
 type CredentialImport struct {

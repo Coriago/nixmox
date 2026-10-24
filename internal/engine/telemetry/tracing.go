@@ -55,17 +55,3 @@ func Inject(ctx context.Context) domain.TraceContext {
 func Extract(ctx context.Context, carrier domain.TraceContext) context.Context {
 	return propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier(carrier))
 }
-
-// Origin resumes normal async causality; recovery creates a new trace with a
-// link, never a fabricated continuation of an execution interrupted by a crash.
-func Origin(ctx context.Context, carrier domain.TraceContext, recovery bool) (context.Context, []trace.SpanStartOption) {
-	parent := Extract(ctx, carrier)
-	if !recovery {
-		return parent, nil
-	}
-	options := []trace.SpanStartOption{trace.WithNewRoot()}
-	if sc := trace.SpanContextFromContext(parent); sc.IsValid() {
-		options = append(options, trace.WithLinks(trace.Link{SpanContext: sc}))
-	}
-	return ctx, options
-}

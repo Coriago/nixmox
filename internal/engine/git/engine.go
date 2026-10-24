@@ -33,9 +33,9 @@ var _ engine.Git = (*Engine)(nil)
 
 type Engine struct {
 	Root string
-	// Credentials returns ephemeral holder-owned authentication and optional cleanup.
+	// Credentials returns holder-owned in-process authentication.
 	// SSH requires PublicKeys with an explicit host-key verifier; never an ambient agent.
-	Credentials func(context.Context, domain.Repository) (Authentication, func(), error)
+	Credentials func(context.Context, domain.Repository) (Authentication, error)
 }
 
 // Authentication keeps managed HTTP credentials and verified SSH keys explicit.
@@ -87,38 +87,34 @@ func validRemote(raw string) bool {
 	return u.Host != ""
 }
 
-func (g *Engine) remote(ctx context.Context, repository domain.Repository, store storage.Storer) (*gogit.Remote, Authentication, func(), error) {
-	cleanup := func() {}
+func (g *Engine) remote(ctx context.Context, repository domain.Repository, store storage.Storer) (*gogit.Remote, Authentication, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, Authentication{}, cleanup, err
+		return nil, Authentication{}, err
 	}
 	if !validRemote(repository.Remote.URL) {
-		return nil, Authentication{}, cleanup, errors.New("remote requires HTTPS, SSH or absolute file URL without embedded secrets")
+		return nil, Authentication{}, errors.New("remote requires HTTPS, SSH or absolute file URL without embedded secrets")
 	}
 	var auth Authentication
 	if repository.Remote.CredentialRef != nil {
 		if g.Credentials == nil {
-			return nil, Authentication{}, cleanup, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git credential holder unavailable"}
+			return nil, Authentication{}, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git credential holder unavailable"}
 		}
-		value, release, err := g.Credentials(ctx, repository)
-		if release != nil {
-			cleanup = release
-		}
+		value, err := g.Credentials(ctx, repository)
 		if err != nil {
-			return nil, Authentication{}, cleanup, err
+			return nil, Authentication{}, err
 		}
 		if value.HTTP == nil && value.SSH == nil {
-			return nil, Authentication{}, cleanup, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git credential holder returned no authentication"}
+			return nil, Authentication{}, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git credential holder returned no authentication"}
 		}
 		auth = value
 	}
 	if strings.HasPrefix(repository.Remote.URL, "ssh:") {
 		keys := auth.SSH
 		if keys == nil || keys.Signer == nil || keys.HostKeyCallback == nil {
-			return nil, Authentication{}, cleanup, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "SSH requires a managed key and explicit host-key verification"}
+			return nil, Authentication{}, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "SSH requires a managed key and explicit host-key verification"}
 		}
 	}
-	return gogit.NewRemote(store, &config.RemoteConfig{Name: "upstream", URLs: []string{repository.Remote.URL}}), auth, cleanup, nil
+	return gogit.NewRemote(store, &config.RemoteConfig{Name: "upstream", URLs: []string{repository.Remote.URL}}), auth, nil
 }
 
 func (g *Engine) open(ctx context.Context, id domain.ID) (*gogit.Repository, error) {
@@ -167,6 +163,28 @@ func validCommit(commit domain.Commit) bool {
 	return len(commit) == 40 && shared.ValidCommit(commit)
 }
 
+// RemoteHead observes upstream without fetching or accepting a new source.
+func (g *Engine) RemoteHead(ctx context.Context, repository domain.Repository) (domain.Commit, error) {
+	branch, err := branchName(repository.Upstream.Branch)
+	if err != nil {
+		return "", err
+	}
+	remote, auth, err := g.remote(ctx, repository, memory.NewStorage())
+	if err != nil {
+		return "", err
+	}
+	refs, err := remote.ListContext(ctx, &gogit.ListOptions{ClientOptions: auth.options()})
+	if err != nil {
+		return "", err
+	}
+	for _, ref := range refs {
+		if ref.Name() == branch && ref.Type() == plumbing.HashReference {
+			return domain.Commit(ref.Hash().String()), nil
+		}
+	}
+	return "", plumbing.ErrReferenceNotFound
+}
+
 func (g *Engine) Fetch(ctx context.Context, repository domain.Repository) (domain.Commit, error) {
 	branch, err := branchName(repository.Upstream.Branch)
 	if err != nil {
@@ -180,8 +198,7 @@ func (g *Engine) Fetch(ctx context.Context, repository domain.Repository) (domai
 		return "", err
 	}
 	defer r.Close()
-	remote, auth, cleanup, err := g.remote(ctx, repository, r.Storer)
-	defer cleanup()
+	remote, auth, err := g.remote(ctx, repository, r.Storer)
 	if err != nil {
 		return "", err
 	}
@@ -381,8 +398,7 @@ func (g *Engine) Push(ctx context.Context, repository domain.Repository, commit 
 	if _, err = r.CommitObject(plumbing.NewHash(string(commit))); err != nil {
 		return result, err
 	}
-	remote, auth, cleanup, err := g.remote(ctx, repository, r.Storer)
-	defer cleanup()
+	remote, auth, err := g.remote(ctx, repository, r.Storer)
 	if err != nil {
 		return result, err
 	}
@@ -403,8 +419,7 @@ func (g *Engine) ObservePublication(ctx context.Context, p domain.Publication) (
 	}
 	repository := domain.Repository{Record: domain.Record{ID: p.RepositoryID}, Remote: domain.Remote{URL: p.RemoteURL, CredentialRef: p.CredentialRef}}
 	// Remote observation must also work after loss of the rebuildable local cache.
-	remote, auth, cleanup, err := g.remote(ctx, repository, memory.NewStorage())
-	defer cleanup()
+	remote, auth, err := g.remote(ctx, repository, memory.NewStorage())
 	if err != nil {
 		return p, err
 	}

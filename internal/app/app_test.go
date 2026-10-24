@@ -19,10 +19,7 @@ import (
 	"nixmox/internal/cli"
 	"nixmox/internal/client"
 	"nixmox/internal/domain"
-	"nixmox/internal/engine/platform"
-	"nixmox/internal/engine/task"
 	"nixmox/internal/runtime"
-	"nixmox/internal/service"
 )
 
 func configuration(t *testing.T) runtime.Config {
@@ -106,8 +103,8 @@ func TestUnjoinedCLIAPIAndRestart(t *testing.T) {
 	if err = json.Unmarshal(output.Bytes(), &executed); err != nil || executed.State != domain.Succeeded || executed.Scope != domain.NodeLocal {
 		t.Fatalf("task: %+v %v; %s", executed, err, output.String())
 	}
-	if len(executed.Checkpoints) != 1 || executed.Checkpoints[0].State != "observed" {
-		t.Fatal("task observation not persisted")
+	if len(executed.Result) == 0 {
+		t.Fatal("task result missing")
 	}
 	chunk, err := api.Logs(ctx, executed.ID, 0, domain.LogReadDefault)
 	if err != nil || !chunk.Complete || chunk.NextOffset == 0 {
@@ -136,49 +133,19 @@ func TestUnjoinedCLIAPIAndRestart(t *testing.T) {
 		t.Fatal("unfinished cluster leave was accepted")
 	}
 	stop()
-	// Model a crash after durable admission but before a worker starts. Use the
-	// real service/journal; the subsequent daemon must discover this queued task.
-	journal, err := task.OpenJournal(config.DataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	node := service.New()
-	node.Identity, node.Journal = identity, journal
-	node.Network = func(ctx context.Context) (domain.NetworkStatus, error) {
-		return platform.NetworkStatus(ctx, identity.NodeID, nil)
-	}
-	if err = node.StartNode(ctx); err != nil {
-		t.Fatal(err)
-	}
-	queued, err := node.Submit(ctx, domain.Command{ID: "cmd-before-crash", Type: "network.check", TargetID: identity.NodeID, Payload: json.RawMessage("{}")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = journal.Shutdown(); err != nil {
-		t.Fatal(err)
-	}
 	api, _ = start(t, config)
-	recovered, err := api.Wait(ctx, *queued.TaskID)
-	if err != nil || recovered.State != domain.Succeeded {
-		t.Fatalf("queued task not recovered: %+v %v", recovered, err)
-	}
 	restored, err := api.Identity(ctx)
 	if err != nil || restored.NodeID != identity.NodeID || restored.PublicKey != identity.PublicKey {
 		t.Fatalf("identity changed on restart: %+v %v", restored, err)
 	}
-	output.Reset()
-	diagnostics.Reset()
-	if code := cli.Execute(ctx, args, &output, &diagnostics); code != 0 {
-		t.Fatalf("duplicate CLI exit %d: %s", code, diagnostics.String())
-	}
-	var duplicate domain.Task
-	if err = json.Unmarshal(output.Bytes(), &duplicate); err != nil || duplicate.ID != executed.ID || duplicate.Version != executed.Version {
-		t.Fatalf("duplicate task re-executed: %+v %v", duplicate, err)
+	if _, err := api.Task(ctx, executed.ID); err == nil {
+		t.Fatal("task history survived daemon restart")
 	}
 	page, err := api.Tasks(ctx, domain.PageRequest{})
-	if err != nil || len(page.Items) != 2 {
-		t.Fatalf("unexpected persisted tasks: %+v %v", page, err)
+	if err != nil || len(page.Items) != 0 {
+		t.Fatal("acknowledged work replayed on restart", page, err)
 	}
+
 }
 
 func TestHTTPBoundariesAndTelemetryStream(t *testing.T) {

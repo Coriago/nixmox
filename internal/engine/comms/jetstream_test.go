@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"math/big"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	js "github.com/nats-io/nats.go/jetstream"
 
 	"nixmox/internal/domain"
 	"nixmox/internal/engine/internal/shared"
@@ -80,7 +82,7 @@ func brokerFixture(t *testing.T) (*nats.Conn, *JetStream, string, *tls.Config) {
 	t.Cleanup(nc.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	j, err := OpenJetStream(ctx, nc, "cluster", "node", StorageLimits{Commands: 4 << 20, Results: 4 << 20, State: 4 << 20, Objects: 8 << 20, Replicas: 1})
+	j, err := OpenJetStream(ctx, nc, "cluster", "node", StorageLimits{Commands: 4 << 20, State: 4 << 20, Objects: 8 << 20, Replicas: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,48 +98,64 @@ func TestJetStreamDurability(t *testing.T) {
 	if err := j.Submit(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	sub, err := j.Commands(ctx, "node")
+	if err := j.PrepareTasks(ctx, "node"); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := j.API.Consumer(ctx, TaskStream, TaskConsumer("node", false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub.Close()
-	delivery, err := sub.Next(ctx)
+	delivery, err := sub.Next(js.FetchContext(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if delivery.Envelope().Command.ID != "cmd" {
+	var received domain.Envelope
+	if err := json.Unmarshal(delivery.Data(), &received); err != nil {
+		t.Fatal(err)
+	}
+	if received.Command.ID != "cmd" {
 		t.Fatal("wrong envelope")
 	}
-	if err = delivery.Retry(ctx); err != nil {
+	if err = delivery.NakWithDelay(time.Second); err != nil {
 		t.Fatal(err)
 	}
-	delivery, err = sub.Next(ctx)
+	delivery, err = sub.Next(js.FetchContext(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = delivery.Ack(ctx); err != nil {
+	if err = delivery.DoubleAck(ctx); err != nil {
 		t.Fatal(err)
 	}
-	rev, err := j.CompareAndSwap(ctx, "host.node", 0, []byte(`{"version":1}`))
+	rev, err := j.KV.Create(ctx, "host.node", []byte(`{"version":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = j.CompareAndSwap(ctx, "host.node", 0, []byte(`{}`)); err == nil {
+	if _, err = j.KV.Create(ctx, "host.node", []byte(`{}`)); err == nil {
 		t.Fatal("CAS create overwrote state")
 	}
-	if _, err = j.CompareAndSwap(ctx, "host.node", rev, []byte(`{"version":2}`)); err != nil {
+	if _, err = j.KV.Update(ctx, "host.node", []byte(`{"version":2}`), rev); err != nil {
 		t.Fatal(err)
 	}
-	watch, err := j.Watch(ctx, "host.*")
+	watch, err := j.KV.Watch(ctx, "host.*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer watch.Close()
-	if e, err := watch.Next(ctx); err != nil || e.Key != "host.node" {
-		t.Fatalf("snapshot: %+v %v", e, err)
+	defer watch.Stop()
+	select {
+	case e := <-watch.Updates():
+		if e == nil || e.Key() != "host.node" {
+			t.Fatalf("snapshot: %+v", e)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
-	if e, err := watch.Next(ctx); err != nil || !e.SnapshotComplete {
-		t.Fatalf("watch boundary: %+v %v", e, err)
+	select {
+	case e := <-watch.Updates():
+		if e != nil {
+			t.Fatalf("watch boundary: %+v", e)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 	data := []byte("immutable recipe version fixture")
 	digest := sha256.Sum256(data)
@@ -158,7 +176,7 @@ func TestJetStreamDurability(t *testing.T) {
 		t.Fatal("bad digest accepted")
 	}
 	// Opening storage is safe across reconnects/restarts and must preserve policy.
-	if _, err = OpenJetStream(ctx, nc, "cluster", "node", StorageLimits{Commands: 4 << 20, Results: 4 << 20, State: 4 << 20, Objects: 8 << 20, Replicas: 1}); err != nil {
+	if _, err = OpenJetStream(ctx, nc, "cluster", "node", StorageLimits{Commands: 4 << 20, State: 4 << 20, Objects: 8 << 20, Replicas: 1}); err != nil {
 		t.Fatal(err)
 	}
 	q, err := j.Quorum(ctx)

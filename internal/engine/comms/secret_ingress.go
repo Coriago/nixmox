@@ -17,7 +17,7 @@ type secretReply struct {
 	Error   *domain.Error  `json:"error,omitempty"`
 }
 
-// ServeSecrets has a separate connection, bounded queue and no payload tracing.
+// ServeSecrets has a bounded subscription queue and no payload tracing.
 // Broker grants allow only full members to publish and this holder to subscribe.
 func (c *Core) ServeSecrets(ctx context.Context, accept func(context.Context, engine.SecretIngress, io.Reader) (domain.Receipt, error)) error {
 	sub, err := c.nc.SubscribeSync(Subject(c.Cluster, "secret", c.Node))

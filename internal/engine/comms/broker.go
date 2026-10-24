@@ -25,21 +25,27 @@ func Subject(cluster domain.ID, kind string, node domain.ID) string {
 	return "nx." + shared.Token(cluster) + "." + kind + "." + shared.Token(node)
 }
 
-// FullGrants allows cluster reads but constrains executor-originated publications.
+// Full members administer cluster storage; pending hosts can only pull/ack
+// their pre-created consumers. They cannot create consumers or read peer work.
 func FullGrants(cluster, node domain.ID) domain.Grants {
 	prefix := "nx." + shared.Token(cluster) + "."
 	return domain.Grants{
-		Publish: []string{Subject(cluster, "view", node), prefix + "command.*", prefix + "query.*", prefix + "secret.*", prefix + "reply.*.>",
-			Subject(cluster, "heartbeat", node), Subject(cluster, "result", node), Subject(cluster, "activity", node), Subject(cluster, "log", node) + ".*", Subject(cluster, "progress", node) + ".*", "$JS.API.>", "$JS.ACK.>", "$KV.nx_state.>", "$O.nx_git.>"},
-		Subscribe: []string{prefix + "view.*", prefix + "command.*", prefix + "query.*", prefix + "reply.*.>", prefix + "heartbeat.*", prefix + "result.*", prefix + "activity.*", prefix + "log.*.*", prefix + "progress.*.*", Subject(cluster, "secret", node), "_INBOX." + shared.Token(node) + ".>", "$KV.nx_state.>", "$O.nx_git.>"},
+		Publish: []string{Subject(cluster, "api", node), Subject(cluster, "view", node), prefix + "membership.*", prefix + "git.upstream.*", prefix + "task.submit.*", prefix + "task.control.*", prefix + "query.*", prefix + "secret.*", prefix + "reply.*.>",
+			Subject(cluster, "heartbeat", node), Subject(cluster, "task.state", node), Subject(cluster, "activity", node), Subject(cluster, "log", node) + ".*", Subject(cluster, "progress", node) + ".*", "$JS.API.>", "$JS.ACK.>", "$KV.nx_state.>", "$O.nx_git.>"},
+		Subscribe: []string{Subject(cluster, "api", node), Subject(cluster, "membership", node), prefix + "git.upstream.*", prefix + "view.*", prefix + "query.*", prefix + "reply.*.>", prefix + "heartbeat.*", prefix + "task.state.*", prefix + "activity.*", prefix + "log.*.*", prefix + "progress.*.*", Subject(cluster, "secret", node), "_INBOX." + shared.Token(node) + ".>", "$KV.nx_state.>", "$O.nx_git.>"},
 	}
 }
 
 func PendingGrants(cluster, node domain.ID) domain.Grants {
-	return domain.Grants{
-		Publish:   []string{Subject(cluster, "view", node), Subject(cluster, "heartbeat", node), Subject(cluster, "result", node), Subject(cluster, "activity", node), Subject(cluster, "log", node) + ".*", Subject(cluster, "progress", node) + ".*", Subject(cluster, "reply", node) + ".>"},
-		Subscribe: []string{Subject(cluster, "command", node), Subject(cluster, "query", node), Subject(cluster, "reply", node) + ".>"},
+	grants := domain.Grants{
+		Publish:   []string{Subject(cluster, "api", node), Subject(cluster, "view", node), Subject(cluster, "heartbeat", node), Subject(cluster, "task.state", node), Subject(cluster, "activity", node), Subject(cluster, "log", node) + ".*", Subject(cluster, "progress", node) + ".*", Subject(cluster, "reply", node) + ".>"},
+		Subscribe: []string{Subject(cluster, "api", node), Subject(cluster, "membership", node), Subject(cluster, "query", node), Subject(cluster, "reply", node) + ".>", "_INBOX." + shared.Token(node) + ".>"},
 	}
+	for _, control := range []bool{false, true} {
+		consumer := TaskConsumer(node, control)
+		grants.Publish = append(grants.Publish, "$JS.API.CONSUMER.INFO."+TaskStream+"."+consumer, "$JS.API.CONSUMER.MSG.NEXT."+TaskStream+"."+consumer, "$JS.ACK."+TaskStream+"."+consumer+".>")
+	}
+	return grants
 }
 
 func permissions(g domain.Grants) *server.Permissions {

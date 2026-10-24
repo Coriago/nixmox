@@ -20,7 +20,10 @@ func messageSpan(ctx context.Context, destination, operation string, kind trace.
 // Query names come from the fixed protocol vocabulary, never arbitrary input.
 func querySpanName(action, kind string) string {
 	switch kind {
-	case "membership.topology", "membership.route", "membership.prepare_leave", "power.authorize", "power.inspect", "command.admit", "task.state", "task.logs", "read":
+	case "membership.route", "membership.prepare_leave", "power.authorize", "power.inspect",
+		"command.submit", "command.receipt", "task.input", "task.state", "task.logs", "tasks.prepare",
+		"source.prepare", "source.accept", "source.upstream", "source.check", "source.configurations",
+		"credential.inventory", "credential.consume", "credential.remove", "credential.removable", "read", "api.read":
 	default:
 		kind = "unknown"
 	}

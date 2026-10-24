@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"time"
 
 	"nixmox/internal/client"
 	"nixmox/internal/domain"
+	"nixmox/internal/engine"
 	"nixmox/internal/engine/identity"
 	"nixmox/internal/engine/telemetry"
 	"os"
@@ -110,7 +110,7 @@ func (c *ClusterNode) validateDeparture(command domain.Command, host domain.ID, 
 	return nil
 }
 
-func (c *ClusterNode) depart(ctx context.Context, command domain.Command) (any, error) {
+func (c *ClusterNode) depart(ctx context.Context, command domain.Command, _ engine.Execution) (any, error) {
 	var host domain.ID
 	var epoch uint64
 	var force bool
@@ -183,21 +183,6 @@ func (c *ClusterNode) Removal(node domain.ID, epoch uint64) (domain.SignedRemova
 		return notice, notFound()
 	}
 	return notice, nil
-}
-
-// Signed public HTTP notices remain available after NATS grants are revoked.
-// Failed HTTP/TLS connections alone never cause a node to clear membership.
-func (c *ClusterNode) ReconcileMembership(ctx context.Context) error {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-		_ = c.pollMembership(ctx)
-	}
 }
 
 func (c *ClusterNode) pollMembership(ctx context.Context) (err error) {

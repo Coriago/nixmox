@@ -13,7 +13,7 @@ import (
 )
 
 func storageLimits(existing bool) comms.StorageLimits {
-	return comms.StorageLimits{Commands: 16 << 20, Results: 16 << 20, State: 8 << 20, Objects: 8 << 20, Replicas: 1, Existing: existing}
+	return comms.StorageLimits{Commands: 16 << 20, State: 8 << 20, Objects: 8 << 20, Replicas: 1, Existing: existing}
 }
 
 // applyTopology runs under topologyMu, but does not hold the membership mutex
@@ -74,6 +74,7 @@ func (c *ClusterNode) applyTopology(ctx context.Context) error {
 			return err
 		}
 		c.transport = transport
+		c.notifyTransport()
 		if creator {
 			store, err := transport.ConnectStorage(ctx, storageLimits(true))
 			if err != nil {
@@ -88,6 +89,7 @@ func (c *ClusterNode) applyTopology(ctx context.Context) error {
 	if err = c.keys.Install(copy); err != nil {
 		return err
 	}
+	c.notifyTransport() // Membership can change handler eligibility without replacing Core.
 	if source == c.transport {
 		return nil
 	}
@@ -103,6 +105,7 @@ func (c *ClusterNode) handoff(ctx context.Context, source *comms.Runtime, option
 		}
 		c.mu.Lock()
 		c.transport = frozen
+		c.notifyTransport()
 		c.mu.Unlock()
 		source = frozen
 		destination := comms.StandaloneStore
@@ -124,6 +127,7 @@ func (c *ClusterNode) handoff(ctx context.Context, source *comms.Runtime, option
 		}
 		c.mu.Lock()
 		c.transport = target
+		c.notifyTransport()
 		c.mu.Unlock()
 	}
 	logging.From(ctx).Info("restoring broker store", "from", string(status.From), "to", string(status.To), "phase", string(status.Phase))
@@ -138,6 +142,7 @@ func (c *ClusterNode) handoff(ctx context.Context, source *comms.Runtime, option
 	}
 	c.mu.Lock()
 	c.transport = target
+	c.notifyTransport()
 	c.mu.Unlock()
 	store, err := target.ConnectStorage(ctx, storageLimits(true))
 	if err != nil {
@@ -146,6 +151,7 @@ func (c *ClusterNode) handoff(ctx context.Context, source *comms.Runtime, option
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	target.Store = store
+	c.notifyTransport()
 	copy := *c.keys.Trust
 	copy.BrokerTopology = copy.Topology
 	copy.BrokerDirectory = status.TargetDirectory

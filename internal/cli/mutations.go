@@ -83,14 +83,9 @@ func (o *options) mutation(cmd *cobra.Command, kind string, payload func(*cobra.
 
 func (o *options) clusterCommand() *cobra.Command {
 	group := &cobra.Command{Use: "cluster", Short: "Create a provisional cluster and enroll pending nodes"}
-	group.AddCommand(&cobra.Command{Use: "status", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Cluster(cmd.Context())
-		return o.print(cmd, value, err)
-	}})
+	group.AddCommand(&cobra.Command{Use: "status", Args: cobra.NoArgs, RunE: o.read(func(cmd *cobra.Command, api *client.Client, _ []string) (any, error) {
+		return api.Cluster(cmd.Context())
+	})})
 	create := &cobra.Command{Use: "create NAME", Args: cobra.ExactArgs(1)}
 	o.mutation(create, "cluster.create", func(_ *cobra.Command, _ *client.Client, args []string) (any, domain.Versions, error) {
 		return domain.ClusterCreate{Name: args[0]}, nil, nil
@@ -105,21 +100,11 @@ func (o *options) clusterCommand() *cobra.Command {
 		return domain.ClusterJoin{Address: address, ExpectedClusterName: name}, nil, nil
 	})
 	requests := &cobra.Command{Use: "requests", Short: "Review exact node keys before enrollment"}
-	requests.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Requests(cmd.Context())
-		return o.print(cmd, value, err)
-	}}, &cobra.Command{Use: "show REQUEST", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		api, err := o.api()
-		if err != nil {
-			return err
-		}
-		value, err := api.Enrollment(cmd.Context(), domain.ID(args[0]))
-		return o.print(cmd, value, err)
-	}})
+	requests.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: o.read(func(cmd *cobra.Command, api *client.Client, _ []string) (any, error) {
+		return api.Requests(cmd.Context())
+	})}, &cobra.Command{Use: "show REQUEST", Args: cobra.ExactArgs(1), RunE: o.read(func(cmd *cobra.Command, api *client.Client, args []string) (any, error) {
+		return api.Enrollment(cmd.Context(), domain.ID(args[0]))
+	})})
 	for _, decision := range []string{"approve", "reject"} {
 		var version uint64
 		command := &cobra.Command{Use: decision + " REQUEST", Args: cobra.ExactArgs(1)}

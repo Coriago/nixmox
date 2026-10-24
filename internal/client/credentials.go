@@ -35,7 +35,7 @@ func (c *Client) ImportCredential(ctx context.Context, in engine.SecretIngress, 
 	}
 	var receipt domain.Receipt
 	err = decodeResponse(response, &receipt)
-	if err == nil && receipt.CommandID == in.CommandID && receipt.Admission == "accepted" && receipt.TaskID != nil {
+	if err == nil && receipt.CommandID == in.CommandID && (receipt.Admission == "accepted" || receipt.Admission == "queued") && receipt.TaskID != nil {
 		return receipt, nil
 	}
 	var failure *APIError

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"nixmox/internal/domain"
+	"nixmox/internal/engine"
 	"nixmox/internal/engine/comms"
 	"nixmox/internal/engine/identity"
 	"nixmox/internal/engine/telemetry"
@@ -190,7 +191,7 @@ func (c *ClusterNode) stageTopology(next domain.SignedTopology) error {
 	trust.Topology = &next
 	return c.keys.Install(trust)
 }
-func (c *ClusterNode) promote(ctx context.Context, command domain.Command) (any, error) {
+func (c *ClusterNode) promote(ctx context.Context, command domain.Command, _ engine.Execution) (any, error) {
 	c.topologyMu.Lock()
 	defer c.topologyMu.Unlock()
 	wait, cancel := context.WithTimeout(ctx, 90*time.Second)
@@ -238,19 +239,6 @@ func (c *ClusterNode) promote(ctx context.Context, command domain.Command) (any,
 		}
 	}
 }
-func (c *ClusterNode) ReconcileTopology(ctx context.Context) error {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-		_ = c.reconcileTopology(ctx)
-	}
-}
-
 func (c *ClusterNode) reconcileTopology(ctx context.Context) (err error) {
 	c.mu.Lock()
 	trust := c.keys.Trust

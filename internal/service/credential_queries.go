@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"nixmox/internal/domain"
 	"nixmox/internal/engine/identity"
@@ -11,7 +10,6 @@ import (
 
 type credentialLocalRequest struct {
 	CommandID    domain.ID                `json:"command_id"`
-	StagingRef   domain.ID                `json:"staging_ref,omitempty"`
 	Import       *domain.CredentialImport `json:"import,omitempty"`
 	CredentialID domain.ID                `json:"credential_id,omitempty"`
 	Repository   *domain.Repository       `json:"repository,omitempty"`
@@ -26,10 +24,6 @@ func (c *ClusterNode) credentialLocal(ctx context.Context, kind string, p creden
 		return nil, credentialMissing()
 	}
 	switch kind {
-	case "credential.expired":
-		return c.secrets.Expired(ctx)
-	case "credential.expire":
-		return domain.Empty{}, c.secrets.DiscardExpired(ctx, p.StagingRef, p.CommandID)
 	case "credential.inventory":
 		return c.localCredentials(ctx)
 	case "credential.consume":
@@ -101,70 +95,28 @@ func (c *ClusterNode) credentialCall(ctx context.Context, holder domain.ID, kind
 		}
 		return json.Unmarshal(data, result)
 	}
-	data, err := c.call(ctx, holder, kind, input, false)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(data, result)
+	return c.callResult(ctx, holder, kind, input, false, result)
 }
 
-func (s *Service) ServeSecrets(ctx context.Context) error {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-		c := s.Cluster
-		c.mu.Lock()
-		transport, eligible := c.transport, c.keys.Trust != nil && c.forced()
-		c.mu.Unlock()
-		if eligible && transport.Secrets != nil {
-			_ = transport.Secrets.ServeSecrets(transport.Context, s.Import)
-		}
+// Inventory reconciliation is requested by membership/connection events, never a ticker.
+func (s *Service) syncCredentials(ctx context.Context) {
+	c := s.Cluster
+	c.mu.Lock()
+	authority := c.creator() && c.transport.Store != nil
+	c.mu.Unlock()
+	if !authority {
+		return
 	}
-}
-
-// ReconcileCredentials registers only metadata from authenticated full holders.
-// Availability is an observation; it does not advance resource edit versions.
-func (s *Service) ReconcileCredentials(ctx context.Context) error {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-		c := s.Cluster
-		c.mu.Lock()
-		authority := c.creator() && c.transport.Store != nil
-		c.mu.Unlock()
-		if !authority {
+	for _, host := range c.Hosts() {
+		if host.Membership != domain.Full || host.Reachability != domain.Online {
 			continue
 		}
-		for _, host := range c.Hosts() {
-			if host.Membership != domain.Full || host.Reachability != domain.Online {
-				continue
-			}
-			var items []domain.Credential
-			if c.credentialCall(ctx, host.ID, "credential.inventory", credentialLocalRequest{}, &items) != nil {
-				continue
-			}
-			var expired []identity.PendingSecret
-			if c.credentialCall(ctx, host.ID, "credential.expired", credentialLocalRequest{}, &expired) == nil {
-				for _, pending := range expired {
-					if pending.Ingress.HolderID == host.ID {
-						_ = c.expireCredentialStage(ctx, pending)
-					}
-				}
-			}
-			for _, item := range items {
-				if len(item.Replicas) != 1 || item.Replicas[0].NodeID != host.ID || item.ID != c.credentialID(item.Name) {
-					continue
-				}
+		var items []domain.Credential
+		if c.credentialCall(ctx, host.ID, "credential.inventory", credentialLocalRequest{}, &items) != nil {
+			continue
+		}
+		for _, item := range items {
+			if len(item.Replicas) == 1 && item.Replicas[0].NodeID == host.ID && item.ID == c.credentialID(item.Name) {
 				_ = c.registerCredential(ctx, item)
 			}
 		}

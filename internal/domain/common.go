@@ -97,12 +97,6 @@ type Receipt struct {
 	TaskID     *ID    `json:"task_id"`
 	ResourceID *ID    `json:"resource_id"`
 }
-type AdmissionRecord struct {
-	SchemaVersion int      `json:"schema_version"`
-	Envelope      Envelope `json:"envelope"`
-	Receipt       Receipt  `json:"receipt"`
-	Error         *Error   `json:"error"`
-}
 type Acknowledgements struct {
 	ConfirmHost      *string  `json:"confirm_host,omitempty"`
 	TypedDevicePaths []string `json:"typed_device_paths,omitempty"`
@@ -121,10 +115,6 @@ type Review struct {
 type Event struct {
 	Name    string
 	Payload json.RawMessage
-}
-type EventSelector struct {
-	Topics                     []string
-	TaskID, ActivityID, HostID *ID
 }
 type Download struct {
 	OwnerNodeID           ID

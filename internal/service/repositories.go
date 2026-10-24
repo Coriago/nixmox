@@ -19,17 +19,36 @@ import (
 func sourceID(kind string, parts ...string) domain.ID {
 	return domain.ID(kind + "_" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(strings.Join(parts, "\x00"))).String())
 }
+func (c *ClusterNode) resolveRepository(ctx context.Context, envelope *domain.Envelope, value any) error {
+	if envelope.Command.Type != "repository.import" && envelope.Command.Type != "repository.fetch" {
+		return nil
+	}
+	state, err := c.repositoryInput(ctx, envelope.Command, value)
+	if err != nil {
+		return err
+	}
+	if ref := state.Repository.Remote.CredentialRef; ref != nil {
+		record, _, err := c.credentialLocked(ctx, *ref)
+		if err != nil {
+			return err
+		}
+		envelope.OwnerNodeID, err = c.credentialHolderLocked(record)
+		return err
+	}
+	return nil
+}
+
 func repositoryOperation(kind string) bool {
 	return kind == "repository.import" || kind == "repository.fetch" || kind == "repository.remote.set" || kind == "repository.credential.set"
 }
 
 // repositoryLocked is used with the membership mutex held: a store generation
 // cannot be retired underneath a metadata read or acceptance CAS.
-func (c *ClusterNode) repositoryLocked(ctx context.Context, id domain.ID) (domain.RepositoryState, engine.Revision, error) {
+func (c *ClusterNode) repositoryLocked(ctx context.Context, id domain.ID) (domain.RepositoryState, uint64, error) {
 	if c.transport.Store == nil {
 		return domain.RepositoryState{}, 0, domain.Unavailable("repository metadata")
 	}
-	state, revision, err := readRecord[domain.RepositoryState](ctx, c.transport.Store, recordKey("repository", id))
+	state, revision, err := readRecord[domain.RepositoryState](ctx, c.transport.Store.KV, recordKey("repository", id))
 	if errors.Is(err, js.ErrKeyNotFound) {
 		err = notFound()
 	}
@@ -140,25 +159,21 @@ func (c *ClusterNode) repositoryInput(ctx context.Context, command domain.Comman
 	return state, nil
 }
 
-func (c *ClusterNode) repositoryDefinitions(journal engine.LocalStore) []engine.TaskDefinition {
-	prepare := func(ctx context.Context, e engine.Execution) error { return c.prepareRepository(ctx, journal, e) }
-	definitions := []engine.TaskDefinition{}
-	for _, kind := range []string{"repository.import", "repository.fetch", "repository.remote.set", "repository.credential.set"} {
-		// Acceptance and local Git work share repository exclusion.
-		definitions = append(definitions, engine.TaskDefinition{Kind: kind, Phases: []engine.Phase{
-			{Name: "fetch", Interruptible: true, Resources: []engine.Resource{{Key: "repositories", Capacity: 1}}, Run: prepare, Reconcile: prepare},
-			{Name: "accept", Interruptible: false, Resources: []engine.Resource{{Key: "repositories", Capacity: 1}}, Run: c.acceptRepository, Reconcile: c.acceptRepository},
-		}})
-	}
-	return definitions
+func (c *ClusterNode) repositoryDefinition() engine.TaskDefinition {
+	return engine.TaskDefinition{Phase: "fetch", Interruptible: true, Resources: []string{"repositories"}, Run: func(ctx context.Context, e engine.Execution) error {
+		if err := c.prepareRepository(ctx, e); err != nil {
+			return err
+		}
+		if err := e.Phase(ctx, "accept", false); err != nil {
+			return err
+		}
+		return c.acceptRepository(ctx, e)
+	}}
 }
 
-func (c *ClusterNode) prepareRepository(ctx context.Context, journal engine.LocalStore, e engine.Execution) error {
-	record, err := journal.Receipt(ctx, e.Task().CommandID)
-	if err != nil {
-		return err
-	}
-	_, value, err := Catalog().Decode(record.Envelope.Command)
+func (c *ClusterNode) prepareRepository(ctx context.Context, e engine.Execution) error {
+	command := e.Envelope().Command
+	_, value, err := Catalog().Decode(command)
 	if err != nil {
 		return err
 	}
@@ -166,18 +181,14 @@ func (c *ClusterNode) prepareRepository(ctx context.Context, journal engine.Loca
 	defer c.repositoryMu.Unlock()
 	var state domain.RepositoryState
 	if c.leaf() {
-		var data json.RawMessage
-		data, err = c.call(ctx, "", "source.prepare", record.Envelope.Command, true)
-		if err == nil {
-			err = json.Unmarshal(data, &state)
-		}
+		err = c.callResult(ctx, "", "source.prepare", command, true, &state)
 	} else {
 		c.mu.Lock()
-		state, err = c.repositoryInput(ctx, record.Envelope.Command, value)
+		state, err = c.repositoryInput(ctx, command, value)
 		c.mu.Unlock()
 	}
 	if err == nil {
-		if _, done := state.Applied[record.Envelope.Command.ID]; !done && (e.Task().Kind == "repository.import" || e.Task().Kind == "repository.fetch") {
+		if _, done := state.Applied[command.ID]; !done && (e.Task().Kind == "repository.import" || e.Task().Kind == "repository.fetch") {
 			fmt.Fprintln(e.Log(), "Fetching repository", state.Repository.ID, "branch", state.Repository.Upstream.Branch)
 			var commit domain.Commit
 			commit, err = c.git.Fetch(ctx, state.Repository)
@@ -195,23 +206,15 @@ func (c *ClusterNode) prepareRepository(ctx context.Context, journal engine.Loca
 		if !errors.As(err, &detail) {
 			err = &domain.Error{Code: "SOURCE_UNAVAILABLE", Message: "Remote fetch failed; no upstream revision was accepted"}
 		}
-		return observeFailure(context.WithoutCancel(ctx), e, "fetch", err)
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
 		return err
 	}
-	return e.Observed(ctx, domain.Checkpoint{Phase: "fetch", Evidence: data})
+	return e.Result(ctx, state)
 }
 
 func (c *ClusterNode) acceptRepository(ctx context.Context, e engine.Execution) error {
 	var proposed domain.RepositoryState
-	for _, cp := range e.Task().Checkpoints {
-		if cp.Phase == "fetch" {
-			if err := json.Unmarshal(cp.Evidence, &proposed); err != nil {
-				return err
-			}
-		}
+	if err := json.Unmarshal(e.Task().Result, &proposed); err != nil {
+		return err
 	}
 	if proposed.Repository.ID == "" {
 		return invalid("Missing pinned repository checkpoint")
@@ -219,22 +222,14 @@ func (c *ClusterNode) acceptRepository(ctx context.Context, e engine.Execution) 
 	var result domain.RepositoryResult
 	var err error
 	if c.leaf() {
-		var data json.RawMessage
-		data, err = c.call(ctx, "", "source.accept", sourceAcceptance{CommandID: e.Task().CommandID, State: proposed}, true)
-		if err == nil {
-			err = json.Unmarshal(data, &result)
-		}
+		err = c.callResult(ctx, "", "source.accept", sourceAcceptance{CommandID: e.Task().CommandID, State: proposed}, true, &result)
 	} else {
 		result, err = c.acceptSource(ctx, e.Task().CommandID, e.Task().Kind, proposed)
 	}
 	if err != nil {
-		var detail *domain.Error
-		if errors.As(err, &detail) && detail.Code == "VERSION_CONFLICT" {
-			return observeFailure(ctx, e, "accept", err)
-		}
 		return err
 	}
-	return completePhase(ctx, e, "accept", result)
+	return e.Result(ctx, result)
 }
 
 type sourceAcceptance struct {
@@ -290,7 +285,7 @@ func (c *ClusterNode) acceptSource(ctx context.Context, command domain.ID, kind 
 			proposed.Applied = map[domain.ID]domain.RepositoryResult{}
 		}
 		proposed.Applied[command] = result
-		if _, err = writeRecord(ctx, c.transport.Store, recordKey("repository", proposed.Repository.ID), revision, proposed); err != nil {
+		if _, err = writeRecord(ctx, c.transport.Store.KV, recordKey("repository", proposed.Repository.ID), revision, proposed); err != nil {
 			return domain.RepositoryResult{}, err
 		}
 	}

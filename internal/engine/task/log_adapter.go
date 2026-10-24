@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"time"
 
@@ -114,20 +113,6 @@ func (l *LineAdapter) Flush() (engine.LogUpdate, error) {
 	return result, failure
 }
 
-func validateAdapters(factories []engine.LogAdapterFactory) error {
-	if len(factories) > 8 {
-		return errors.New("too many log adapters")
-	}
-	seen := map[string]bool{}
-	for _, factory := range factories {
-		if factory.Name == "" || len(factory.Name) > 128 || factory.New == nil || seen[factory.Name] {
-			return errors.New("invalid or duplicate log adapter factory")
-		}
-		seen[factory.Name] = true
-	}
-	return nil
-}
-
 type taskRunner struct {
 	execution *execution
 	base      engine.Runner
@@ -154,45 +139,36 @@ func (r taskRunner) Run(ctx context.Context, plan engine.CommandLine, stdout, st
 	return r.base.Run(ctx, plan, out, errout)
 }
 
-type namedAdapter struct {
-	name     string
-	adapter  engine.LogAdapter
-	disabled bool
-}
-
 type outputSession struct {
-	traceContext  context.Context
-	mu            sync.Mutex
-	execution     *execution
-	context       engine.AdapterContext
-	adapters      []namedAdapter
-	failures      map[string]bool
-	progressOwner string
-	activityLogs  map[domain.ID]string
+	traceContext       context.Context
+	mu                 sync.Mutex
+	execution          *execution
+	context            engine.AdapterContext
+	adapter            engine.LogAdapter
+	name               string
+	disabled, degraded bool
+	activityLogs       map[domain.ID]bool
 }
 
 func (e *execution) outputSession(ctx context.Context, plan engine.CommandLine) *outputSession {
 	e.mu.Lock()
 	task := e.current
-	factories := append([]engine.LogAdapterFactory(nil), e.adapters...)
+	factory := e.definition.Adapter
 	e.mu.Unlock()
 	var random [16]byte
-	session := &outputSession{execution: e, traceContext: context.WithoutCancel(ctx), context: engine.AdapterContext{TaskID: task.ID, NodeID: task.OwnerNodeID, Phase: task.Phase}, failures: map[string]bool{}, activityLogs: map[domain.ID]string{}}
-	if _, err := rand.Read(random[:]); err != nil {
-		session.degrade("adapters")
+	session := &outputSession{execution: e, traceContext: context.WithoutCancel(ctx), context: engine.AdapterContext{TaskID: task.ID, NodeID: task.OwnerNodeID, Phase: task.Phase}, activityLogs: map[domain.ID]bool{}}
+	_, err := rand.Read(random[:])
+	if err != nil {
+		session.degrade()
 		return session
 	}
 	session.context.ProcessID = domain.ID("process_" + hex.EncodeToString(random[:]))
-	for _, factory := range factories {
-		if factory.Match != nil && !factory.Match(plan) {
-			continue
+	if factory != nil && (factory.Match == nil || factory.Match(plan)) {
+		session.name = factory.Name
+		session.adapter, err = factory.New(session.context)
+		if err != nil || session.adapter == nil {
+			session.degrade()
 		}
-		adapter, err := factory.New(session.context)
-		if err != nil || adapter == nil {
-			session.degrade(factory.Name)
-			continue
-		}
-		session.adapters = append(session.adapters, namedAdapter{name: factory.Name, adapter: adapter})
 	}
 	return session
 }
@@ -213,27 +189,18 @@ func (w outputWriter) Write(data []byte) (int, error) {
 	written := 0
 	for len(data) > 0 {
 		n := min(len(data), domain.LogEventLimit/2)
-		event, err := s.execution.scheduler.Store.Append(s.traceContext, s.context.TaskID, nil, data[:n])
+		event, err := s.execution.manager.Append(s.traceContext, s.context.TaskID, nil, data[:n])
 		if err != nil {
 			return written, err
 		}
 		record := engine.LogRecord{Stream: w.stream, Data: data[:n], Offset: event.Offset, ObservedAt: time.Now().UTC()}
-		for i := range s.adapters {
-			adapter := &s.adapters[i]
-			if adapter.disabled {
-				continue
+		if s.adapter != nil && !s.disabled {
+			record.Data = bytes.Clone(data[:n]) // A parser cannot mutate caller-owned output.
+			update, parseErr, panicked := invokeAdapter(s.adapter, &record)
+			if err := s.apply(update); err != nil || parseErr != nil {
+				s.degrade()
 			}
-			record.Data = bytes.Clone(data[:n]) // Parsers cannot corrupt raw output or another adapter's input.
-			update, parseErr, panicked := invokeAdapter(adapter.adapter, &record)
-			if err = s.apply(adapter.name, update); err != nil {
-				s.degrade(adapter.name)
-			}
-			if parseErr != nil {
-				s.degrade(adapter.name)
-			}
-			if panicked {
-				adapter.disabled = true
-			}
+			s.disabled = panicked
 		}
 		written += n
 		data = data[n:]
@@ -261,45 +228,37 @@ func invokeAdapter(adapter engine.LogAdapter, record *engine.LogRecord) (update 
 func (s *outputSession) flush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.adapters {
-		a := &s.adapters[i]
-		if a.disabled {
-			continue
-		}
-		update, err, _ := invokeAdapter(a.adapter, nil)
-		if saveErr := s.apply(a.name, update); err != nil || saveErr != nil {
-			s.degrade(a.name)
+	if s.adapter != nil && !s.disabled {
+		update, err, _ := invokeAdapter(s.adapter, nil)
+		if saveErr := s.apply(update); err != nil || saveErr != nil {
+			s.degrade()
 		}
 	}
-	for id, name := range s.activityLogs {
-		if err := s.execution.scheduler.Store.Close(context.Background(), s.context.TaskID, &id); err != nil {
-			s.degrade(name)
+	for id := range s.activityLogs {
+		if err := s.execution.manager.CloseLog(context.Background(), s.context.TaskID, &id); err != nil {
+			s.degrade()
 		}
 	}
 }
 
-func (s *outputSession) activityID(name string, id domain.ID) domain.ID {
-	return shared.ID("activity_", domain.ID(string(s.context.ProcessID)+":"+name+":"+string(id)))
+func (s *outputSession) activityID(id domain.ID) domain.ID {
+	return shared.ID("activity_", domain.ID(string(s.context.ProcessID)+":"+s.name+":"+string(id)))
 }
 
-func (s *outputSession) degrade(name string) {
-	if s.failures[name] {
+func (s *outputSession) degrade() {
+	if s.degraded {
 		return
 	}
-	s.failures[name] = true
-	s.execution.scheduler.AdapterFailures.Add(1)
+	s.degraded = true
+	s.execution.manager.AdapterFailures.Add(1)
 	_ = s.saveProgress(nil) // No parser error strings or raw output enter diagnostics.
 }
 
 func (s *outputSession) saveProgress(update *domain.TaskProgress) error {
-	j := s.execution.scheduler.Store
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	path := "jobs/" + shared.Filename(s.context.TaskID) + "/progress.json"
-	var prior domain.TaskProgress
-	if err := j.read(path, &prior); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
+	e := s.execution
+	e.mu.Lock()
+	prior := shared.Clone(e.progress)
+	e.mu.Unlock()
 	progress := prior
 	if update != nil {
 		progress = shared.Clone(*update)
@@ -312,8 +271,8 @@ func (s *outputSession) saveProgress(update *domain.TaskProgress) error {
 	if progress.Freshness == "" {
 		progress.Freshness = domain.Live
 	}
-	for name := range s.failures {
-		field := "log_adapter." + name
+	if s.degraded {
+		field := "log_adapter." + s.name
 		found := false
 		for _, issue := range progress.Unavailable {
 			if issue.Field == field {
@@ -325,19 +284,19 @@ func (s *outputSession) saveProgress(update *domain.TaskProgress) error {
 		}
 		progress.Freshness = domain.Unknown
 	}
-	return j.write(path, progress)
+	return e.Progress(s.traceContext, progress)
 }
 
-func (s *outputSession) apply(name string, update engine.LogUpdate) error {
+func (s *outputSession) apply(update engine.LogUpdate) error {
 	if len(update.Activities) > 256 || len(update.Logs) > 256 {
 		return errors.New("adapter emitted too many updates")
 	}
-	j := s.execution.scheduler.Store
+	j := s.execution.manager
 	for _, activity := range update.Activities {
 		if activity.ID == "" || (activity.TaskID != "" && activity.TaskID != s.context.TaskID) || (activity.NodeID != "" && activity.NodeID != s.context.NodeID) {
 			return errors.New("adapter activity owner mismatch")
 		}
-		activity.ID = s.activityID(name, activity.ID)
+		activity.ID = s.activityID(activity.ID)
 		activity.TaskID = s.context.TaskID
 		activity.NodeID = s.context.NodeID
 		if activity.LogRef != nil {
@@ -345,35 +304,27 @@ func (s *outputSession) apply(name string, update engine.LogUpdate) error {
 				if _, err := j.Append(s.traceContext, s.context.TaskID, &activity.ID, nil); err != nil {
 					return err
 				}
-				s.activityLogs[activity.ID] = name
+				s.activityLogs[activity.ID] = true
 			}
 			activity.LogRef = shared.Ptr(fmt.Sprintf("/api/v1/tasks/%s/activities/%s/logs", activity.TaskID, activity.ID))
 		}
-		err := func() error {
-			j.mu.Lock()
-			defer j.mu.Unlock()
-			path := "jobs/" + shared.Filename(activity.TaskID) + "/activities/" + shared.Filename(activity.ID) + ".json"
-			var prior domain.Activity
-			if err := j.read(path, &prior); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			activity.Version = prior.Version + 1
-			return j.write(path, activity)
-		}()
-		if err != nil {
-			return err
+		e := s.execution
+		e.mu.Lock()
+		if len(e.activities) >= 64 && e.activities[activity.ID].ID == "" {
+			e.mu.Unlock()
+			return errors.New("activity retention bound reached")
 		}
+		activity.Version = e.activities[activity.ID].Version + 1
+		e.activities[activity.ID] = shared.Clone(activity)
+		e.mu.Unlock()
 	}
 	for _, log := range update.Logs {
 		if log.ActivityID == "" || len(log.Data) > domain.CommandPayloadLimit {
 			return errors.New("invalid activity log")
 		}
-		id := s.activityID(name, log.ActivityID)
+		id := s.activityID(log.ActivityID)
 		// Derived logs must refer to an actual activity of this task/process/adapter.
-		j.mu.Lock()
-		var activity domain.Activity
-		err := j.read("jobs/"+shared.Filename(s.context.TaskID)+"/activities/"+shared.Filename(id)+".json", &activity)
-		j.mu.Unlock()
+		_, err := j.Activity(s.traceContext, s.context.TaskID, id)
 		if err != nil {
 			return err
 		}
@@ -387,16 +338,12 @@ func (s *outputSession) apply(name string, update engine.LogUpdate) error {
 		}
 	}
 	if update.Progress != nil {
-		if s.progressOwner != "" && s.progressOwner != name {
-			return errors.New("multiple aggregate progress producers require an explicit reducer")
-		}
-		s.progressOwner = name
 		progress := shared.Clone(*update.Progress)
 		if progress.TaskID != "" && progress.TaskID != s.context.TaskID {
 			return errors.New("adapter progress owner mismatch")
 		}
 		for i, id := range progress.ActiveActivityIDs {
-			progress.ActiveActivityIDs[i] = s.activityID(name, id)
+			progress.ActiveActivityIDs[i] = s.activityID(id)
 		}
 		return s.saveProgress(&progress)
 	}

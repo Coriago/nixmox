@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,9 +27,6 @@ type Cache struct {
 	http            *nixengine.CacheHTTP
 	exports         chan struct{}
 	mu              sync.RWMutex
-	peers           []domain.CachePeer
-	peerError       error
-	peerScope       string
 	version         domain.Version
 	snapshot        string
 	bytes, failures metric.Int64Counter
@@ -47,7 +43,7 @@ func newCache(c *ClusterNode) (*Cache, error) {
 	if err := os.RemoveAll(cacheNix.PinDirectory); err != nil {
 		return nil, err
 	}
-	cache := &Cache{cluster: c, store: nixengine.NARExporter{Nix: cacheNix}, index: &nixengine.StoreIndex{}, exports: make(chan struct{}, n), peers: []domain.CachePeer{}, peerError: errors.New("peer discovery pending"), http: nixengine.NewCacheHTTP(n)}
+	cache := &Cache{cluster: c, store: nixengine.NARExporter{Nix: cacheNix}, index: &nixengine.StoreIndex{}, exports: make(chan struct{}, n), http: nixengine.NewCacheHTTP(n)}
 	meter := otel.Meter("nixmox/cache")
 	cache.bytes, _ = meter.Int64Counter("nixmox.cache.bytes")
 	cache.failures, _ = meter.Int64Counter("nixmox.cache.failures")
@@ -115,48 +111,15 @@ func (c *Cache) Status(context.Context) domain.CacheStatus {
 	}
 	return result
 }
-func (c *Cache) membership() string {
-	c.cluster.mu.Lock()
-	defer c.cluster.mu.Unlock()
-	trust := c.cluster.keys.Trust
-	if trust == nil {
-		return ""
-	}
-	return fmt.Sprintf("%s:%d", trust.Cluster.ID, trust.Issuance.MembershipEpoch)
-}
+
+// Peer discovery is an on-demand read of authenticated inventory, not a cache poller.
 func (c *Cache) peersSnapshot() ([]domain.CachePeer, error) {
-	scope := c.membership()
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if scope == "" || scope != c.peerScope {
-		return []domain.CachePeer{}, cacheUnavailable()
-	}
-	return slices.Clone(c.peers), c.peerError
+	ctx, cancel := context.WithTimeout(c.cluster.life, 5*time.Second)
+	defer cancel()
+	return c.cluster.cachePeers(ctx)
 }
-func (c *Cache) Run(ctx context.Context) error {
-	defer c.http.Close()
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		scope := c.membership()
-		peers, err := c.cluster.cachePeers(ctx)
-		if scope != c.membership() {
-			peers = nil
-			err = cacheUnavailable()
-		}
-		if peers == nil {
-			peers = []domain.CachePeer{}
-		}
-		c.mu.Lock()
-		c.peers, c.peerError, c.peerScope = peers, err, scope
-		c.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
-}
+func (c *Cache) Close() { c.http.Close() }
+
 func (c *ClusterNode) cachePeers(ctx context.Context) ([]domain.CachePeer, error) {
 	c.mu.Lock()
 	if c.keys.Trust == nil {
@@ -168,12 +131,8 @@ func (c *ClusterNode) cachePeers(ctx context.Context) ([]domain.CachePeer, error
 	hosts := c.Hosts()
 	var incomplete error
 	if c.leaf() {
-		data, err := c.call(ctx, "", "read", ReadRequest{Collection: "hosts", Page: domain.PageRequest{Limit: domain.PageLimit}}, true)
-		if err != nil {
-			return nil, err
-		}
 		var page domain.Page[domain.Host]
-		if err = json.Unmarshal(data, &page); err != nil {
+		if err := c.callResult(ctx, "", "read", ReadRequest{Collection: "hosts", Page: domain.PageRequest{Limit: domain.PageLimit}}, true, &page); err != nil {
 			return nil, err
 		}
 		hosts = page.Items

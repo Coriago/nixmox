@@ -24,39 +24,49 @@ func (c *Client) WatchTask(ctx context.Context, id domain.ID, logs bool, offset 
 	if logs {
 		topic = "task.logs"
 	}
-	transport := *c.http
-	transport.Timeout = 0 // Stream lifetime belongs to the caller's context.
 	var previous []byte
+	return c.watch(ctx, func() url.Values {
+		return url.Values{"topics": {topic}, "task_id": {string(id)}, "offset": {strconv.FormatInt(offset, 10)}}
+	}, func(data json.RawMessage) error {
+		if logs {
+			var chunk domain.LogChunk
+			if err := json.Unmarshal(data, &chunk); err != nil {
+				return err
+			}
+			if chunk.DataBase64 == "" && !chunk.Complete {
+				return nil
+			}
+			if err := receive(data); err != nil {
+				return err
+			}
+			offset = chunk.NextOffset
+		} else if !bytes.Equal(previous, data) {
+			if err := receive(data); err != nil {
+				return err
+			}
+			previous = bytes.Clone(data)
+		}
+		return nil
+	})
+}
+
+// watch owns connection lifetime and reconnects; callers own snapshot/offset state.
+// Rebuild the query only after consumption so log reconnects use delivered offsets.
+func (c *Client) watch(ctx context.Context, query func() url.Values, receive func(json.RawMessage) error) error {
+	transport := *c.http
+	transport.Timeout = 0
 	for {
-		query := url.Values{"topics": {topic}, "task_id": {string(id)}, "offset": {strconv.FormatInt(offset, 10)}}
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+"/api/v1/events?"+query.Encode(), nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+"/api/v1/events?"+query().Encode(), nil)
 		if err != nil {
 			return err
 		}
 		request.Header.Set("Accept", "text/event-stream")
 		response, err := transport.Do(request)
 		if err == nil {
-			err = consumeWatch(response, func(data json.RawMessage) error {
-				if logs {
-					var chunk domain.LogChunk
-					if err := json.Unmarshal(data, &chunk); err != nil {
-						return err
-					}
-					if chunk.DataBase64 == "" && !chunk.Complete {
-						return nil
-					}
-					if err := receive(data); err != nil {
-						return err
-					}
-					offset = chunk.NextOffset
-				} else if !bytes.Equal(previous, data) {
-					if err := receive(data); err != nil {
-						return err
-					}
-					previous = bytes.Clone(data)
-				}
-				return nil
-			})
+			err = consumeWatch(response, receive)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		var network net.Error
 		if err == nil || (!errors.Is(err, io.EOF) && !errors.As(err, &network)) {

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"time"
 
@@ -25,51 +24,26 @@ type Runner interface {
 	// Stream bounded output; cancellation stops/reaps the process group.
 	Run(context.Context, CommandLine, io.Writer, io.Writer) (ProcessResult, error)
 }
-type Resource struct {
-	Key      string
-	Capacity int
-}
-type Fence interface {
-	Token() uint64
-	Release(context.Context) error // Uncertain effects keep ownership until reconciled.
-}
-type Exclusions interface {
-	Acquire(context.Context, domain.ID, []Resource) (Fence, error)
-}
-type Phase struct {
-	Name          string
-	Interruptible bool
-	Resources     []Resource
-	Adapters      []LogAdapterFactory
-	Run           func(context.Context, Execution) error
-	Reconcile     func(context.Context, Execution) error
-}
 type Execution interface {
 	Task() domain.Task
-	// Intent precedes effects; Observed follows independently verified evidence.
-	Intent(context.Context, domain.Checkpoint) error
-	Observed(context.Context, domain.Checkpoint) error
-	Result(context.Context, json.RawMessage) error
+	Envelope() domain.Envelope
+	Result(context.Context, any) error
+	Phase(context.Context, string, bool) error
 	Block(context.Context, domain.Review) error
 	Log() io.Writer
-	// Runner decorates any command adapter with task-owned persistence and parsing.
+	// Runner decorates commands with bounded session output and parsing.
 	Runner(Runner) Runner
 	Progress(context.Context, domain.TaskProgress) error
 }
 type TaskDefinition struct {
-	// SafeRetry is for read-only observations that need no original command payload.
-	// It also permits cancellation without external-effect reconciliation.
+	// SafeRetry permits explicit replay of observational work.
 	SafeRetry bool
-	Kind      string
-	Adapters  []LogAdapterFactory
-	Phases    []Phase
-}
-type Tasks interface {
-	Admit(context.Context, domain.Envelope) (domain.Receipt, error)
-	Run(context.Context) error
-	Recover(context.Context) error
-	Cancel(context.Context, domain.ID, domain.Version) error
-	Retry(context.Context, domain.ID, domain.Version) (domain.Receipt, error)
+
+	Phase         string
+	Interruptible bool
+	Resources     []string // Exclusive host-local keys, held for the whole invocation.
+	Adapter       *LogAdapterFactory
+	Run           func(context.Context, Execution) error
 }
 
 // Log adapters derive telemetry only; they cannot authorize effects or transition
@@ -84,7 +58,7 @@ const (
 type LogRecord struct {
 	Stream     OutputStream
 	Data       []byte
-	Offset     int64 // Absolute offset in the persisted, combined task log.
+	Offset     int64 // Absolute offset in the retained, combined task log.
 	ObservedAt time.Time
 }
 type AdapterContext struct {

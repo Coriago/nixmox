@@ -27,7 +27,7 @@ type inventory struct {
 }
 
 func newInventory() *inventory { return &inventory{observations: map[domain.ID]*presence{}} }
-func (i *inventory) heartbeat(h domain.Heartbeat, member domain.Member, cluster, issuer domain.ID) {
+func (i *inventory) heartbeat(h domain.Heartbeat, member domain.Member, cluster, issuer domain.ID) (bool, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	current := i.observations[h.Host.ID]
@@ -35,10 +35,11 @@ func (i *inventory) heartbeat(h domain.Heartbeat, member domain.Member, cluster,
 		current = &presence{}
 		i.observations[h.Host.ID] = current
 	}
+	changed := current.epoch != member.Epoch || current.stream != h.StreamID || (current.host.Membership == domain.Full) != member.Full
 	if current.epoch != member.Epoch || current.stream != h.StreamID {
 		if current.epoch == member.Epoch && current.stream != "" && time.Since(current.seen) < domain.HeartbeatOffline {
 			current.conflict = true
-			return
+			return false, false
 		}
 		current.stream, current.epoch = h.StreamID, member.Epoch
 		current.conflict = false
@@ -71,6 +72,7 @@ func (i *inventory) heartbeat(h domain.Heartbeat, member domain.Member, cluster,
 		host.PendingReasons = []string{"forced_without_deployment_verification"}
 	}
 	current.host = host
+	return true, changed
 }
 func (i *inventory) sample(sample domain.HostTelemetry) {
 	i.mu.Lock()

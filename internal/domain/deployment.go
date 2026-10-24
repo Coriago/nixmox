@@ -109,3 +109,28 @@ type ClosurePath struct {
 	References    []string `json:"references"`
 	SystemPackage *bool    `json:"system_package"`
 }
+
+type InstallerStatus struct {
+	HostID                ID              `json:"host_id"`
+	InstallerID           *ID             `json:"installer_id"`
+	ImageID               *ID             `json:"image_id"`
+	Methods               map[string]bool `json:"methods"`
+	InstallationSupported bool            `json:"installation_supported"`
+	UnsupportedReasons    []string        `json:"unsupported_reasons"`
+	BootEntry             *string         `json:"boot_entry"`
+	EntryAdapter          *string         `json:"entry_adapter"`
+	InstalledAdapter      *string         `json:"installed_adapter"`
+	State                 string          `json:"state"`
+	ProtectedDeviceIDs    []ID            `json:"protected_device_ids"`
+	PreserveIdentity      bool            `json:"preserve_identity"`
+	NetworkHandoff        string          `json:"network_handoff"`
+}
+
+type BootSelection struct {
+	TaskID    ID      `json:"task_id"`
+	Adapter   string  `json:"adapter"`
+	Prior     string  `json:"prior"`
+	Desired   string  `json:"desired"`
+	Observed  *string `json:"observed"`
+	HandoffID ID      `json:"handoff_id"`
+}

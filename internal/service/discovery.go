@@ -3,13 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"github.com/google/uuid"
 
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
-	"nixmox/internal/engine/telemetry"
 )
 
 func (s *Service) DiscoveryRecords() []domain.Discovery {
@@ -33,64 +31,45 @@ func (s *Service) discoveryDefinition() engine.TaskDefinition {
 		if err != nil {
 			return err
 		}
-		data, err := json.Marshal(records)
-		if err != nil {
-			return err
-		}
-		return e.Observed(ctx, domain.Checkpoint{Phase: "search", Evidence: data})
+		return e.Result(ctx, records)
 	}
-	return engine.TaskDefinition{Kind: "discovery.search", SafeRetry: true, Phases: []engine.Phase{{Name: "search", Interruptible: true, Run: run, Reconcile: run}}}
+	return engine.TaskDefinition{SafeRetry: true, Phase: "search", Interruptible: true, Run: run}
 }
 
-// One automatic intent per identity. Rejection/expiry never generates a new
-// request on a timer; explicit Join is the administrator's next-attempt action.
+// Autojoin is a one-shot action on startup or a discovery event.
 func (s *Service) Autojoin(ctx context.Context) error {
 	c := s.Cluster
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-		c.mu.Lock()
-		config, id := c.config, c.keys.Identity
-		suppressed := c.keys.AutojoinSuppressed()
-		c.mu.Unlock()
-		if config.Cluster.Name == nil || id.ClusterID != nil || suppressed {
-			continue
-		}
-		commandID := domain.ID("cmd_autojoin_" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(id.NodeID)).String())
-		if _, err := s.Journal.Receipt(ctx, commandID); err == nil {
-			continue
-		}
-		address := ""
-		if config.Cluster.JoinAddress != nil {
-			address = *config.Cluster.JoinAddress
-		}
-		if address == "" && s.Discovery != nil {
-			matches := map[domain.ID]string{}
-			for _, record := range s.Discovery.Snapshot() {
-				if record.Kind == "cluster" && record.Name == *config.Cluster.Name && record.ClusterID != nil && len(record.Endpoints) > 0 {
-					matches[*record.ClusterID] = record.Endpoints[len(record.Endpoints)-1].Address
-				}
-			}
-			if len(matches) == 1 {
-				for _, value := range matches {
-					address = value
-				}
-			}
-		}
-		if address == "" {
-			continue
-		}
-		data, err := json.Marshal(domain.ClusterJoin{Address: address, ExpectedClusterName: *config.Cluster.Name})
-		if err != nil {
-			return err
-		}
-		call, span := telemetry.Start(ctx, "enrollment.autojoin")
-		_, err = s.Submit(call, domain.Command{ID: commandID, Type: "cluster.join", TargetID: id.NodeID, Payload: data})
-		telemetry.End(span, err)
+	c.mu.Lock()
+	config, id, suppressed := c.config, c.keys.Identity, c.keys.AutojoinSuppressed()
+	c.mu.Unlock()
+	if config.Cluster.Name == nil || id.ClusterID != nil || suppressed {
+		return nil
 	}
+	commandID := domain.ID("cmd_autojoin_" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(id.NodeID)).String())
+	if _, err := s.Receipt(ctx, commandID); err == nil {
+		return nil
+	}
+	address := ""
+	if config.Cluster.JoinAddress != nil {
+		address = *config.Cluster.JoinAddress
+	}
+	if address == "" && s.Discovery != nil {
+		matches := map[domain.ID]string{}
+		for _, record := range s.Discovery.Snapshot() {
+			if record.Kind == "cluster" && record.Name == *config.Cluster.Name && record.ClusterID != nil && len(record.Endpoints) > 0 {
+				matches[*record.ClusterID] = record.Endpoints[len(record.Endpoints)-1].Address
+			}
+		}
+		if len(matches) == 1 {
+			for _, candidate := range matches {
+				address = candidate
+			}
+		}
+	}
+	if address == "" {
+		return nil
+	}
+	payload, _ := json.Marshal(domain.ClusterJoin{Address: address, ExpectedClusterName: *config.Cluster.Name})
+	_, err := s.Submit(ctx, domain.Command{ID: commandID, Type: "cluster.join", TargetID: id.NodeID, Payload: payload})
+	return err
 }

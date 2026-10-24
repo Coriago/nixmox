@@ -70,7 +70,7 @@ func (m *Model) actionHint(a Action) string {
 		if t.Source.Scope == domain.NodeLocal && t.Source.OwnerNodeID != m.identity.NodeID {
 			return "Connect to the task owner to cancel node-local work"
 		}
-	case "approve", "reject", "add":
+	case "approve", "reject":
 		d := m.discovery(a.ID)
 		if d == nil || time.Now().After(d.ExpiresAt) {
 			return "Discovery expired; refresh the observation"
@@ -78,7 +78,7 @@ func (m *Model) actionHint(a Action) string {
 		if m.identity.ClusterID == nil {
 			return "Requires cluster membership"
 		}
-		if (a.Kind == "add") == d.Requested {
+		if !d.Requested {
 			return "Join-request state changed"
 		}
 		if d.NodeID == "" || d.Fingerprint == "" {
@@ -96,7 +96,7 @@ func (m *Model) resourceControl(label, kind, id string) button.Model {
 	switch kind {
 	case "shutdown", "cancel", "reject", "credential-remove":
 		tone = "danger"
-	case "add", "approve":
+	case "approve":
 		tone = "success"
 	}
 	return button.Model{Label: label, Action: a, Disabled: hint != "", Hint: hint, Tone: tone}
@@ -161,20 +161,14 @@ func (m *Model) prepare(a Action) {
 		payload = domain.TaskTarget{TaskID: t.Source.ID}
 		dialog.Title, dialog.Target, dialog.Confirm = "Cancel this task?", t.Name+" · "+t.ID, "Cancel task"
 		dialog.Body = "Request cancellation of this task at the reviewed lifecycle version. Completed effects are not undone."
-	case "approve", "reject", "add":
+	case "approve", "reject":
 		d := m.discovery(a.ID)
 		dialog.Target = d.Name + " · " + string(d.NodeID)
 		dialog.Body = fmt.Sprintf("Address: %s · key: %s. ", unknown(d.Address), d.Fingerprint)
-		if a.Kind == "add" {
-			command.Type = "cluster.add"
-			payload = domain.ClusterAdd{DiscoveryID: domain.ID(d.ID), ExpectedNodeID: d.NodeID, ExpectedKeyFingerprint: domain.Digest(d.Fingerprint)}
-			dialog.Title, dialog.Confirm = "Add discovered host?", "Add"
-		} else {
-			command.Type = "cluster.request." + a.Kind
-			payload = domain.JoinDecisionPayload{RequestID: d.RequestID}
-			command.ExpectedVersions = domain.Versions{"join_request:" + string(d.RequestID): d.Version}
-			dialog.Title, dialog.Confirm = "Approve join request?", "Approve"
-		}
+		command.Type = "cluster.request." + a.Kind
+		payload = domain.JoinDecisionPayload{RequestID: d.RequestID}
+		command.ExpectedVersions = domain.Versions{"join_request:" + string(d.RequestID): d.Version}
+		dialog.Title, dialog.Confirm = "Approve join request?", "Approve"
 		if a.Kind == "reject" {
 			dialog.Title, dialog.Confirm = "Reject join request?", "Reject"
 			dialog.Body += "Reject without granting membership."

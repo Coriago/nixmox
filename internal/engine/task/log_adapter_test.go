@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -19,11 +20,6 @@ import (
 )
 
 func TestTaskOwnsGenericLogAdapters(t *testing.T) {
-	store, err := OpenJournal(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Shutdown()
 	var instances atomic.Int32
 	adapter := engine.LogAdapterFactory{Name: "example.counter", New: func(ctx engine.AdapterContext) (engine.LogAdapter, error) {
 		instances.Add(1)
@@ -53,41 +49,36 @@ func TestTaskOwnsGenericLogAdapters(t *testing.T) {
 		}
 		return engine.ProcessResult{ExitCode: 0}, nil
 	})
-	def := engine.TaskDefinition{Kind: "probe", Adapters: []engine.LogAdapterFactory{adapter}, Phases: []engine.Phase{{Name: "run", Interruptible: true, Run: func(ctx context.Context, e engine.Execution) error {
+	def := engine.TaskDefinition{Adapter: &adapter, Phase: "run", Interruptible: true, Run: func(ctx context.Context, e engine.Execution) error {
 		for range 2 {
 			result, err := e.Runner(base).Run(ctx, engine.CommandLine{Program: "fake"}, nil, nil)
 			if err != nil || result.ExitCode != 0 {
 				return fmt.Errorf("adapter changed command result: %v", err)
 			}
 		}
-		return e.Observed(ctx, domain.Checkpoint{Phase: "run"})
-	}}}}
-	scheduler, err := NewScheduler(store, "node", []engine.TaskDefinition{def})
+		return nil
+	}}
+	scheduler := NewManager(context.Background(), "node")
+	defer scheduler.Close()
+	receipt, err := scheduler.Accept(context.Background(), localEnvelope("adapters"), def, acknowledged)
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := scheduler.Admit(context.Background(), localEnvelope("adapters"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = scheduler.Execute(context.Background(), *receipt.TaskID); err != nil {
-		t.Fatal(err)
-	}
+	task := awaitTask(t, scheduler, *receipt.TaskID)
 	if instances.Load() != 2 || scheduler.AdapterFailures.Load() != 2 {
 		t.Fatalf("instances=%d failures=%d", instances.Load(), scheduler.AdapterFailures.Load())
 	}
-	task, _ := store.Task(context.Background(), *receipt.TaskID)
-	if task.State != domain.Succeeded || task.Version != 5 {
+	if task.State != domain.Succeeded || task.Version != 3 {
 		t.Fatalf("telemetry changed lifecycle: %+v", task)
 	}
-	progress, err := store.Progress(context.Background(), task.ID)
+	progress, err := scheduler.Progress(context.Background(), task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if progress.Downloads.BytesReceived == nil || *progress.Downloads.BytesReceived != 13 || progress.Freshness != domain.Unknown {
 		t.Fatalf("EOF flush/degradation: %+v", progress)
 	}
-	_, r, err := store.Snapshot(context.Background(), task.ID, nil)
+	_, r, err := scheduler.Snapshot(context.Background(), task.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,24 +87,18 @@ func TestTaskOwnsGenericLogAdapters(t *testing.T) {
 	if string(raw) != strings.Repeat("1stderr\n2\ninvalid\n13", 2) {
 		t.Fatalf("raw log changed: %q", raw)
 	}
-	dir, err := store.root.Open("jobs/" + shared.Filename(task.ID) + "/activities")
-	if err != nil {
-		t.Fatal(err)
+	execution, _ := scheduler.find(task.ID)
+	execution.mu.Lock()
+	activities := maps.Clone(execution.activities)
+	execution.mu.Unlock()
+	if len(activities) != 2 {
+		t.Fatal("activity identities collided")
 	}
-	defer dir.Close()
-	entries, _ := dir.ReadDir(-1)
-	if len(entries) != 2 {
-		t.Fatalf("activity identities collided between processes: %d", len(entries))
-	}
-	for _, entry := range entries {
-		var activity domain.Activity
-		if err = store.read("jobs/"+shared.Filename(task.ID)+"/activities/"+entry.Name(), &activity); err != nil {
-			t.Fatal(err)
-		}
+	for _, activity := range activities {
 		if activity.TaskID != task.ID || activity.NodeID != "node" || !strings.Contains(*activity.LogRef, string(activity.ID)) {
 			t.Fatal("invalid activity ownership/link")
 		}
-		chunk, err := store.Read(context.Background(), task.ID, &activity.ID, 0, 1024)
+		chunk, err := scheduler.Read(context.Background(), task.ID, &activity.ID, 0, 1024)
 		if err != nil || chunk.NextOffset != 16 || !chunk.Complete {
 			t.Fatalf("derived logs: %+v %v", chunk, err)
 		}

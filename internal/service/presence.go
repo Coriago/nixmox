@@ -53,7 +53,22 @@ func (c *ClusterNode) acceptHeartbeat(core *comms.Core, h domain.Heartbeat) {
 	cluster, issuer := c.state.Cluster.ID, c.state.Cluster.IssuerNodeID
 	c.mu.Unlock()
 	if ok && !member.Removed && member.Epoch == *h.Host.MembershipEpoch {
-		c.inventory.heartbeat(h, member, cluster, issuer)
+		accepted, changed := c.inventory.heartbeat(h, member, cluster, issuer)
+		if !accepted {
+			return
+		}
+		if changed {
+			c.signal()
+		}
+		c.mu.Lock()
+		if reservation := c.state.Power; reservation != nil && reservation.HostID == h.Host.ID && reservation.Epoch == member.Epoch && h.BootID != "" && h.BootID != reservation.BootID {
+			state := *c.state
+			state.Power = nil
+			ctx, cancel := context.WithTimeout(c.life, domain.ExportTimeout)
+			_ = c.saveState(ctx, state)
+			cancel()
+		}
+		c.mu.Unlock()
 	}
 }
 func (c *ClusterNode) acceptSample(core *comms.Core, s domain.HostTelemetry) {
@@ -180,10 +195,7 @@ func (s *Service) readHosts(ctx context.Context, request ReadRequest) (json.RawM
 	hosts := s.Cluster.Hosts()
 	if request.ID == nil {
 		page, err := hostPage(hosts, request.Page)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(page)
+		return marshalResult(page, err)
 	}
 	for _, host := range hosts {
 		if host.ID != *request.ID {
@@ -196,10 +208,7 @@ func (s *Service) readHosts(ctx context.Context, request ReadRequest) (json.RawM
 				return json.Marshal(sample)
 			}
 			sample, err := s.Cluster.Sample(host.ID)
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(sample)
+			return marshalResult(sample, err)
 		}
 		return json.Marshal(host)
 	}

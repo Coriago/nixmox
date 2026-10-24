@@ -1,51 +1,74 @@
 package service
 
-import "nixmox/internal/domain"
+import (
+	"context"
 
-// Catalog contains every v1 mutation. Metadata describes requirements, not readiness.
-// Conditional versions/capabilities are validated by the future feature handler.
+	"nixmox/internal/domain"
+	"nixmox/internal/engine"
+)
+
+// Catalog contains implemented mutations and the retained deployment contracts.
+// Deployment entries describe requirements, not executable readiness.
 func Catalog() *Registry {
+	network := operationBehavior{validate: func(_ *ClusterNode, _ context.Context, command domain.Command, _ any) error {
+		if len(command.ExpectedVersions) != 0 {
+			return invalid("This command has no version prerequisites")
+		}
+		return nil
+	}, define: (*Service).networkDefinition}
+	discovery := network
+	discovery.validate = func(c *ClusterNode, ctx context.Context, command domain.Command, value any) error {
+		if !c.config.Discovery.Enable {
+			return invalid("Discovery is disabled")
+		}
+		return network.validate(c, ctx, command, value)
+	}
+	discovery.define = func(s *Service) engine.TaskDefinition { return s.discoveryDefinition() }
+	refresh := operationBehavior{validate: (*ClusterNode).validateMembership, resolve: targetExecutor, define: (*Service).networkDefinition}
+	repository := operationBehavior{resolve: (*ClusterNode).resolveRepository,
+		validate: func(c *ClusterNode, ctx context.Context, command domain.Command, value any) error {
+			_, err := c.repositoryInput(ctx, command, value)
+			return err
+		}, define: func(s *Service) engine.TaskDefinition { return s.Cluster.repositoryDefinition() }}
+	credential := operationBehavior{resolve: (*ClusterNode).resolveCredential,
+		validate: func(c *ClusterNode, ctx context.Context, command domain.Command, value any) error {
+			_, err := c.credentialInput(ctx, command, value)
+			return err
+		}, define: func(s *Service) engine.TaskDefinition { return s.Cluster.credentialDefinition() }}
+	assignment := operationBehavior{
+		validate: func(c *ClusterNode, ctx context.Context, command domain.Command, value any) error {
+			return c.validateAssignment(ctx, command, value.(domain.HostAssign))
+		}, define: func(s *Service) engine.TaskDefinition { return s.Cluster.assignmentDefinition() }}
+	power := operationBehavior{
+		validate: func(c *ClusterNode, ctx context.Context, command domain.Command, value any) error {
+			_, err := c.validatePower(ctx, command, value.(domain.HostPower))
+			return err
+		}, resolve: func(c *ClusterNode, ctx context.Context, e *domain.Envelope, _ any) error {
+			e.OwnerNodeID = e.Command.TargetID
+			return c.reservePower(ctx, e.Command)
+		}, define: (*Service).powerDefinition}
 	r := &Registry{operations: make(map[string]Operation)}
 	for _, op := range []Operation{
-		operation[domain.Empty]("network.check", domain.NodeLocal, "", nil, nil),
-		operation[domain.Empty]("network.wifi.scan", domain.NodeLocal, "", nil, nil),
-		operation[domain.NetworkConnect]("network.wifi.connect", domain.NodeLocal, "", nil, nil),
-		operation[domain.Empty]("discovery.search", domain.NodeLocal, "", nil, nil),
-		operation[domain.IdentityReset]("identity.reset", domain.NodeLocal, "", []string{"identity"}, nil),
-		operation[domain.ClusterJoin]("cluster.join", domain.NodeLocal, "join_request", nil, nil),
-		operation[domain.ClusterCreate]("cluster.create", domain.NodeLocal, "cluster", nil, nil),
-		operation[domain.JoinDecisionPayload]("cluster.request.approve", domain.ClusterScope, "host", []string{"join_request"}, nil),
-		operation[domain.JoinDecisionPayload]("cluster.request.reject", domain.ClusterScope, "join_request", []string{"join_request"}, nil),
-		operation[domain.ClusterAdd]("cluster.add", domain.ClusterScope, "host", nil, nil),
-		operation[domain.ClusterLeave]("cluster.leave", domain.ClusterScope, "host", []string{"host"}, nil),
-		operation[domain.HostAssign]("host.assign", domain.ClusterScope, "host", []string{"host", "configuration"}, nil),
+		operation[domain.Empty]("network.check", domain.NodeLocal, "", nil, nil, network),
+		operation[domain.Empty]("discovery.search", domain.NodeLocal, "", nil, nil, discovery),
+		operation[domain.ClusterJoin]("cluster.join", domain.NodeLocal, "join_request", nil, nil, membership((*ClusterNode).join)),
+		operation[domain.ClusterCreate]("cluster.create", domain.NodeLocal, "cluster", nil, nil, membership((*ClusterNode).create)),
+		operation[domain.JoinDecisionPayload]("cluster.request.approve", domain.ClusterScope, "host", []string{"join_request"}, nil, membership((*ClusterNode).decide)),
+		operation[domain.JoinDecisionPayload]("cluster.request.reject", domain.ClusterScope, "join_request", []string{"join_request"}, nil, membership((*ClusterNode).decide)),
+		operation[domain.ClusterLeave]("cluster.leave", domain.ClusterScope, "host", []string{"host"}, nil, membership((*ClusterNode).depart)),
+		operation[domain.HostAssign]("host.assign", domain.ClusterScope, "host", []string{"host", "configuration"}, nil, assignment),
 		operation[domain.HostAdopt]("host.adopt", domain.ClusterScope, "host", []string{"host"}, nil),
-		operation[domain.HostRemove]("host.remove", domain.ClusterScope, "host", []string{"host"}, nil),
-		operation[domain.HostBootstrap]("host.bootstrap", domain.ClusterScope, "host", nil, []string{"credential"}),
-		operation[domain.HostTarget]("host.refresh", domain.ClusterScope, "host", nil, nil),
-		operation[domain.HostDiagnostics]("host.diagnostics", domain.ClusterScope, "diagnostic", nil, nil),
-		operation[domain.ForceFullMembership]("host.demote", domain.ClusterScope, "host", []string{"host"}, nil),
-		operation[domain.ForceFullMembership]("host.force_full_membership", domain.ClusterScope, "host", []string{"host"}, nil),
-		operation[domain.HostPower]("host.shutdown", domain.ClusterScope, "host", []string{"host"}, []string{"power"}),
-		operation[domain.HostPower]("host.reboot", domain.ClusterScope, "host", []string{"host"}, []string{"power"}),
+		operation[domain.HostRemove]("host.remove", domain.ClusterScope, "host", []string{"host"}, nil, membership((*ClusterNode).depart)),
+		operation[domain.HostTarget]("host.refresh", domain.ClusterScope, "host", nil, nil, refresh),
+		operation[domain.ForceFullMembership]("host.demote", domain.ClusterScope, "host", []string{"host"}, nil, membership((*ClusterNode).promote)),
+		operation[domain.ForceFullMembership]("host.force_full_membership", domain.ClusterScope, "host", []string{"host"}, nil, membership((*ClusterNode).promote)),
+		operation[domain.HostPower]("host.shutdown", domain.ClusterScope, "host", []string{"host"}, []string{"power"}, power),
+		operation[domain.HostPower]("host.reboot", domain.ClusterScope, "host", []string{"host"}, []string{"power"}, power),
 		operation[domain.InstallerEntry]("host.enter_installer", domain.ClusterScope, "host", nil, []string{"install", "power"}),
-		operation[domain.RepositoryImport]("repository.import", domain.ClusterScope, "repository", nil, nil),
-		operation[domain.RepositoryTarget]("repository.fetch", domain.ClusterScope, "repository", nil, nil),
-		operation[domain.RepositoryRemoteSet]("repository.remote.set", domain.ClusterScope, "repository", []string{"repository"}, nil),
-		operation[domain.RepositoryCredentialSet]("repository.credential.set", domain.ClusterScope, "repository", nil, nil),
-		operation[domain.RepositoryGCPlan]("repository.gc.plan", domain.ClusterScope, "gc_plan", nil, nil),
-		operation[domain.RepositoryGC]("repository.gc", domain.ClusterScope, "gc_plan", []string{"gc_plan", "recipe"}, nil),
-		operation[domain.RepositoryPublish]("repository.publish", domain.ClusterScope, "publication", []string{"repository"}, []string{"credential"}),
-		operation[domain.PublicationMerge]("publication.merge", domain.ClusterScope, "publication", []string{"publication"}, []string{"credential"}),
-		operation[domain.RecipeVersionDelete]("recipe.version.delete", domain.ClusterScope, "gc_plan", []string{"gc_plan", "recipe"}, nil),
-		operation[domain.ConfigurationGenerate]("configuration.generate", domain.ClusterScope, "draft", nil, nil),
-		operation[domain.DraftEdit]("configuration.draft.edit", domain.ClusterScope, "draft", []string{"draft"}, nil),
-		operation[domain.ConfigurationValidate]("configuration.validate", domain.ClusterScope, "validation", nil, nil),
-		operation[domain.DraftTarget]("configuration.commit", domain.ClusterScope, "configuration", []string{"draft", "repository", "recipe"}, nil),
-		operation[domain.HostTarget]("onboarding.inspect", domain.ClusterScope, "observation", nil, nil),
-		operation[domain.OnboardingPrepare]("onboarding.prepare", domain.ClusterScope, "preparation", nil, nil),
-		operation[domain.PreparationCommit]("onboarding.commit", domain.ClusterScope, "preparation", []string{"preparation", "repository"}, nil),
-		operation[domain.CredentialTarget]("onboarding.sops.credential.set", domain.ClusterScope, "settings", []string{"settings"}, nil),
+		operation[domain.RepositoryImport]("repository.import", domain.ClusterScope, "repository", nil, nil, repository),
+		operation[domain.RepositoryTarget]("repository.fetch", domain.ClusterScope, "repository", nil, nil, repository),
+		operation[domain.RepositoryRemoteSet]("repository.remote.set", domain.ClusterScope, "repository", []string{"repository"}, nil, repository),
+		operation[domain.RepositoryCredentialSet]("repository.credential.set", domain.ClusterScope, "repository", nil, nil, repository),
 		operation[domain.DeploymentPreview]("deployment.preview", domain.ClusterScope, "validation", []string{"host"}, nil),
 		operation[domain.DeploymentBuild]("deployment.build", domain.ClusterScope, "candidate", []string{"host"}, []string{"build"}),
 		operation[domain.DeploymentDiff]("deployment.diff", domain.ClusterScope, "diff", nil, nil),
@@ -53,19 +76,27 @@ func Catalog() *Registry {
 		operation[domain.DeploymentApprove]("deployment.approve", domain.ClusterScope, "task", nil, nil),
 		operation[domain.DeploymentRollback]("deployment.rollback", domain.ClusterScope, "deployment", []string{"host"}, nil),
 		operation[domain.DeploymentInstall]("deployment.install", domain.ClusterScope, "deployment", nil, []string{"install"}),
-		operation[domain.MediaBuild]("media.build", domain.ClusterScope, "media", nil, []string{"build"}),
-		operation[domain.MediaFetch]("media.fetch", domain.ClusterScope, "media", nil, nil),
-		operation[domain.MediaProfileRegister]("media.profile.register", domain.ClusterScope, "media_profile", nil, nil),
-		operation[domain.MediaPlanCreate]("media.plan", domain.ClusterScope, "media_plan", nil, []string{"media_write"}),
-		operation[domain.MediaWrite]("media.write", domain.ClusterScope, "media", []string{"media_plan"}, []string{"media_write"}),
-		operation[domain.CredentialImport]("credential.import", domain.ClusterScope, "credential", nil, []string{"credential"}),
-		operation[domain.CredentialCheckPayload]("credential.check", domain.ClusterScope, "credential", nil, []string{"credential"}),
-		operation[domain.CredentialTarget]("credential.remove", domain.ClusterScope, "credential", []string{"credential"}, []string{"credential"}),
-		operation[domain.CredentialTarget]("cache.credential.set", domain.ClusterScope, "settings", []string{"settings"}, nil),
+		operation[domain.CredentialImport]("credential.import", domain.ClusterScope, "credential", nil, []string{"credential"}, credential),
+		operation[domain.CredentialCheckPayload]("credential.check", domain.ClusterScope, "credential", nil, []string{"credential"}, credential),
+		operation[domain.CredentialTarget]("credential.remove", domain.ClusterScope, "credential", []string{"credential"}, []string{"credential"}, credential),
 		operation[domain.TaskTarget]("task.cancel", domain.Inherited, "task", []string{"task"}, nil),
 		operation[domain.TaskTarget]("task.retry", domain.Inherited, "task", []string{"task"}, nil),
 	} {
 		r.operations[op.Name] = op
 	}
 	return r
+}
+
+type membershipAction func(*ClusterNode, context.Context, domain.Command, engine.Execution) (any, error)
+
+func membership(action membershipAction) operationBehavior {
+	return operationBehavior{validate: (*ClusterNode).validateMembership,
+		define: func(s *Service) engine.TaskDefinition {
+			return s.Cluster.membershipDefinition(action)
+		}}
+}
+
+func targetExecutor(_ *ClusterNode, _ context.Context, envelope *domain.Envelope, _ any) error {
+	envelope.OwnerNodeID = envelope.Command.TargetID
+	return nil
 }

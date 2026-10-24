@@ -125,6 +125,24 @@ func (o *options) api() (*client.Client, error) {
 	return api, nil
 }
 
+// read shares client setup, output encoding and exit handling without replacing
+// Cobra's command, argument or flag APIs.
+func (o *options) read(run func(*cobra.Command, *client.Client, []string) (any, error)) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		api, err := o.api()
+		if err != nil {
+			return err
+		}
+		value, err := run(cmd, api, args)
+		return o.print(cmd, value, err)
+	}
+}
+
+func pageFlags(cmd *cobra.Command, page *domain.PageRequest) {
+	cmd.Flags().StringVar(&page.Cursor, "cursor", "", "Cursor from the previous page")
+	cmd.Flags().IntVar(&page.Limit, "limit", domain.PageDefault, "Page size (1–500)")
+}
+
 func (o *options) print(cmd *cobra.Command, value any, err error) error {
 	if err != nil {
 		return operationError(err)

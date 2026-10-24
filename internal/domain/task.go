@@ -26,7 +26,6 @@ type Task struct {
 	Progress      Counter         `json:"progress"`
 	Cancellation  Cancellation    `json:"cancellation"`
 	Effects       map[string]bool `json:"effects"`
-	Checkpoints   []Checkpoint    `json:"checkpoints"`
 	Log           LogReference    `json:"log"`
 	Approval      *Approval       `json:"approval"`
 	Review        *Review         `json:"review"`
@@ -38,14 +37,6 @@ type Cancellation struct {
 	Allowed   bool    `json:"allowed"`
 	Requested bool    `json:"requested"`
 	Reason    *string `json:"reason"`
-}
-
-type Checkpoint struct {
-	Phase      string          `json:"phase"`
-	State      string          `json:"state"`
-	IntentAt   time.Time       `json:"intent_at"`
-	ObservedAt *time.Time      `json:"observed_at"`
-	Evidence   json.RawMessage `json:"evidence"`
 }
 
 type Counter struct {
@@ -142,4 +133,11 @@ type Activity struct {
 type ActivitySource struct {
 	Kind string  `json:"kind"`
 	URL  *string `json:"url"`
+}
+
+type ProgressEvent struct {
+	TaskID  ID      `json:"task_id"`
+	Version Version `json:"version"`
+	Observed
+	Progress TaskProgress `json:"progress"`
 }

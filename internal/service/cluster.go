@@ -45,14 +45,17 @@ type ClusterNode struct {
 	keys               *identity.Local
 	host               domain.Host
 	transport          *comms.Runtime
+	transportChanged   chan struct{}
+	events             chan struct{}
 	state              *domain.MembershipState
-	revision           engine.Revision
+	taskViews          map[domain.ID]taskObservation
+	revision           uint64
 	inventory          *inventory
 	limiter            *rate.Limiter
 }
 
 func OpenCluster(ctx context.Context, config runtime.Config, keys *identity.Local, host domain.Host) (*ClusterNode, error) {
-	c := &ClusterNode{life: ctx, config: config, keys: keys, host: host, transport: &comms.Runtime{}, inventory: newInventory(), limiter: rate.NewLimiter(5, 10)}
+	c := &ClusterNode{events: make(chan struct{}, 1), life: ctx, config: config, keys: keys, host: host, transport: &comms.Runtime{}, inventory: newInventory(), limiter: rate.NewLimiter(5, 10)}
 	c.secrets = &identity.SecretStore{Root: config.DataDir, NodeID: keys.Identity.NodeID}
 	c.git = &git.Engine{Root: config.DataDir, Credentials: c.gitAuthentication}
 	c.nix = nix.Engine{Runner: task.ProcessRunner{}, PinDirectory: filepath.Join(config.DataDir, "store-roots")}
@@ -68,7 +71,14 @@ func OpenCluster(ctx context.Context, config runtime.Config, keys *identity.Loca
 	}
 	return c, nil
 }
-func (c *ClusterNode) Close() { c.mu.Lock(); defer c.mu.Unlock(); c.transport.Close() }
+func (c *ClusterNode) signal() {
+	select {
+	case c.events <- struct{}{}:
+	default:
+	}
+}
+func (c *ClusterNode) CacheClose() { c.cache.Close() }
+func (c *ClusterNode) Close()      { c.mu.Lock(); defer c.mu.Unlock(); c.transport.Close() }
 func (c *ClusterNode) creator() bool {
 	return c.keys.Trust != nil && c.keys.Trust.Cluster.IssuerNodeID == c.keys.Identity.NodeID
 }
@@ -163,8 +173,8 @@ func (c *ClusterNode) startTransport() error {
 		return err
 	}
 	var limits *comms.StorageLimits
-	if c.creator() {
-		limits = &comms.StorageLimits{Commands: 16 << 20, Results: 16 << 20, State: 8 << 20, Objects: 8 << 20, Replicas: 1, Existing: c.keys.Trust.ControlInitialized}
+	if c.keys.Trust == nil || c.creator() {
+		limits = &comms.StorageLimits{Commands: 16 << 20, State: 8 << 20, Objects: 8 << 20, Replicas: 1, Existing: c.keys.Trust != nil && c.keys.Trust.ControlInitialized}
 	}
 	var transport *comms.Runtime
 	if c.keys.Trust != nil && c.keys.Trust.BrokerTransition != "" {
@@ -191,6 +201,7 @@ func (c *ClusterNode) startTransport() error {
 // Some NATS leaf authorization changes require a restart. Only the transport
 // generation changes; node identity, membership and execution history do not.
 func (c *ClusterNode) configure(ctx context.Context) error {
+	defer c.notifyTransport()
 	c.syncMembershipContext()
 	c.transport.Close()
 	if err := c.startTransport(); err != nil {
@@ -215,7 +226,7 @@ func (c *ClusterNode) configure(ctx context.Context) error {
 func (c *ClusterNode) loadMembership(ctx context.Context) error {
 	trust := c.keys.Trust
 	id := c.keys.Identity.NodeID
-	entry, err := c.transport.Store.Get(ctx, "membership")
+	entry, err := c.transport.Store.KV.Get(ctx, "membership")
 	if errors.Is(err, js.ErrKeyNotFound) && !trust.ControlInitialized {
 		state := domain.MembershipState{Topology: trust.Topology, Cluster: trust.Cluster, Members: map[domain.ID]domain.Member{id: {NodeID: id, Version: 1, Epoch: 1, DaemonKey: c.keys.DaemonKey(), BrokerKey: c.keys.BrokerKey(), BrokerCertificate: c.keys.BrokerCertificate(), RequestID: trust.Issuance.RequestID}}, Requests: map[domain.ID]domain.JoinRequest{}}
 		if err = c.saveState(ctx, state); err != nil {
@@ -225,13 +236,13 @@ func (c *ClusterNode) loadMembership(ctx context.Context) error {
 		return fmt.Errorf("cluster membership unavailable: %w", err)
 	} else {
 		var state domain.MembershipState
-		if err = json.Unmarshal(entry.Value, &state); err != nil {
+		if err = json.Unmarshal(entry.Value(), &state); err != nil {
 			return err
 		}
 		if state.Cluster.ID != trust.Cluster.ID || state.Members[id].NodeID != id {
 			return errors.New("cluster membership identity mismatch")
 		}
-		c.state, c.revision = &state, entry.Revision
+		c.state, c.revision = &state, entry.Revision()
 	}
 	if err := c.completeMembership(ctx); err != nil {
 		return err
@@ -257,11 +268,7 @@ func (c *ClusterNode) saveState(ctx context.Context, state domain.MembershipStat
 	if err := c.quorum(ctx); err != nil {
 		return err
 	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	revision, err := c.transport.Store.CompareAndSwap(ctx, "membership", c.revision, data)
+	revision, err := writeRecord(ctx, c.transport.Store.KV, "membership", c.revision, state)
 	if err == nil {
 		c.state, c.revision = &state, revision
 	}

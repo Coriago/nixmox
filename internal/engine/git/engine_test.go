@@ -266,8 +266,7 @@ func TestGitRemoteCredentialsAndCancellation(t *testing.T) {
 	g := &Engine{Root: t.TempDir()}
 	for _, raw := range []string{"http://example/repo", "ext::tool", "https://user:secret@example/repo", "https://example/repo?token=secret", "file://remote/path", "file:relative"} {
 		repo := domain.Repository{Remote: domain.Remote{URL: raw}}
-		_, _, cleanup, err := g.remote(ctx, repo, memory.NewStorage())
-		cleanup()
+		_, _, err := g.remote(ctx, repo, memory.NewStorage())
 		if err == nil {
 			t.Fatalf("unsafe remote accepted: %s", raw)
 		}
@@ -282,9 +281,8 @@ func TestGitRemoteCredentialsAndCancellation(t *testing.T) {
 		t.Fatal("missing credential holder accepted")
 	}
 	for _, fail := range []bool{false, true} {
-		released := false
 		want := &githttp.BasicAuth{Username: "git", Password: "test-only"}
-		g.Credentials = func(_ context.Context, got domain.Repository) (Authentication, func(), error) {
+		g.Credentials = func(_ context.Context, got domain.Repository) (Authentication, error) {
 			if got.ID != repo.ID || *got.Remote.CredentialRef != credential {
 				t.Fatal("credential scope changed")
 			}
@@ -292,12 +290,11 @@ func TestGitRemoteCredentialsAndCancellation(t *testing.T) {
 			if fail {
 				err = errors.New("holder unavailable")
 			}
-			return Authentication{HTTP: want}, func() { released = true }, err
+			return Authentication{HTTP: want}, err
 		}
-		_, auth, cleanup, err := g.remote(ctx, repo, memory.NewStorage())
-		cleanup()
-		if !released || (err != nil) != fail || (!fail && auth.HTTP != want) {
-			t.Fatalf("credential lifecycle: released=%v err=%v", released, err)
+		_, auth, err := g.remote(ctx, repo, memory.NewStorage())
+		if (err != nil) != fail || (!fail && auth.HTTP != want) {
+			t.Fatalf("credential lookup: %v", err)
 		}
 	}
 	cancelled, cancel := context.WithCancel(ctx)

@@ -34,6 +34,7 @@ type Discovery struct {
 	records  map[domain.ID]domain.Discovery
 	announce func() []domain.Discovery
 	limit    *rate.Limiter
+	Changed  func()
 }
 
 // OpenDiscovery uses the standard UDP socket and x/net multicast controls.
@@ -170,24 +171,16 @@ func (d *Discovery) Run(ctx context.Context) error {
 					d.records[record.ID] = record
 				}
 				d.mu.Unlock()
+				if d.Changed != nil {
+					d.Changed()
+				}
 				if packet.Search {
 					_ = d.send(false)
 				}
 			}
 		})
 	}
-	group.Go(func() error {
-		ticker := time.NewTicker(domain.DiscoveryInterval)
-		defer ticker.Stop()
-		for {
-			_ = d.send(false) // LAN hints are best effort, never durable admission.
-			select {
-			case <-life.Done():
-				return life.Err()
-			case <-ticker.C:
-			}
-		}
-	})
+	_ = d.send(true) // One discovery request at startup; subsequent work follows packets/actions.
 	return group.Wait()
 }
 func (d *Discovery) Snapshot() []domain.Discovery {
