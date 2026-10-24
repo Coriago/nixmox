@@ -15,7 +15,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          vendorHash = "sha256-7Q5oa6MxFbtP6jOLd53mSJ6/Rs703JHYGvUqGrHHUWI=";
+          vendorHash = "sha256-4XWb0/mU0VyGIw6zZVgvUtP+dVxCBSQXTw0VmRFWP/g=";
         in
         {
           default = pkgs.buildGoModule {
@@ -25,62 +25,19 @@
             inherit vendorHash;
             subPackages = [ "cmd/nixmox" ];
             env.CGO_ENABLED = "0"; # Bootstrap agents must not require a host libc.
-            nativeCheckInputs = [ pkgs.git ];
+            postBuild = ''
+              mkdir -p ui-assets
+              GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o ui-assets/app.wasm ./cmd/nixmox
+              cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui-assets/wasm_exec.js
+            '';
+            postInstall = ''
+              mkdir -p $out/share/nixmox-ui
+              cp ui-assets/* $out/share/nixmox-ui/
+            '';
             checkPhase = ''
               runHook preCheck
               go test ./... -count=1 -timeout=120s
               runHook postCheck
-            '';
-          };
-          ui-preview = pkgs.buildGoModule {
-            pname = "nixmox-ui-preview";
-            meta.mainProgram = "ui-preview";
-            version = "0.1.0";
-            src = self;
-            inherit vendorHash;
-            subPackages = [ "cmd/ui-preview" ];
-            env.CGO_ENABLED = "0";
-            nativeCheckInputs = [ pkgs.nodejs ];
-            postBuild = ''
-              mkdir -p preview-assets
-              GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o preview-assets/app.wasm ./cmd/ui-preview
-              cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" preview-assets/wasm_exec.js
-            '';
-            checkPhase = ''
-              runHook preCheck
-              go test ./internal/ui/components ./internal/ui/console ./internal/ui/terminal ./internal/ui/browser -count=1
-              GOOS=js GOARCH=wasm go test -exec "env -i PATH=$PATH HOME=$HOME $(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./internal/ui/components ./internal/ui/console -count=1
-              runHook postCheck
-            '';
-            postInstall = ''
-              mkdir -p $out/share/nixmox-ui
-              cp preview-assets/* $out/share/nixmox-ui/
-            '';
-          };
-          progress-preview = pkgs.buildGoModule {
-            pname = "nixmox-progress-preview";
-            meta.mainProgram = "progress-preview";
-            version = "0.1.0";
-            src = self;
-            inherit vendorHash;
-            subPackages = [ "cmd/progress-preview" ];
-            env.CGO_ENABLED = "0";
-            nativeCheckInputs = [ pkgs.nodejs ];
-            postBuild = ''
-              mkdir -p preview-assets
-              GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o preview-assets/app.wasm ./cmd/progress-preview
-              cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" preview-assets/wasm_exec.js
-              gzip -k -9 preview-assets/app.wasm
-            '';
-            checkPhase = ''
-              runHook preCheck
-              go test ./internal/ui/progress/... -count=1
-              GOOS=js GOARCH=wasm go test -exec "env -i PATH=$PATH HOME=$HOME $(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./internal/ui/progress -count=1
-              runHook postCheck
-            '';
-            postInstall = ''
-              mkdir -p $out/share/nixmox-progress
-              cp preview-assets/* $out/share/nixmox-progress/
             '';
           };
         }

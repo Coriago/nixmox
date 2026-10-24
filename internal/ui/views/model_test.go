@@ -1,104 +1,85 @@
 package views
 
 import (
-	"nixmox/internal/ui"
 	"reflect"
 	"testing"
 	"time"
 )
 
-func TestSharedActionsAndReview(t *testing.T) {
+func TestStartsEmptyAndDisconnected(t *testing.T) {
 	m := New()
-	m.Dispatch(Action{Kind: "host", ID: "birch"})
-	m.Dispatch(Action{Kind: "host", ID: "alder"})
-	if m.HostID != "alder" || len(m.View().Find(Metrics).Metrics) != 4 || len(tables(m.View())) == 0 {
-		t.Fatal("host switch lost integrated telemetry or history")
+	for range 100 {
+		m.Advance(time.Second)
 	}
-	count := len(m.Tasks)
-	m.Dispatch(Action{Kind: "shutdown"})
-	if m.Modal == nil || len(m.Tasks) != count {
-		t.Fatal("action bypassed review")
+	if len(m.Hosts)+len(m.Tasks)+len(m.Discoveries) != 0 || m.Cluster != (Cluster{}) {
+		t.Fatal("controller manufactured observations")
 	}
-	m.Dispatch(Action{Kind: "page", ID: "Settings"})
-	if m.Page != "Hosts" {
-		t.Fatal("background accepted input under modal")
+	if m.View().Connection != BackendUnavailable {
+		t.Fatal("connection state is misleading")
+	}
+	for _, b := range m.View().Toolbar {
+		if b.Action.Kind == "replay" || b.Action.Kind == "pause" {
+			t.Fatal("demo control remains")
+		}
+	}
+}
+
+func TestFramesAndUnwiredActionsNeverChangeObservations(t *testing.T) {
+	m := New()
+	m.Hosts = []Host{{ID: "node", Name: "node", Reachability: "online"}}
+	m.Tasks = []Task{{ID: "task", HostID: "node", State: "running", Total: 10, Done: 2}}
+	m.Discoveries = []Discovery{{ID: "new-node", Requested: true}}
+	hosts, tasks, discoveries := append([]Host(nil), m.Hosts...), append([]Task(nil), m.Tasks...), append([]Discovery(nil), m.Discoveries...)
+	for range 100 {
+		m.Advance(time.Second)
+	}
+	for _, kind := range []string{"refresh", "network-check", "shutdown", "cancel", "approve", "reject", "add", "replay", "pause", "confirm"} {
+		m.Dispatch(Action{Kind: kind, ID: "node"})
+	}
+	if !reflect.DeepEqual(hosts, m.Hosts) || !reflect.DeepEqual(tasks, m.Tasks) || !reflect.DeepEqual(discoveries, m.Discoveries) {
+		t.Fatal("presentation changed backend-owned observations")
+	}
+	m.Dispatch(Action{Kind: "host", ID: "node"})
+	for _, b := range m.View().HeaderActions {
+		if !b.Disabled || b.Hint != BackendUnavailable {
+			t.Fatal("unwired action is enabled", b)
+		}
+	}
+	for _, metric := range m.View().Find(Metrics).Metrics {
+		if metric.Known {
+			t.Fatal("missing telemetry was fabricated")
+		}
+	}
+}
+
+func TestProjectionInputsAreExplicit(t *testing.T) {
+	m := New()
+	m.Hosts = []Host{{ID: "one", Name: "one"}, {ID: "two", Name: "two"}}
+	m.Tasks = []Task{{ID: "task", HostID: "one", State: "running"}}
+	before := m.taskTable("Tasks", "", "All", "")
+	m.Page, m.Query = "Tasks", "no match"
+	if !reflect.DeepEqual(before, m.taskTable("Tasks", "", "All", "")) {
+		t.Fatal("table depends on route state")
+	}
+	if len(m.hostTable("Hosts", "two").Records) != 1 {
+		t.Fatal("explicit query ignored")
+	}
+}
+
+func TestHelpTrapsActionsAndFollowIsShared(t *testing.T) {
+	m := New()
+	m.Dispatch(Action{Kind: "help"})
+	m.Dispatch(Action{Kind: "page", ID: "Hosts"})
+	if m.Page != "Cluster" {
+		t.Fatal("modal did not trap actions")
 	}
 	m.Dispatch(Action{Kind: "dismiss"})
-	if len(m.Tasks) != count {
-		t.Fatal("dismiss executed effects")
-	}
-	m.Dispatch(Action{Kind: "shutdown"})
-	m.Dispatch(Action{Kind: "confirm"})
-	if len(m.Tasks) != count+1 || m.Task(m.TaskID).State != "reconciling" {
-		t.Fatal("mock power must reconcile, not claim off")
-	}
-	m.Dispatch(Action{Kind: "approve", ID: "willow"})
-	m.Dispatch(Action{Kind: "confirm"})
-	if m.Host("willow").Membership != "pending" || m.Host("willow").Reachability != "unknown" {
-		t.Fatal("approval fabricated live/full member")
-	}
-}
-func TestMockProgressBoundedAndTerminal(t *testing.T) {
-	m := New()
-	for range 1000 {
-		m.Advance(100 * time.Millisecond)
-	}
-	for _, task := range m.Tasks {
-		if len(task.Log.Lines) > 160 {
-			t.Fatal("unbounded log")
-		}
-		if task.Total > 0 && task.Done != task.Total {
-			t.Fatal("mock work never completed", task)
-		}
-	}
-	for _, host := range m.Hosts {
-		if len(host.History) > 60 {
-			t.Fatal("unbounded telemetry")
-		}
-	}
-	if m.Task("power-cedar").State != "reconciling" {
-		t.Fatal("offline was used as proof of shutdown")
-	}
-	_, tone := m.View().Hosts[2].Marker, m.View().Hosts[2].Tone
-	if tone != "muted" {
-		t.Fatal("offline host animated as active")
-	}
-}
-func TestPauseFiltersCancelAndMotion(t *testing.T) {
-	m := New()
-	m.Dispatch(Action{Kind: "pause"})
-	before := m.Tasks[0].Done
-	m.Advance(time.Hour)
-	if before != m.Tasks[0].Done {
-		t.Fatal("pause advanced observations")
-	}
-	m.Dispatch(Action{Kind: "motion"})
-	v := m.View()
-	m.Advance(time.Second)
-	if tables(m.View())[len(tables(v))-1].Records[0].Marker != tables(v)[len(tables(v))-1].Records[0].Marker {
-		t.Fatal("reduced motion spinner changed")
-	}
-	m.Dispatch(Action{Kind: "task", ID: "network-birch"})
-	m.Dispatch(Action{Kind: "cancel"})
-	m.Dispatch(Action{Kind: "confirm"})
-	if m.Task("network-birch").State != "cancelled" {
-		t.Fatal("cancellation missing")
-	}
-	m.Dispatch(Action{Kind: "page", ID: "Tasks"})
-	m.Dispatch(Action{Kind: "filter", ID: "Active"})
-	for _, row := range tables(m.View())[0].Records {
-		if !ui.Active(row.Cells[1].Text) {
-			t.Fatal("active filter", row.Cells[1].Text)
-		}
-	}
-}
-func TestDeterministicPresentation(t *testing.T) {
-	a, b := New(), New()
-	for range 50 {
-		a.Advance(100 * time.Millisecond)
-		b.Advance(100 * time.Millisecond)
-	}
-	if !reflect.DeepEqual(a.View(), b.View()) {
-		t.Fatal("adapters would receive different views")
+	m.Tasks = []Task{{ID: "task"}}
+	m.Dispatch(Action{Kind: "task", ID: "task"})
+	m.Dispatch(Action{Kind: "tab", ID: "Logs"})
+	m.LogFollow.Scrolled(false)
+	m.Dispatch(Action{Kind: "follow"})
+	if !m.LogFollow.Follow {
+		t.Fatal("follow did not resume")
 	}
 }

@@ -52,7 +52,7 @@ func Render(t theme.Theme, c confirmation.Model, choice, width, height int) View
 		bodyLines = bodyLines[:budget]
 		bodyLines[budget-1] = ansi.Truncate(bodyLines[budget-1], width-7, "") + "…"
 	}
-	prefix := p.Text("accent", "REVIEW / SIMULATION") + "\n" + p.Text("text", c.Title) + "\n" + p.Text("running", c.Target) + "\n\n" + strings.Join(bodyLines, "\n") + "\n"
+	prefix := p.Text("accent", "REVIEW") + "\n" + p.Text("text", c.Title) + "\n" + p.Text("running", c.Target) + "\n\n" + strings.Join(bodyLines, "\n") + "\n"
 	body := prefix + cancel + "\n" + confirm + "\n\n" + p.Text("muted", "Tab choose · Enter act · Esc dismiss")
 	box := lipgloss.NewStyle().Width(width).Padding(1, 2).Background(lipgloss.Color(t.Raised)).Foreground(lipgloss.Color(t.Text)).Border(lipgloss.NormalBorder()).BorderForegroundBlend(lipgloss.Color(t.Accent), lipgloss.Color(t.Running)).Render(body)
 	buttonY := 2 + lipgloss.Height(strings.TrimSuffix(prefix, "\n"))

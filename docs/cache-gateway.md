@@ -91,8 +91,12 @@ HTTP streams per direction. `cache.enable` controls the local gateway; `cache.se
 controls serving independently. `cache.signingCredentialRef` selects the local key.
 `cache.maxConcurrentTransfers` bounds incoming exports and outgoing pulls separately.
 
-Derive the local substituter URL from `http.port`, preserve external substituters,
-and install trusted public cache keys. Standalone agents use the same integration.
+For Nixmox-managed builds/evaluations only, derive the local URL from `http.port`
+and pass `extra-substituters`, `extra-trusted-public-keys`, and fallback as
+command-scoped options, preserving external substituters. Standalone agents use
+the same integration. Never write or include generated Nix configuration, change
+host-wide Nix settings, or restart nix-daemon for cache integration. Other
+consumers decide whether and how to configure this cache themselves.
 
 ```sh
 nixmox credentials import cache-signer --kind nix-cache-signing-key --node alder --file /run/keys/cache-key

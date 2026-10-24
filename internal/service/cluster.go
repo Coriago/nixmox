@@ -52,7 +52,7 @@ type ClusterNode struct {
 
 func OpenCluster(ctx context.Context, config runtime.Config, keys *identity.Local, host domain.Host) (*ClusterNode, error) {
 	c := &ClusterNode{life: ctx, config: config, keys: keys, host: host, transport: &comms.Runtime{}, inventory: newInventory(), limiter: rate.NewLimiter(5, 10)}
-	c.git = &git.Engine{Root: config.DataDir, Runner: task.ProcessRunner{}}
+	c.git = &git.Engine{Root: config.DataDir}
 	c.nix = nix.Engine{Runner: task.ProcessRunner{}, PinDirectory: filepath.Join(config.DataDir, "store-roots")}
 	var err error
 	c.cache, err = newCache(c)
@@ -162,7 +162,7 @@ func (c *ClusterNode) startTransport() error {
 	}
 	var limits *comms.StorageLimits
 	if c.creator() {
-		limits = &comms.StorageLimits{Commands: 16 << 20, Results: 16 << 20, State: 8 << 20, Git: 8 << 20, Replicas: 1, Existing: c.keys.Trust.ControlInitialized}
+		limits = &comms.StorageLimits{Commands: 16 << 20, Results: 16 << 20, State: 8 << 20, Objects: 8 << 20, Replicas: 1, Existing: c.keys.Trust.ControlInitialized}
 	}
 	var transport *comms.Runtime
 	if c.keys.Trust != nil && c.keys.Trust.BrokerTransition != "" {

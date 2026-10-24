@@ -3,7 +3,6 @@ package browser
 import (
 	"github.com/maxence-charriere/go-app/v11/pkg/app"
 
-	"nixmox/internal/ui/components/button"
 	buttons "nixmox/internal/ui/components/button/browser"
 	confirmation "nixmox/internal/ui/components/confirmation/browser"
 	logs "nixmox/internal/ui/components/log/browser"
@@ -19,40 +18,30 @@ func (c *Component) Render() app.UI {
 	if c.core == nil {
 		return app.Main().Class("loading").Text("Opening your workspace…")
 	}
+	c.logView.FollowState = &c.core.LogFollow
 	v := c.core.View()
 	return app.Div().ID("workspace").Class("workspace").Attr("style", v.Theme.CSS()).
 		DataSet("reduced", v.Reduced).DataSet("theme", v.Theme.Name).OnKeyDown(c.key).Body(
 		c.sidebar(v),
 		app.Div().Class("main-shell").Body(
 			app.Header().Class("topbar").Body(
-				app.Span().Class("context").Text("homelab"),
-				app.Span().Class("preview-badge").Text("MOCK WORKSPACE"),
-				app.Div().Class("toolbar").Body(
-					buttons.Render(button.Model{Label: "Theme", Action: views.Action{Kind: "theme"}}, c.dispatch),
-					buttons.Render(button.Model{Label: pauseLabel(v.Paused), Action: views.Action{Kind: "pause"}, Active: v.Paused}, c.dispatch),
-					buttons.Render(button.Model{Label: "Replay", Action: views.Action{Kind: "replay"}}, c.dispatch),
-					buttons.Render(button.Model{Label: "?", Action: views.Action{Kind: "help"}}, c.dispatch),
-				),
+				app.Span().Class("context").Text(v.Workspace),
+				app.Span().Class("connection-badge").Text(v.Connection),
+				app.Div().Class("toolbar").Body(app.Range(v.Toolbar).Slice(func(i int) app.UI { return buttons.Render(v.Toolbar[i], c.dispatch) })),
 			),
 			c.page(v),
 			app.Footer().Class("footer").Body(
-				app.Span().Text("SIMULATED DATA · NO HOST OPERATIONS"),
+				app.Span().Text(v.Connection),
 				app.Span().Text("t theme · m motion · ? help"),
 			),
 		),
 		confirmation.Render(v.Modal, c.dispatch),
 	)
 }
-func pauseLabel(paused bool) string {
-	if paused {
-		return "Resume"
-	}
-	return "Pause"
-}
 func (c *Component) sidebar(v views.View) app.UI {
 	return app.Aside().Class("sidebar").Body(
 		app.Div().Class("brand").Body(app.Span().Class("brand-gem").Aria("hidden", true).Text("◈"), app.Strong().Text("nixmox"), app.Small().Text("CLUSTER CONSOLE")),
-		app.Div().Class("workspace-label").Body(app.Small().Class("eyebrow").Text("WORKSPACE"), app.Strong().Text("homelab"), app.Small().Text("Cluster workspace")),
+		app.Div().Class("workspace-label").Body(app.Small().Class("eyebrow").Text("WORKSPACE"), app.Strong().Text(v.Workspace), app.Small().Text("Cluster workspace")),
 		app.Nav().Aria("label", "Main navigation").Body(app.Range(v.Nav).Slice(func(i int) app.UI {
 			b := v.Nav[i]
 			return app.Button().Type("button").Class("nav-item").Aria("current", b.Active).OnClick(c.click(b.Action), app.EventScope(b.Action.Kind, b.Action.ID)).Body(
@@ -67,7 +56,7 @@ func (c *Component) sidebar(v views.View) app.UI {
 					app.Span().Text(h.Title), app.Small().Text(h.State))
 			})),
 		),
-		app.Div().Class("sidebar-bottom").Body(app.Span().Class("connection-dot").Text("○"), app.Div().Body(app.Strong().Text("Preview session"), app.Small().Text("No daemon connected"))),
+		app.Div().Class("sidebar-bottom").Body(app.Span().Class("connection-dot").Text("○"), app.Div().Body(app.Strong().Text("Connection"), app.Small().Text(v.Connection))),
 	)
 }
 

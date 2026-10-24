@@ -127,7 +127,6 @@ nixmox repositories list
 nixmox repositories refs lab
 nixmox artifacts show art_01 --json
 nixmox repositories fetch lab --wait
-nixmox repositories rebase lab --ref ref_cedar --onto ref_main --wait
 nixmox repositories publish lab --ref ref_cedar --pull-request --wait
 ```
 
@@ -137,7 +136,7 @@ Remote failures do not disable local work whose pinned base is cached or operati
 on unrelated repositories.
 
 Browser/TUI: Repositories → Add/Import; repository detail → Changes/Refs →
-Diff, Rebase, or Publish. Artifact detail shows storage and retention.
+Diff, Update from upstream, or Publish. Artifact detail shows storage and retention.
 
 Repository list shows remote URL, upstream freshness, and pending refs.
 Detail shows ahead/behind counts with fetch time, not an assertion
@@ -153,9 +152,6 @@ and publication. Build readiness reports missing remote prerequisites separately
 | repository.fetch | repository_id |
 | repository.remote.set | repository_id, url, optional upstream_branch (preserve existing); expected repository version |
 | repository.credential.set | repository_id, credential_ref |
-| repository.rebase | repository_id, ref_id, onto_ref_id; expected repository version |
-| repository.rebase.resolve | task_id, resolved_files_ref; expected draft/repository versions from conflict review |
-| repository.rebase.abort | task_id |
 | artifact.delete | artifact_id; optional plan_id (approval), task_id (resume); expected plan/artifact versions when approving |
 | repository.gc.plan | repository_id, optional artifact_ids (default all eligible); produces a plan without deleting |
 | repository.gc | repository_id, plan_id; expected plan/artifact versions; recheck affected refs and dependencies |
@@ -163,9 +159,7 @@ and publication. Build readiness reports missing remote prerequisites separately
 | publication.merge | publication_id, expected_remote_head; expected publication version |
 
 Read `/repositories/{id}/refs`, `/repositories/{id}/diff?from=...&to=...`,
-`/artifacts/{id}`, `/publications/{id}`. Rebase conflicts expose a retained draft
-and file paths; `nixmox repositories rebase-resolve TASK --files DIR --expected-version VERSION` or
-`rebase-abort TASK` mirrors the conflict panel in both UIs. No silent conflict choice.
+`/artifacts/{id}`, `/publications/{id}`.
 
 `repositories remote set <repository> --url <url>` preserves the upstream branch;
 optional `--upstream <branch>` changes it explicitly. Reads expose the current
@@ -174,22 +168,18 @@ repository version used by the mutation envelope. `publications merge <publicati
 reviewed remote head and integration base before invoking the provider merge.
 Browser/TUI expose the same publication review and Merge action.
 
-Rebase task results expose `draft_id` and the expected draft/repository versions.
-Read conflicts through the common draft/file routes. The CLI uploads the reviewed
-directory to `POST /api/v1/drafts/{id}/resolutions?version=<version>` as streaming
-multipart parts keyed by safe relative path, then submits the returned
-`resolved_files_ref`. Uploads only stage owner-local files; they do not edit the
-accepted draft/ref. Validate paths and digest manifests, reject symlink escapes,
-bind the reference to draft/version, and expire unclaimed staging after one hour.
-Resubmitting a command reuses its staged reference; consumed references remain
-bound to the receipt. Draft unavailability is an error, never an empty resolution.
+## Upstream reconciliation (future work)
 
-## Rebase publication and merge
+For unpublished generated host configurations, update from upstream by regenerating
+in an isolated checkout of the new pinned base, not by rebasing commits. Reuse the
+saved generation inputs and original pinned templates; always overwrite the
+manifest-owned generated files. Rerun the structured SOPS updater against the new
+checkout rather than replaying its textual diff. Generation, SOPS or validation
+failure reports configuration checkout reconciliation failure and leaves the
+accepted revision unchanged. Accept success with a version check; existing tasks
+retain their old commits and new outputs require fresh evidence.
 
-Rebase against a pinned upstream commit in an isolated worktree. Conflicts leave
-the accepted head unchanged. A successful rebase validates and replaces it using
-expected repository version. Existing tasks keep old commits. New commit IDs need
-new evidence; old results remain historical.
+## Publication and merge
 
 Publication pushes a selected commit to a change branch. Reconcile uncertain push
 and PR creation before retrying. Adding credentials never automatically publishes.
@@ -215,7 +205,7 @@ After verified upstream inclusion, mark artifacts eligible for cleanup. First
 check active tasks, rollback/history source pins, and later increments that depend
 on them. Squash/rebase merges may publish equivalent content without preserving
 the original commit ID; preserve artifacts still needed for that exact commit.
-Dependent changes must be safely rebased/repackaged before removing prerequisites.
+Dependent changes must be regenerated/repackaged before removing prerequisites.
 
 `nixmox repositories gc lab --dry-run --wait` submits `repository.gc.plan` and
 returns a plan listing artifacts, reclaimed bytes, protected references, and

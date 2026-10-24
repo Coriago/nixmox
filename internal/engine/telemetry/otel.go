@@ -122,7 +122,7 @@ func NewOTel(ctx context.Context, c OTelConfig) (*OTel, error) {
 	t.Metrics = sdkmetric.NewMeterProvider(mp...)
 	t.tracer = resourceTracerProvider{TracerProvider: t.Traces, resources: t.resources}.Tracer("nixmox")
 	meter := t.Metrics.Meter("nixmox")
-	for _, name := range []string{"command.failures", "broker.reconnects", "git.bytes", "artifact.failures", "log.catchup.bytes", "cache.bytes", "cache.failures"} {
+	for _, name := range []string{"command.failures", "broker.reconnects", "git.bytes", "recipe.failures", "log.catchup.bytes", "cache.bytes", "cache.failures"} {
 		t.counters[name], _ = meter.Int64Counter("nixmox." + name)
 	}
 	for _, name := range []string{"command.admission.seconds", "task.phase.seconds", "cache.lookup.seconds"} {

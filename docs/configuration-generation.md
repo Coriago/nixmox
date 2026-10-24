@@ -81,6 +81,18 @@ arbitrary field values as Nix code. The serializer must escape Nix interpolation
 The example emits a host module; the repository's flake must export the declared
 attribute. Templates may emit additional files to provide that wiring.
 
+## Saved generation and template upgrades (future work)
+
+Retain a generation manifest with typed inputs/schema version, generated-file
+ownership, exact template identities/source commits, and structured SOPS update
+inputs (never secret contents). Protect the pinned template sources from GC;
+missing source is an error, never permission to use the latest template.
+
+Updating upstream reuses this recipe and overwrites its generated files as described
+in [GitOps reconciliation](gitops.md#upstream-reconciliation-future-work). Template
+upgrade is a separate explicit decision: select a new revision, transfer compatible
+inputs, and request missing or incompatible inputs before generating a new candidate.
+
 ## Selecting configurations without generation
 
 By default, enumerate names under `nixosConfigurations` at the selected commit.
@@ -195,7 +207,7 @@ An intervening repository edit requires explicit re-render/review, never automat
 substitution of its new version. Form and file edits use the same versioned draft
 operation and invalidate validation. File edits are limited to existing generated
 text outputs in that draft, with the normal safe-path and command-size limits.
-Rebase drafts share these read routes:
+Draft file reads:
 `GET /api/v1/drafts/{id}/files` lists `{path, bytes, sha256}` and
 `GET /api/v1/drafts/{id}/files/content?path=<relative-path>` streams one file at the
 optional `version` (defaults to current). Reject unsafe paths; file-list pages and

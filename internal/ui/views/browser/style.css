@@ -24,10 +24,10 @@ h1:focus{outline:none}
 .sidebar-bottom strong{font-size:11px;font-weight:500}
 .sidebar-bottom small,.connection-dot{color:var(--muted);font-size:10px}
 .main-shell{min-width:0;display:flex;flex-direction:column;min-height:100dvh}
-.topbar{height:52px;padding:0 24px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--border);background:var(--surface)}
+.topbar{min-height:52px;padding:8px 24px;display:flex;flex-wrap:wrap;align-items:center;gap:14px;border-bottom:1px solid var(--border);background:var(--surface)}
 .context{color:var(--muted);font-size:12px}
-.preview-badge{color:var(--warning);font:9px ui-monospace,monospace;letter-spacing:.6px;border-left:1px solid var(--border);padding-left:14px}
-.toolbar{margin-left:auto;display:flex;gap:6px}
+.connection-badge{color:var(--warning);font:9px ui-monospace,monospace;letter-spacing:.6px;border-left:1px solid var(--border);padding-left:14px}
+.toolbar{margin-left:auto;display:flex;flex-wrap:wrap;gap:6px}
 .toolbar .button{font-size:10px;padding:5px 10px}
 .page{width:100%;padding:22px 24px;flex:1;min-width:0}
 .page-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:20px}
@@ -35,7 +35,7 @@ h1:focus{outline:none}
 .page-heading .eyebrow{margin:0 0 6px}
 h1{font-size:25px;font-weight:600;letter-spacing:-.5px;margin:0 0 4px;line-height:1.2}
 .subtitle{color:var(--muted);font-size:12px;margin:0}
-.header-actions{display:flex;gap:7px;flex-shrink:0;padding-top:20px}
+.header-actions{display:flex;flex-wrap:wrap;gap:7px;flex-shrink:0;padding-top:20px}
 .identity-panel{margin-bottom:20px;border-top:2px solid var(--accent)}
 .section-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin:16px 0}
 .tables{display:flex;flex-direction:column;gap:16px;margin:16px 0}
@@ -60,10 +60,9 @@ h1{font-size:25px;font-weight:600;letter-spacing:-.5px;margin:0 0 4px;line-heigh
 .host-shortcuts>.section-heading{display:none}
 .host-shortcut-list{display:flex;overflow-x:auto;margin:0;gap:8px}
 .host-shortcut{width:auto;flex-shrink:0;padding:6px}
-.host-shortcut small{display:none}
-.topbar{padding:0 12px;gap:8px}
+.topbar{padding:8px 12px;gap:8px}
 .context{display:none}
-.preview-badge{padding-left:0;border:0;font-size:8px}
+.connection-badge{padding-left:0;border:0;font-size:8px}
 .toolbar{gap:4px}
 .toolbar .button{padding:4px 7px}
 .page{padding:16px 12px}

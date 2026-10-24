@@ -52,9 +52,9 @@ func Render(t theme.Theme, metrics []telemetry.Model, width int, compact bool) s
 			if m.Visualization() == telemetry.History {
 				body += Plot(t, m.History, cw-4, plotHeight, m.Tone)
 			} else if m.Visualization() == telemetry.Capacity {
-				body += bars.Render(t, progress.Bar{Display: m.Fraction}, cw-4) + strings.Repeat("\n", plotHeight-1)
+				body += bars.Render(t, progress.Bar{Display: m.Fraction}, cw-4) + "\n" + p.Text("muted", style.Fit(m.Caption(), cw-4))
 			} else {
-				body += p.Text("muted", style.Fit("Unavailable", cw-4)) + strings.Repeat("\n", plotHeight-1)
+				body += p.Text("muted", style.Fit(m.Caption(), cw-4)) + strings.Repeat("\n", plotHeight-1)
 			}
 			tiles = append(tiles, p.Panel(body, cw))
 		}

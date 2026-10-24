@@ -23,7 +23,7 @@ self:
     requires = [ "nixmox.service" ];
     conflicts = [ "getty@tty1.service" ];
     serviceConfig = {
-      ExecStart = "${config.services.nixmox.package}/bin/nixmox tui --installer";
+      ExecStart = "${config.services.nixmox.package}/bin/nixmox tui";
       StandardInput = "tty";
       StandardOutput = "tty";
       TTYPath = "/dev/tty1";

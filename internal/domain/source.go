@@ -2,13 +2,16 @@ package domain
 
 import "time"
 
+// Source pins either a Git commit or a recipe version, never a moving latest head.
+// Recipe realization is not implemented; Git materialization remains Git-only.
 type Source struct {
-	RepositoryID   ID     `json:"repository_id"`
-	Configuration  string `json:"configuration"`
-	RefID          *ID    `json:"ref_id"`
-	Commit         Commit `json:"commit"`
-	FlakeDirectory string `json:"flake_directory"`
-	FlakeAttribute string `json:"flake_attribute"`
+	RepositoryID   ID         `json:"repository_id"`
+	Configuration  string     `json:"configuration"`
+	RefID          *ID        `json:"ref_id"`
+	Commit         Commit     `json:"commit,omitempty"`
+	Recipe         *RecipePin `json:"recipe,omitempty"`
+	FlakeDirectory string     `json:"flake_directory"`
+	FlakeAttribute string     `json:"flake_attribute"`
 }
 
 type SourceSelector struct {
@@ -74,74 +77,42 @@ type RefPublication struct {
 	PullRequestURL *string `json:"pull_request_url"`
 }
 
-type Artifact struct {
-	Record
-	RepositoryID     ID                `json:"repository_id"`
-	CommandID        ID                `json:"command_id"`
-	Commit           Commit            `json:"commit"`
-	RemoteBaseCommit Commit            `json:"remote_base_commit"`
-	Prerequisites    []Commit          `json:"prerequisites"`
-	Bundle           Bundle            `json:"bundle"`
-	Storage          ArtifactStorage   `json:"storage"`
-	Retention        ArtifactRetention `json:"retention"`
-	ValidationID     ID                `json:"validation_id"`
-	TaskIDs          []ID              `json:"task_ids"`
-	PublicationID    *ID               `json:"publication_id"`
-}
-
-type Bundle struct {
+// StoredObject identifies a checksummed payload; it does not prescribe a Git format.
+type StoredObject struct {
 	ObjectKey string `json:"object_key"`
 	SHA256    Digest `json:"sha256"`
 	Bytes     int64  `json:"bytes"`
 }
 
-type ArtifactStorage struct {
-	State string `json:"state"`
-}
-
-type ArtifactRetention struct {
-	State           string  `json:"state"`
-	PublishedCommit *Commit `json:"published_commit"`
-	Pins            []ID    `json:"pins"`
-}
-
 type Publication struct {
 	Record
-	RemoteURL       string    `json:"remote_url"`
-	CredentialRef   *ID       `json:"credential_ref"`
-	RepositoryID    ID        `json:"repository_id"`
-	RefID           ID        `json:"ref_id"`
-	Commit          Commit    `json:"commit"`
-	RemoteBranch    string    `json:"remote_branch"`
-	PullRequestURL  *string   `json:"pull_request_url"`
-	RemoteHead      *Commit   `json:"remote_head"`
-	IntegrationBase Commit    `json:"integration_base"`
-	State           string    `json:"state"`
-	CreatedAt       time.Time `json:"created_at"`
+	RemoteURL       string     `json:"remote_url"`
+	CredentialRef   *ID        `json:"credential_ref"`
+	RepositoryID    ID         `json:"repository_id"`
+	RefID           ID         `json:"ref_id,omitempty"`
+	Recipe          *RecipePin `json:"recipe,omitempty"`
+	Commit          Commit     `json:"commit"`
+	RemoteBranch    string     `json:"remote_branch"`
+	PullRequestURL  *string    `json:"pull_request_url"`
+	RemoteHead      *Commit    `json:"remote_head"`
+	IntegrationBase Commit     `json:"integration_base"`
+	State           string     `json:"state"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 type GCPlan struct {
 	Record
-	RepositoryID           ID       `json:"repository_id"`
-	ArtifactIDs            []ID     `json:"artifact_ids"`
-	ReclaimedBytes         int64    `json:"reclaimed_bytes"`
-	ProtectedReferences    []string `json:"protected_references"`
-	UnpublishedArtifactIDs []ID     `json:"unpublished_artifact_ids"`
-	Review                 Review   `json:"review"`
-	ExpectedVersions       Versions `json:"expected_versions"`
+	RepositoryID              ID              `json:"repository_id"`
+	RecipeVersions            []RecipeVersion `json:"recipe_versions"`
+	ReclaimedBytes            int64           `json:"reclaimed_bytes"`
+	ProtectedReferences       []string        `json:"protected_references"`
+	UnpublishedRecipeVersions []RecipeVersion `json:"unpublished_recipe_versions"`
+	Review                    Review          `json:"review"`
+	ExpectedVersions          Versions        `json:"expected_versions"`
 }
 
 type FileManifest struct {
 	Path   string `json:"path"`
 	Bytes  int64  `json:"bytes"`
 	SHA256 Digest `json:"sha256"`
-}
-
-type Resolution struct {
-	Reference    ID             `json:"reference"`
-	DraftID      ID             `json:"draft_id"`
-	DraftVersion Version        `json:"draft_version"`
-	OwnerNodeID  ID             `json:"owner_node_id"`
-	Files        []FileManifest `json:"files"`
-	ExpiresAt    time.Time      `json:"expires_at"`
 }

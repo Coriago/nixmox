@@ -1,7 +1,6 @@
 package terminal
 
 import (
-	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/viewport"
@@ -11,9 +10,9 @@ import (
 	style "nixmox/internal/ui/terminal"
 )
 
-type View struct{ Follow bool }
+type View struct{ *logs.FollowState }
 
-func (v *View) Scrolled(port viewport.Model) { v.Follow = port.AtBottom() }
+func (v *View) Scrolled(port viewport.Model) { v.FollowState.Scrolled(port.AtBottom()) }
 func (v *View) Sync(port *viewport.Model) {
 	if v.Follow {
 		port.GotoBottom()
@@ -21,7 +20,7 @@ func (v *View) Sync(port *viewport.Model) {
 }
 func Render(t theme.Theme, data logs.Model, width int) string {
 	p := style.Styles{Theme: t}
-	lines := []string{p.Text("muted", fmt.Sprintf("Retained %d / %d lines", len(data.Lines), data.Total))}
+	lines := []string{p.Text("muted", data.Summary())}
 	for _, line := range data.Lines {
 		lines = append(lines, p.Text("muted", style.Fit(line, width)))
 	}

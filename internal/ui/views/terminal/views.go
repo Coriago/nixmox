@@ -11,7 +11,6 @@ import (
 	"nixmox/internal/ui/components/button"
 	buttons "nixmox/internal/ui/components/button/terminal"
 	confirmation "nixmox/internal/ui/components/confirmation/terminal"
-	"nixmox/internal/ui/components/log"
 	logs "nixmox/internal/ui/components/log/terminal"
 	sections "nixmox/internal/ui/components/section/terminal"
 	"nixmox/internal/ui/components/table"
@@ -84,6 +83,7 @@ func (m *Model) contentPage() page {
 		}
 		add("")
 	}
+	controls(v.Toolbar, false)
 	for _, block := range v.Blocks {
 		switch block.Kind {
 		case views.Heading:
@@ -96,7 +96,7 @@ func (m *Model) contentPage() page {
 		case views.Tabs:
 			controls(block.Buttons, false)
 		case views.Metrics:
-			add(p.Text("muted", "TELEMETRY · MOCK RECENT SAMPLES"))
+			add(p.Text("muted", "TELEMETRY"))
 			add(telemetry.Render(v.Theme, block.Metrics, w, m.height < 30))
 		case views.Search:
 			if m.search.Editing {
@@ -126,10 +126,10 @@ func (m *Model) contentPage() page {
 		case views.Preview:
 			add(logs.Preview(v.Theme, block.Lines, w))
 		case views.Logs:
-			label := log.FollowLabel(m.logView.Follow)
-			controls([]button.Model{{Label: label, Action: views.Action{Kind: "follow"}}}, false)
+			controls([]button.Model{m.Core.LogFollow.Control()}, false)
 			add(logs.Render(v.Theme, *block.Log, w))
-		case views.Notice: // Docked in the terminal status footer by layout().
+		case views.Notice:
+			add(p.Text("accent", ansi.Wrap(v.Notice, w, "")))
 		}
 	}
 	return page{strings.Join(lines, "\n"), targets}
@@ -142,11 +142,8 @@ func (m *Model) layout() (tea.View, []target) {
 	layers := []*lipgloss.Layer{lipgloss.NewLayer(bg)}
 	var targets []target
 	put := func(s string, x, y int) { layers = append(layers, lipgloss.NewLayer(s).X(x).Y(y)) }
-	put(ansi.Truncate(p.Text("accent", "nixmox")+"  "+p.Text("muted", "/ homelab"), max(1, m.width-4), "…"), 2, 1)
-	badge := "MOCK WORKSPACE · no host operations"
-	if v.Paused {
-		badge = "MOCK WORKSPACE · paused"
-	}
+	put(ansi.Truncate(p.Text("accent", "nixmox")+"  "+p.Text("muted", "/ "+v.Workspace), max(1, m.width-4), "…"), 2, 1)
+	badge := v.Connection
 	put(p.Text("muted", ansi.Truncate(badge, max(1, m.width-4), "…")), 2, 2)
 	if m.width < 52 || m.height < 14 {
 		put(p.Text("warning", ansi.Truncate("Resize to at least 52 × 14. q to quit.", max(1, m.width-4), "…")), 2, min(5, m.height-1))
@@ -197,9 +194,6 @@ func (m *Model) layout() (tea.View, []target) {
 	}
 	footer := "/ filter · j/k select · Enter open · ↑↓ scroll · ←→ pan · Tab focus · t theme · q quit"
 	put(p.Text("muted", ansi.Truncate(footer, m.width-4, "…")), 2, m.height-2)
-	if v.Notice != "" {
-		put(p.Text("accent", ansi.Truncate(v.Notice, m.width-4, "…")), 2, m.height-3)
-	}
 	if v.Modal != nil {
 		w := min(64, m.width-4)
 		dialog := confirmation.Render(v.Theme, *v.Modal, m.modal.Choice, w, m.height)
@@ -217,6 +211,6 @@ func (m *Model) layout() (tea.View, []target) {
 	view.MouseMode = tea.MouseModeCellMotion
 	view.BackgroundColor = lipgloss.Color(v.Theme.Background)
 	view.ForegroundColor = lipgloss.Color(v.Theme.Text)
-	view.WindowTitle = "nixmox · Mock workspace"
+	view.WindowTitle = "nixmox · " + v.Workspace
 	return view, targets
 }

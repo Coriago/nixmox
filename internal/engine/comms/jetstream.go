@@ -27,8 +27,8 @@ const commandStream = "nx_commands"
 const resultStream = "nx_results"
 
 var (
-	_ engine.StateStore    = (*JetStream)(nil)
-	_ engine.ArtifactStore = (*JetStream)(nil)
+	_ engine.StateStore  = (*JetStream)(nil)
+	_ engine.ObjectStore = (*JetStream)(nil)
 )
 
 type JetStream struct {
@@ -39,13 +39,13 @@ type JetStream struct {
 }
 
 type StorageLimits struct {
-	Existing                      bool
-	Commands, Results, State, Git int64
-	Replicas                      int
+	Existing                          bool
+	Commands, Results, State, Objects int64
+	Replicas                          int
 }
 
 func OpenJetStream(ctx context.Context, nc *nats.Conn, cluster, node domain.ID, limits StorageLimits) (*JetStream, error) {
-	if cluster == "" || node == "" || (limits.Replicas != 1 && limits.Replicas != 3) || limits.Commands <= 0 || limits.Results <= 0 || limits.State <= 0 || limits.Git <= 0 {
+	if cluster == "" || node == "" || (limits.Replicas != 1 && limits.Replicas != 3) || limits.Commands <= 0 || limits.Results <= 0 || limits.State <= 0 || limits.Objects <= 0 {
 		return nil, errors.New("positive storage limits and 1 or 3 replicas required")
 	}
 	api, err := js.New(nc)
@@ -63,7 +63,7 @@ func OpenJetStream(ctx context.Context, nc *nats.Conn, cluster, node domain.ID, 
 		if err != nil {
 			return nil, err
 		}
-		j.Objects, err = api.ObjectStore(ctx, domain.GitBucket)
+		j.Objects, err = api.ObjectStore(ctx, domain.ObjectBucket)
 		return j, err
 	}
 	prefix := "nx." + shared.Token(cluster) + "."
@@ -81,13 +81,13 @@ func OpenJetStream(ctx context.Context, nc *nats.Conn, cluster, node domain.ID, 
 	if err != nil {
 		return nil, err
 	}
-	j.Objects, err = api.CreateObjectStore(ctx, js.ObjectStoreConfig{Bucket: domain.GitBucket, Storage: js.FileStorage, Replicas: limits.Replicas, MaxBytes: limits.Git})
+	j.Objects, err = api.CreateObjectStore(ctx, js.ObjectStoreConfig{Bucket: domain.ObjectBucket, Storage: js.FileStorage, Replicas: limits.Replicas, MaxBytes: limits.Objects})
 	if err != nil {
 		return nil, err
 	}
 	// Object storage must not evict old chunks at capacity. KV maintains one
 	// authoritative revision per key; its own per-subject retention is intentional.
-	stream, err := api.Stream(ctx, "OBJ_"+domain.GitBucket)
+	stream, err := api.Stream(ctx, "OBJ_"+domain.ObjectBucket)
 	if err != nil {
 		return nil, err
 	}
@@ -280,12 +280,12 @@ func (w *stateWatcher) Next(ctx context.Context) (engine.StateEntry, error) {
 	}
 }
 
-func (j *JetStream) Put(ctx context.Context, b domain.Bundle, r io.Reader) error {
-	if !shared.ValidBundle(b) {
-		return errors.New("invalid bundle manifest")
+func (j *JetStream) Put(ctx context.Context, b domain.StoredObject, r io.Reader) error {
+	if !shared.ValidStoredObject(b) {
+		return errors.New("invalid object manifest")
 	}
 	// Spool/verify first: no unverified object becomes visible, bounded by manifest.
-	f, err := os.CreateTemp("", "nixmox-bundle-*")
+	f, err := os.CreateTemp("", "nixmox-object-*")
 	if err != nil {
 		return err
 	}
@@ -297,9 +297,10 @@ func (j *JetStream) Put(ctx context.Context, b domain.Bundle, r io.Reader) error
 		return err
 	}
 	if n != b.Bytes || hex.EncodeToString(h.Sum(nil)) != string(b.SHA256) {
-		return errors.New("bundle size/digest mismatch")
+		return errors.New("object size/digest mismatch")
 	}
 	claim := []byte(b.SHA256)
+	// Keep the durable claim namespace so existing object keys remain immutable.
 	key := "artifact." + shared.Token(domain.ID(b.ObjectKey))
 	if _, err = j.KV.Create(ctx, key, claim); err != nil {
 		entry, e := j.KV.Get(ctx, key)
@@ -307,7 +308,7 @@ func (j *JetStream) Put(ctx context.Context, b domain.Bundle, r io.Reader) error
 			return err
 		}
 		if string(entry.Value()) != string(claim) {
-			return errors.New("immutable artifact key conflict")
+			return errors.New("immutable object key conflict")
 		}
 	}
 	if _, err = f.Seek(0, io.SeekStart); err != nil {
@@ -317,9 +318,9 @@ func (j *JetStream) Put(ctx context.Context, b domain.Bundle, r io.Reader) error
 	return err
 }
 
-func (j *JetStream) Open(ctx context.Context, b domain.Bundle) (io.ReadCloser, error) {
-	if !shared.ValidBundle(b) {
-		return nil, errors.New("invalid bundle manifest")
+func (j *JetStream) Open(ctx context.Context, b domain.StoredObject) (io.ReadCloser, error) {
+	if !shared.ValidStoredObject(b) {
+		return nil, errors.New("invalid object manifest")
 	}
 	obj, err := j.Objects.Get(ctx, b.ObjectKey)
 	if err != nil {
@@ -333,13 +334,13 @@ func (j *JetStream) Open(ctx context.Context, b domain.Bundle) (io.ReadCloser, e
 	raw, _ := hex.DecodeString(string(b.SHA256))
 	if info.Size != uint64(b.Bytes) || info.Digest != "SHA-256="+base64.URLEncoding.EncodeToString(raw) {
 		obj.Close()
-		return nil, errors.New("stored artifact differs from manifest")
+		return nil, errors.New("stored object differs from manifest")
 	}
-	// ObjectResult validates chunk digest at EOF. Git import must consume through EOF.
+	// ObjectResult validates chunk digest at EOF. Consumers must read through EOF.
 	return obj, nil
 }
 
-func (j *JetStream) Delete(ctx context.Context, b domain.Bundle) error {
+func (j *JetStream) Delete(ctx context.Context, b domain.StoredObject) error {
 	return j.Objects.Delete(ctx, b.ObjectKey)
 }
 

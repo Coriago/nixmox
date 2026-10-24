@@ -1,4 +1,4 @@
-// Package git implements isolated Git materialization, incremental transport and explicit publication.
+// Package git implements pinned Git sources, isolated checkouts and explicit publication.
 package git
 
 import (
@@ -13,14 +13,16 @@ import (
 	"strings"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
-	"github.com/go-git/go-git/v5/storage"
-	"github.com/go-git/go-git/v5/storage/memory"
+	"github.com/go-git/go-billy/v6/osfs"
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/object"
+	gitssh "github.com/go-git/go-git/v6/plumbing/transport/ssh"
+	"github.com/go-git/go-git/v6/storage"
+	"github.com/go-git/go-git/v6/storage/memory"
+	linked "github.com/go-git/go-git/v6/x/plumbing/worktree"
 
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
@@ -31,11 +33,26 @@ var _ engine.Git = (*Engine)(nil)
 
 type Engine struct {
 	Root string
-	// Runner is needed only for operations unsupported by stable go-git.
-	Runner engine.Runner
 	// Credentials returns ephemeral holder-owned authentication and optional cleanup.
 	// SSH requires PublicKeys with an explicit host-key verifier; never an ambient agent.
-	Credentials func(context.Context, domain.Repository) (transport.AuthMethod, func(), error)
+	Credentials func(context.Context, domain.Repository) (Authentication, func(), error)
+}
+
+// Authentication keeps managed HTTP credentials and verified SSH keys explicit.
+type Authentication struct {
+	HTTP client.HTTPAuth
+	SSH  *gitssh.PublicKeys
+}
+
+func (a Authentication) options() []client.Option {
+	var options []client.Option
+	if a.HTTP != nil {
+		options = append(options, client.WithHTTPAuth(a.HTTP))
+	}
+	if a.SSH != nil {
+		options = append(options, client.WithSSHAuth(a.SSH))
+	}
+	return options
 }
 
 func (g *Engine) directory(id domain.ID) string {
@@ -70,35 +87,35 @@ func validRemote(raw string) bool {
 	return u.Host != ""
 }
 
-func (g *Engine) remote(ctx context.Context, repository domain.Repository, store storage.Storer) (*gogit.Remote, transport.AuthMethod, func(), error) {
+func (g *Engine) remote(ctx context.Context, repository domain.Repository, store storage.Storer) (*gogit.Remote, Authentication, func(), error) {
 	cleanup := func() {}
 	if err := ctx.Err(); err != nil {
-		return nil, nil, cleanup, err
+		return nil, Authentication{}, cleanup, err
 	}
 	if !validRemote(repository.Remote.URL) {
-		return nil, nil, cleanup, errors.New("remote requires HTTPS, SSH or absolute file URL without embedded secrets")
+		return nil, Authentication{}, cleanup, errors.New("remote requires HTTPS, SSH or absolute file URL without embedded secrets")
 	}
-	var auth transport.AuthMethod
+	var auth Authentication
 	if repository.Remote.CredentialRef != nil {
 		if g.Credentials == nil {
-			return nil, nil, cleanup, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git credential holder unavailable"}
+			return nil, Authentication{}, cleanup, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git credential holder unavailable"}
 		}
 		value, release, err := g.Credentials(ctx, repository)
 		if release != nil {
 			cleanup = release
 		}
 		if err != nil {
-			return nil, nil, cleanup, err
+			return nil, Authentication{}, cleanup, err
 		}
-		if value == nil {
-			return nil, nil, cleanup, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git credential holder returned no authentication"}
+		if value.HTTP == nil && value.SSH == nil {
+			return nil, Authentication{}, cleanup, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "Git credential holder returned no authentication"}
 		}
 		auth = value
 	}
 	if strings.HasPrefix(repository.Remote.URL, "ssh:") {
-		keys, ok := auth.(*gitssh.PublicKeys)
-		if !ok || keys == nil || keys.Signer == nil || keys.HostKeyCallback == nil {
-			return nil, nil, cleanup, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "SSH requires a managed key and explicit host-key verification"}
+		keys := auth.SSH
+		if keys == nil || keys.Signer == nil || keys.HostKeyCallback == nil {
+			return nil, Authentication{}, cleanup, &domain.Error{Code: "CREDENTIAL_UNAVAILABLE", Message: "SSH requires a managed key and explicit host-key verification"}
 		}
 	}
 	return gogit.NewRemote(store, &config.RemoteConfig{Name: "upstream", URLs: []string{repository.Remote.URL}}), auth, cleanup, nil
@@ -115,7 +132,10 @@ func (g *Engine) open(ctx context.Context, id domain.ID) (*gogit.Repository, err
 }
 
 func (g *Engine) ensure(ctx context.Context, id domain.ID) error {
-	_, err := g.open(ctx, id)
+	r, err := g.open(ctx, id)
+	if err == nil {
+		return r.Close()
+	}
 	if !errors.Is(err, gogit.ErrRepositoryNotExists) {
 		return err
 	}
@@ -123,11 +143,17 @@ func (g *Engine) ensure(ctx context.Context, id domain.ID) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	_, err = gogit.PlainInit(dir, true)
-	return err
+	r, err = gogit.PlainInit(dir, true)
+	if err != nil {
+		return err
+	}
+	return r.Close()
 }
 
 func branchName(branch string) (plumbing.ReferenceName, error) {
+	if strings.HasPrefix(branch, "-") {
+		return "", errors.New("branch name must not start with a dash")
+	}
 	ref := plumbing.NewBranchReferenceName(branch)
 	return ref, ref.Validate()
 }
@@ -135,8 +161,8 @@ func branchName(branch string) (plumbing.ReferenceName, error) {
 // ValidCommit validates the exact object ID supported by this adapter.
 func ValidCommit(commit domain.Commit) bool { return validCommit(commit) }
 
-// Stable go-git stores SHA-1 objects. Never truncate a SHA-256 object ID into a
-// different commit; support for that repository format needs a separate upgrade.
+// This adapter currently accepts SHA-1 repositories only. SHA-256 support needs
+// explicit format handling, never truncation of an object ID.
 func validCommit(commit domain.Commit) bool {
 	return len(commit) == 40 && shared.ValidCommit(commit)
 }
@@ -153,6 +179,7 @@ func (g *Engine) Fetch(ctx context.Context, repository domain.Repository) (domai
 	if err != nil {
 		return "", err
 	}
+	defer r.Close()
 	remote, auth, cleanup, err := g.remote(ctx, repository, r.Storer)
 	defer cleanup()
 	if err != nil {
@@ -160,7 +187,7 @@ func (g *Engine) Fetch(ctx context.Context, repository domain.Repository) (domai
 	}
 	ref := plumbing.ReferenceName("refs/remotes/upstream/" + repository.Upstream.Branch)
 	err = remote.FetchContext(ctx, &gogit.FetchOptions{
-		RemoteName: "upstream", Auth: auth, Tags: gogit.NoTags,
+		RemoteName: "upstream", ClientOptions: auth.options(), Tags: gogit.NoTags,
 		RefSpecs: []config.RefSpec{config.RefSpec("+" + branch.String() + ":" + ref.String())},
 	})
 	if err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
@@ -179,7 +206,8 @@ func (g *Engine) Fetch(ctx context.Context, repository domain.Repository) (domai
 type gitWorktree struct {
 	path       string
 	commit     domain.Commit
-	repository domain.ID
+	repository *gogit.Repository
+	worktrees  *linked.Worktree
 	engine     *Engine
 }
 
@@ -188,8 +216,7 @@ func (w *gitWorktree) Path() string { return w.path }
 func (w *gitWorktree) Commit() domain.Commit { return w.commit }
 
 func (w *gitWorktree) Close() error {
-	_, err := w.engine.run(context.Background(), w.engine.directory(w.repository), "worktree", "remove", "--force", w.path)
-	return err
+	return errors.Join(w.worktrees.Remove(filepath.Base(w.path)), w.repository.Close(), os.RemoveAll(w.path))
 }
 
 func (g *Engine) Materialize(ctx context.Context, source domain.Source) (engine.Worktree, error) {
@@ -203,8 +230,14 @@ func (g *Engine) Materialize(ctx context.Context, source domain.Source) (engine.
 	if err != nil {
 		return nil, err
 	}
+	keepOpen := false
+	defer func() {
+		if !keepOpen {
+			r.Close()
+		}
+	}()
 	if _, err := r.CommitObject(plumbing.NewHash(string(source.Commit))); err != nil {
-		return nil, &domain.Error{Code: "SOURCE_UNAVAILABLE", Message: "Pinned base or retained increment is not materialized"}
+		return nil, &domain.Error{Code: "SOURCE_UNAVAILABLE", Message: "Pinned Git source is not materialized"}
 	}
 	worktrees := filepath.Join(g.Root, "worktrees")
 	if err := os.MkdirAll(worktrees, 0700); err != nil {
@@ -214,11 +247,22 @@ func (g *Engine) Materialize(ctx context.Context, source domain.Source) (engine.
 	if err != nil {
 		return nil, err
 	}
-	if _, err = g.run(ctx, g.directory(source.RepositoryID), "worktree", "add", "--detach", path, string(source.Commit)); err != nil {
+	manager, err := linked.New(r.Storer)
+	if err != nil {
 		os.RemoveAll(path)
 		return nil, err
 	}
-	return &gitWorktree{path, source.Commit, source.RepositoryID, g}, nil
+	err = manager.Add(osfs.New(path, osfs.WithBoundOS()), filepath.Base(path), linked.WithCommit(plumbing.NewHash(string(source.Commit))), linked.WithDetachedHead())
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		manager.Remove(filepath.Base(path))
+		os.RemoveAll(path)
+		return nil, err
+	}
+	keepOpen = true
+	return &gitWorktree{path: path, commit: source.Commit, repository: r, worktrees: manager, engine: g}, nil
 }
 
 func relativeFile(path string) bool {
@@ -244,10 +288,11 @@ func (g *Engine) Commit(ctx context.Context, worktree engine.Worktree, files []d
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	r, err := gogit.PlainOpenWithOptions(w.Path(), &gogit.PlainOpenOptions{EnableDotGitCommonDir: true})
+	r, err := gogit.PlainOpen(w.Path())
 	if err != nil {
 		return "", err
 	}
+	defer r.Close()
 	tree, err := r.Worktree()
 	if err != nil {
 		return "", err
@@ -302,7 +347,7 @@ func (g *Engine) Commit(ctx context.Context, worktree engine.Worktree, files []d
 		if err = ctx.Err(); err != nil {
 			return "", err
 		}
-		// All ignores Path in go-git v5; stage exact paths to exclude unreviewed edits.
+		// Stage exact paths to exclude unreviewed edits.
 		if err = tree.AddWithOptions(&gogit.AddOptions{Path: path}); err != nil {
 			return "", err
 		}
@@ -332,6 +377,7 @@ func (g *Engine) Push(ctx context.Context, repository domain.Repository, commit 
 	if err != nil {
 		return result, err
 	}
+	defer r.Close()
 	if _, err = r.CommitObject(plumbing.NewHash(string(commit))); err != nil {
 		return result, err
 	}
@@ -341,7 +387,7 @@ func (g *Engine) Push(ctx context.Context, repository domain.Repository, commit 
 		return result, err
 	}
 	err = remote.PushContext(ctx, &gogit.PushOptions{
-		RemoteName: "upstream", Auth: auth,
+		RemoteName: "upstream", ClientOptions: auth.options(),
 		RefSpecs: []config.RefSpec{config.RefSpec(string(commit) + ":" + ref.String())},
 	})
 	if err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
@@ -362,7 +408,7 @@ func (g *Engine) ObservePublication(ctx context.Context, p domain.Publication) (
 	if err != nil {
 		return p, err
 	}
-	refs, err := remote.ListContext(ctx, &gogit.ListOptions{Auth: auth})
+	refs, err := remote.ListContext(ctx, &gogit.ListOptions{ClientOptions: auth.options()})
 	if err != nil {
 		return p, err
 	}

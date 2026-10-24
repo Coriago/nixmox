@@ -1,11 +1,11 @@
 // Package views owns shared page definitions, state and actions, never DOM or terminal IO.
-// Mock observations are deliberately isolated in mock.go.
 package views
 
 import (
 	"slices"
 	"time"
 
+	"nixmox/internal/domain"
 	"nixmox/internal/ui"
 	"nixmox/internal/ui/components/confirmation"
 	logs "nixmox/internal/ui/components/log"
@@ -14,38 +14,37 @@ import (
 )
 
 type Action = ui.Action
-type Host struct {
-	ID, Name, Address, Reachability, Membership, Role string
-	CPU                                               float64
-	Memory                                            string
-	Architecture, Processor, OS, Uptime               string
-	Cores                                             int
-	MemoryGiB, MemoryUsedGiB                          float64
-	History                                           []float64
-}
-type Task struct {
-	ID, Name, HostID, State, Phase, Result, Started string
-	Done, Total                                     int
-	Age                                             time.Duration
-	Log                                             logs.Model
-}
 type Model struct {
 	Page, HostID, TaskID, Tab, Filter, Query string
 	ThemeIndex, AccentIndex                  int
-	Reduced, Paused                          bool
+	Reduced                                  bool
 	Modal                                    *confirmation.Model
+	Cluster                                  Cluster
 	Notice                                   string
 	Hosts                                    []Host
 	Discoveries                              []Discovery
 	Tasks                                    []Task
-	elapsed, accumulator                     time.Duration
+	LogFollow                                logs.FollowState
+	accumulator                              time.Duration
 	frame                                    uint64
 	bars                                     map[string]*progress.Spring
+	identity                                 domain.Identity
+	connected                                bool
+	connectionError                          string
+	warnings                                 string
+	telemetry                                map[string]domain.HostTelemetry
+	histories                                map[string][]float64
+	logOffsets                               map[string]int64
+	logPartial                               map[string]string
+	review                                   *domain.Command
+	command                                  *domain.Command
+	busy                                     bool
+	uncertain                                domain.ID
 }
 
 func New() *Model {
-	m := &Model{Page: Pages[0].Name, Tab: "Summary", Filter: "All", bars: map[string]*progress.Spring{}}
-	m.resetMock()
+	m := &Model{Page: Pages[0].Name, Tab: "Summary", Filter: "All", bars: map[string]*progress.Spring{}, telemetry: map[string]domain.HostTelemetry{}, histories: map[string][]float64{}, logOffsets: map[string]int64{}, logPartial: map[string]string{}}
+	m.LogFollow.Follow = true
 	return m
 }
 func (m *Model) Theme() theme.Theme {
@@ -61,14 +60,24 @@ func (m *Model) Host(id string) *Host {
 func (m *Model) Task(id string) *Task {
 	return ui.Find(m.Tasks, func(t Task) bool { return t.ID == id })
 }
+func (m *Model) discovery(id string) *Discovery {
+	return ui.Find(m.Discoveries, func(d Discovery) bool { return d.ID == id || string(d.NodeID) == id })
+}
 func (m *Model) Route() [4]string { return [4]string{m.Page, m.HostID, m.TaskID, m.Tab} }
 func (m *Model) Dispatch(a Action) {
+	old := m.Route()
+	defer func() {
+		if old != m.Route() {
+			m.LogFollow.Follow = true
+		}
+	}()
 	if m.Modal != nil {
 		switch a.Kind {
 		case "dismiss":
-			m.Modal = nil
+			m.Modal, m.review = nil, nil
 		case "confirm":
-			m.confirmMock(*m.Modal)
+			m.command, m.review = m.review, nil
+			m.busy = m.command != nil
 			m.Modal = nil
 		}
 		return
@@ -111,6 +120,10 @@ func (m *Model) Dispatch(a Action) {
 				}
 			}
 		}
+	case "follow":
+		if m.View().Find(Logs) != nil {
+			m.LogFollow.Follow = true
+		}
 	case "search":
 		if len(a.ID) <= 128 {
 			m.Query = ui.Text(a.ID, 128, -1)
@@ -125,28 +138,37 @@ func (m *Model) Dispatch(a Action) {
 		m.AccentIndex = (m.AccentIndex + 1) % 4
 	case "motion":
 		m.Reduced = !m.Reduced
-	case "pause":
-		m.Paused = !m.Paused
-	case "replay":
-		m.resetMock()
-		m.Notice = "Mock scenario restarted. No host operations."
-	case "refresh", "network-check":
-		m.hostActionMock(a.Kind)
-	case "shutdown":
-		if h := m.Host(m.HostID); h != nil && h.Reachability == "online" {
-			m.Modal = &confirmation.Model{Title: "Schedule shutdown?", Target: h.Name, Body: "This is a simulated power action. The preview will add a reconciling task, not contact the host.", Confirm: "Simulate shutdown", Action: "shutdown"}
+	case "refresh", "network-check", "shutdown", "cancel", "approve", "reject", "add":
+		m.prepare(a)
+	case "reconcile":
+		if m.uncertain != "" && !m.busy {
+			m.command = &domain.Command{ID: m.uncertain}
+			m.busy = true
 		}
-	case "cancel":
-		if t := m.Task(m.TaskID); t != nil && t.State == "running" {
-			m.Modal = &confirmation.Model{Title: "Cancel this task?", Target: t.Name, Body: "Stop the simulated execution. Its existing log remains available.", Confirm: "Cancel task", Action: "cancel"}
-		}
-	case "approve", "reject", "add":
-		m.reviewDiscovery(a)
 	case "help":
-		m.Modal = &confirmation.Model{Title: "Make yourself at home", Target: "Keyboard + mouse", Body: "Tab / Shift-Tab focus · Enter activate · Esc back · ↑ ↓ scroll · 1–9 pages · t theme · m motion · p pause demo · q quit TUI. All actions are simulated.", Confirm: "Got it", Action: "help"}
+		m.Modal = &confirmation.Model{Title: "Keyboard and mouse", Body: "Tab / Shift-Tab focus · Enter activate · Esc back · ↑ ↓ scroll · 1–9 pages · / filter · t theme · m motion · q quit TUI.", Confirm: "Got it"}
 	}
 }
+
+// Shortcut returns the same presentation action in the DOM and terminal.
+func Shortcut(key string) (Action, bool) {
+	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+		i := int(key[0] - '1')
+		if i < len(Pages) {
+			return Action{Kind: "page", ID: Pages[i].Name}, true
+		}
+	}
+	bindings := map[string]string{"/": "search-focus", "t": "theme", "m": "motion", "?": "help", "Escape": "back", "esc": "back"}
+	kind, ok := bindings[key]
+	return Action{Kind: kind}, ok
+}
+
 func (m *Model) Advance(dt time.Duration) {
+	for _, sample := range m.telemetry {
+		if !liveSample(sample) {
+			m.projectTelemetry(sample, false)
+		}
+	}
 	// Fixed timestep bounds background-tab catch-up; never replay an unbounded backlog.
 	dt = min(max(dt, 0), 250*time.Millisecond)
 	m.accumulator += dt
@@ -154,10 +176,6 @@ func (m *Model) Advance(dt time.Duration) {
 		m.accumulator -= progress.FrameInterval
 		if !m.Reduced {
 			m.frame++
-		}
-		if !m.Paused {
-			m.elapsed += progress.FrameInterval
-			m.advanceMock()
 		}
 		for i := range m.Tasks {
 			t := &m.Tasks[i]

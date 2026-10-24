@@ -42,7 +42,7 @@ func (c *Client) WatchTask(ctx context.Context, id domain.ID, logs bool, offset 
 					if err := json.Unmarshal(data, &chunk); err != nil {
 						return err
 					}
-					if chunk.DataBase64 == "" {
+					if chunk.DataBase64 == "" && !chunk.Complete {
 						return nil
 					}
 					if err := receive(data); err != nil {

@@ -34,9 +34,7 @@ func row(r table.Record, dispatch actions.Dispatch) app.UI {
 			valueClass += " status-label"
 		}
 		return app.Td().Class("tone-"+cell.Tone).Body(
-			app.If(i == len(r.Cells)-1 && len(r.Controls) > 0, func() app.UI {
-				return app.Div().Class("record-actions").Body(app.Range(r.Controls).Slice(func(n int) app.UI { return buttons.Render(r.Controls[n], dispatch) }))
-			}).ElseIf(i == 0, func() app.UI {
+			app.If(i == 0, func() app.UI {
 				content := []app.UI{app.Span().Class("status-marker", "tone-"+r.Tone).Aria("hidden", true).Text(r.Marker), app.Strong().Text(cell.Text)}
 				if r.Action.Kind == "" {
 					return app.Span().Class("record-identity").Body(content...)
@@ -45,6 +43,9 @@ func row(r table.Record, dispatch actions.Dispatch) app.UI {
 			}).Else(func() app.UI { return app.Span().Class(valueClass).Text(cell.Text) }),
 			app.If(cell.Bar.Known, func() app.UI { return bars.Render(cell.Bar) }),
 			app.If(cell.Detail != "", func() app.UI { return app.Small().Class("cell-detail").Text(cell.Detail) }),
+			app.If(i == len(r.Cells)-1 && len(r.Controls) > 0, func() app.UI {
+				return app.Div().Class("record-actions").Body(app.Range(r.Controls).Slice(func(n int) app.UI { return buttons.Render(r.Controls[n], dispatch) }))
+			}),
 		)
 	}))
 }

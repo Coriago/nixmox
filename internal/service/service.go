@@ -37,9 +37,6 @@ type SecretIngress interface {
 	Import(context.Context, engine.SecretIngress, io.Reader) (domain.Receipt, error)
 	WiFi(context.Context, domain.ID, io.Reader) (domain.SecretStaging, error)
 }
-type Resolutions interface {
-	Stage(context.Context, domain.ID, domain.Version, []domain.FileManifest, io.Reader) (domain.Resolution, error)
-}
 type Service struct {
 	Cache     *Cache
 	Registry  *Registry
@@ -205,11 +202,19 @@ type Configurations interface {
 	Templates(context.Context, domain.Source) ([]domain.Template, error)
 	Render(context.Context, domain.ConfigurationGenerate) (domain.Draft, error)
 	Validate(context.Context, domain.Draft) (domain.Validation, error)
-	Commit(context.Context, domain.Draft, domain.Versions) (domain.Artifact, error)
+	Commit(context.Context, domain.Draft, domain.Versions) (domain.Recipe, error)
+}
+
+// Recipes describes future versioned reads; it does not imply implemented routes.
+// List and a nil Get version return latest only. Versions is explicit, pinned history.
+type Recipes interface {
+	List(context.Context, domain.PageRequest) (domain.Page[domain.Recipe], error)
+	Get(context.Context, domain.ID, *domain.Version) (domain.Recipe, error)
+	Versions(context.Context, domain.ID, domain.PageRequest) (domain.Page[domain.RecipePin], error)
 }
 type Sources interface {
 	Resolve(context.Context, domain.ID, domain.SourceSelector) (domain.Source, error)
-	Accept(context.Context, domain.ID, domain.Draft, domain.Versions) (domain.Artifact, error)
+	Accept(context.Context, domain.ID, domain.Draft, domain.Versions) (domain.Recipe, error)
 	PlanGC(context.Context, domain.RepositoryGCPlan) (domain.GCPlan, error)
 }
 type Membership interface {

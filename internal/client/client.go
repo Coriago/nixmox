@@ -179,8 +179,8 @@ func (c *Client) Requests(ctx context.Context, page ...domain.PageRequest) (doma
 	return listPage[domain.JoinRequest](ctx, c, "cluster/requests", page...)
 }
 
-func (c *Client) Discoveries(ctx context.Context) (domain.Page[domain.Discovery], error) {
-	return get[domain.Page[domain.Discovery]](ctx, c, "discoveries")
+func (c *Client) Discoveries(ctx context.Context, page ...domain.PageRequest) (domain.Page[domain.Discovery], error) {
+	return listPage[domain.Discovery](ctx, c, "discoveries", page...)
 }
 
 func (c *Client) Identity(ctx context.Context) (domain.Identity, error) {

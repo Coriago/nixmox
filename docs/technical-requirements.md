@@ -40,7 +40,7 @@ Use Go for the daemon/CLI/TUI and shared presentation/template logic.
 | TUI | Native shared Go logic + Charm, including live configuration preview/editing |
 | CLI | Typed arguments and JSON API; shared events for watching tasks |
 
-Follow `internal/ui/progress/`: renderer-independent Go component controllers,
+Follow `internal/ui/components/` and `internal/ui/views/layout.go`: renderer-independent Go component controllers,
 explicit actions and complete view models, with thin native/terminal and go-app/DOM
 adapters. Separate reusable components from composed page views; do not duplicate
 formatting, selection, review or task-state rules in renderers. The browser runs
@@ -336,7 +336,7 @@ Physical boot/media claims require disposable-device evidence; VMs alone are ins
 | Installation | USB/SD, kexec, and reboot converge; incompatible entry fails before effects; media/boot/erase approvals separate; same identity/output returns; single-node/issuer state survives; no repeated partitioning |
 | Preparation/SOPS | Reuse unassigned configuration; reject swapped/duplicate disks; confirm every erase target; no-SOPS install; updater failures; exact rule selection, all key groups, shared aliases, idempotent recipient edits |
 | Media/recovery | Physical profiles, compressed image capacity/readback, selected builders/emulation, cache failure/local fallback; recovery survives Apply/rollback/GC |
-| Apply | Local/default/remote-target rules; unpublished remote build; pinned source through rebase; manual/auto approval and restart; changed baseline; boot staging; activation interruption and target exclusion |
+| Apply | Local/default/remote-target rules; unpublished remote build; pinned source through regeneration; manual/auto approval and restart; changed baseline; boot staging; activation interruption and target exclusion |
 | Rollback/health | Retained/missing outputs; desired/running drift; exact output verification and separately reported health; no automatic rollback |
 | Diff/progress | Added/removed/version/output/ambiguous changes; target baseline; changing/unknown totals, cache sources/rates, retries, simultaneous builds/downloads, reconnect; byte completion never implies deployment success |
 | Cache | Signed HTTP substitution; streaming/cancellation/GC; unauthenticated readers; key loss/recovery; builder offline with target fallback; same pinned source; unsupported-system misses |

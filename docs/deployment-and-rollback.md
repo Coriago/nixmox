@@ -106,7 +106,7 @@ keeping the diff available. No second confirmation follows auto-approval.
 
 “Latest” means the latest upstream commit after fetch for an upstream-tracking
 binding, or the latest accepted local-change head for an unpublished binding.
-It does not rebase local changes. Resolve and pin the commit before task admission;
+It does not regenerate local changes against a newer upstream. Resolve and pin the commit before task admission;
 show that revision throughout execution. A failed fetch is an error, not permission
 to silently deploy a cached upstream revision. Later Git changes do not retarget
 the task. Missing configuration bindings direct the user to configuration selection.

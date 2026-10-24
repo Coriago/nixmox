@@ -8,6 +8,7 @@ func TestVisualizationIsRendererIndependent(t *testing.T) {
 		visual Visual
 	}{
 		{Model{Known: true, History: []float64{.1, .3}}, History},
+		{Model{Known: true, History: []float64{.1}}, Waiting},
 		{Model{Known: true, Fraction: .3}, Capacity},
 		{Model{Known: false, History: []float64{.1, .3}}, Unavailable},
 	} {

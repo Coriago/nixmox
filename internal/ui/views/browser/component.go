@@ -2,10 +2,12 @@
 package browser
 
 import (
+	"context"
 	"time"
 
 	"github.com/maxence-charriere/go-app/v11/pkg/app"
 
+	"nixmox/internal/client"
 	actions "nixmox/internal/ui/browser"
 	confirmation "nixmox/internal/ui/components/confirmation/browser"
 	logs "nixmox/internal/ui/components/log/browser"
@@ -16,7 +18,9 @@ import (
 type Component struct {
 	app.Compo
 	core         *views.Model
-	stop         chan struct{}
+	cancel       context.CancelFunc
+	connection   *views.Connection
+	selection    views.Selection
 	logView      logs.View
 	confirmation confirmation.Controller
 }
@@ -27,25 +31,47 @@ func (c *Component) OnMount(ctx app.Context) {
 		return
 	}
 	c.core = views.New()
-	c.logView.Follow = true
+	c.logView.FollowState = &c.core.LogFollow
 	if app.Window().Call("matchMedia", "(prefers-reduced-motion: reduce)").Get("matches").Bool() {
 		c.core.Reduced = true
 	}
-	stop := make(chan struct{})
-	c.stop = stop
+	life, cancel := context.WithCancel(context.Background())
+	c.cancel = cancel
+	api, err := client.New(app.Window().Get("location").Get("origin").String(), nil)
+	if err != nil {
+		c.core.Apply(views.Update{Err: err})
+		return
+	}
+	c.connection = views.NewConnection(api)
+	ctx.Async(func() {
+		c.connection.Run(life, func(update views.Update) {
+			ctx.Dispatch(func(ctx app.Context) {
+				if life.Err() != nil {
+					return
+				}
+				old := c.core.Route()
+				c.core.Apply(update)
+				c.exchange()
+				if old != c.core.Route() {
+					ctx.Defer(func(app.Context) { actions.Focus("page-title") })
+				}
+				c.followTail(ctx)
+			})
+		})
+	})
 	ctx.Async(func() {
 		t := time.NewTicker(progress.FrameInterval)
 		defer t.Stop()
 		last := time.Now()
 		for {
 			select {
-			case <-stop:
+			case <-life.Done():
 				return
 			case now := <-t.C:
 				dt := now.Sub(last)
 				last = now
 				ctx.Dispatch(func(ctx app.Context) {
-					if c.core == nil {
+					if life.Err() != nil {
 						return
 					}
 					c.core.Advance(dt)
@@ -56,9 +82,9 @@ func (c *Component) OnMount(ctx app.Context) {
 	})
 }
 func (c *Component) OnDismount() {
-	if c.stop != nil {
-		close(c.stop)
-		c.stop = nil
+	if c.cancel != nil {
+		c.cancel()
+		c.cancel = nil
 	}
 }
 func (c *Component) followTail(ctx app.Context) {
@@ -67,9 +93,10 @@ func (c *Component) followTail(ctx app.Context) {
 	}
 }
 func (c *Component) dispatch(ctx app.Context, a views.Action) {
-	if a.Kind == "follow" {
-		c.logView.Follow = true
-		c.followTail(ctx)
+	if a.Kind == "search-focus" && c.core.Modal == nil {
+		if c.core.View().Find(views.Search) != nil {
+			actions.Focus("record-search")
+		}
 		return
 	}
 	hadModal := c.core.Modal != nil
@@ -78,14 +105,28 @@ func (c *Component) dispatch(ctx app.Context, a views.Action) {
 	}
 	old := c.core.Route()
 	c.core.Dispatch(a)
+	c.exchange()
+	c.followTail(ctx)
 	if old != c.core.Route() {
-		c.logView.Follow = true
 		ctx.Defer(func(app.Context) { actions.Focus("page-title") })
 	}
 	if !hadModal && c.core.Modal != nil {
 		c.confirmation.Open(ctx)
 	}
 }
+func (c *Component) exchange() {
+	if c.connection == nil {
+		return
+	}
+	if selection := c.core.Selection(); selection != c.selection {
+		c.selection = selection
+		c.connection.Select(selection)
+	}
+	if command := c.core.TakeCommand(); command != nil {
+		c.connection.Submit(*command)
+	}
+}
+
 func (c *Component) click(a views.Action) app.EventHandler { return actions.Click(c.dispatch, a) }
 
 func (c *Component) key(ctx app.Context, e app.Event) {

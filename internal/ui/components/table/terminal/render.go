@@ -1,7 +1,6 @@
 package terminal
 
 import (
-	"fmt"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -38,7 +37,9 @@ func tableColumns(t table.Model, width int) ([]int, []int) {
 		widths[i] = space * weights[i] / total
 		used += widths[i]
 	}
-	widths[0] += space - used
+	if len(widths) > 0 {
+		widths[0] += space - used
+	}
 	return cols, widths
 }
 
@@ -56,8 +57,8 @@ func Record(them theme.Theme, t table.Model, r table.Record, focused bool, width
 	width = max(width, 80)
 	p := style.Styles{Theme: them}
 	cols, widths := tableColumns(t, width)
-	top, bottom := make([]string, len(cols)), make([]string, len(cols))
-	detail := false
+	top, bottom, progress := make([]string, len(cols)), make([]string, len(cols)), make([]string, len(cols))
+	detail, hasProgress := false, false
 	for i, c := range cols {
 		cell := r.Cells[c]
 		text := cell.Text
@@ -68,17 +69,18 @@ func Record(them theme.Theme, t table.Model, r table.Record, focused bool, width
 		if c == 0 {
 			top[i] = p.Text(r.Tone, style.Fit(text, widths[i]))
 		}
+		progress[i] = strings.Repeat(" ", widths[i])
 		if cell.Bar.Known {
-			bottom[i] = bars.Render(them, cell.Bar, max(1, widths[i]-6)) + p.Text("muted", fmt.Sprintf(" %3.0f%%", cell.Bar.Value*100))
-			detail = true
-		} else {
-			bottom[i] = p.Text("muted", style.Fit(cell.Detail, widths[i]))
-			if cell.Detail != "" {
-				detail = true
-			}
+			progress[i] = bars.Render(them, cell.Bar, widths[i])
+			hasProgress = true
 		}
+		bottom[i] = p.Text("muted", style.Fit(cell.Detail, widths[i]))
+		detail = detail || cell.Detail != ""
 	}
 	body := strings.Join(top, " │ ")
+	if hasProgress {
+		body += "\n" + strings.Join(progress, "   ")
+	}
 	if detail {
 		body += "\n" + strings.Join(bottom, "   ")
 	}

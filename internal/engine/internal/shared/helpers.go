@@ -37,7 +37,7 @@ func Rate(old, current uint64, elapsed float64, known bool) *float64 {
 	return Ptr(float64(current-old) / elapsed)
 }
 
-func ValidBundle(b domain.Bundle) bool {
+func ValidStoredObject(b domain.StoredObject) bool {
 	raw, e := hex.DecodeString(string(b.SHA256))
 	return e == nil && len(raw) == sha256.Size && b.Bytes > 0 && b.ObjectKey != ""
 }

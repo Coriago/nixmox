@@ -11,7 +11,7 @@ import (
 )
 
 func durableStreams() []string {
-	return []string{"KV_" + domain.StateBucket, commandStream, resultStream, "OBJ_" + domain.GitBucket}
+	return []string{"KV_" + domain.StateBucket, commandStream, resultStream, "OBJ_" + domain.ObjectBucket}
 }
 
 // Only an explicit membership operation may change replication. Configuration

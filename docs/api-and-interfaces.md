@@ -40,8 +40,7 @@ The [go-app browser adapter](#browser-html-and-live-updates) translates shared U
 actions into these same command objects and invokes the same admission service.
 Secret import has a dedicated redacted ingress described below; it dispatches
 only a secret-free reference through this command path.
-Rebase uploads stage bytes through the draft resolution ingress; accepting those
-files still requires a typed command. Enrollment has dedicated HTTP routes. These exceptions do not expose arbitrary resource mutations.
+Enrollment has dedicated HTTP routes. These exceptions do not expose arbitrary resource mutations.
 Membership-status reads return the signed removal evidence defined in
 [identity and trust](identity-and-trust.md#authenticated-removal-response) over
 plain HTTP. Revoked nodes verify the payload against pinned cluster trust without
@@ -93,7 +92,7 @@ after submission has an uncertain outcome: query
 
 Error codes also include `QUORUM_UNAVAILABLE`, `TARGET_UNREACHABLE`,
 `SOURCE_UNAVAILABLE`, `ARTIFACT_UNAVAILABLE`, `IDENTITY_CONFLICT`, `CONFIRMATION_STALE`,
-`CREDENTIAL_UNAVAILABLE`, `REBASE_CONFLICT`, and `UNSUPPORTED_CAPABILITY`.
+`CREDENTIAL_UNAVAILABLE` and `UNSUPPORTED_CAPABILITY`.
 `INSTALLATION_UNSUPPORTED` means a running-OS target has no supported path into
 the installer; include method-specific reasons and do not start a fallback task.
 The UI uses codes for actions and messages for explanation; it never parses logs
@@ -156,7 +155,7 @@ Copy versions from the displayed review; never fetch newer versions to force suc
 - A destructive retry requires fresh review. Reads or closing a UI never approve work.
 
 Draft/preparation reads include their version and the repository version captured
-with the diff; commit checks both. Edits/rebases require a new diff, not a
+with the diff; commit checks both. Edits/regeneration require a new diff, not a
 version-only retry. Include versions only for records the mutation changes.
 
 ## Reads and events
@@ -263,7 +262,7 @@ the authoritative data model.
 | `POST /api/v1/commands` | Typed command submission from shared actions; same receipts/reviews/errors as CLI/TUI |
 | `GET /api/v1/events` | Shared JSON SSE stream for live browser updates; unchanged API event schema |
 
-The browser follows `internal/ui/progress/`: shared Go controllers and view models
+The browser follows `internal/ui/components/` and `internal/ui/views/layout.go`: shared Go controllers and view models
 with go-app DOM components, not htmx fragment replacement. Keep `/api/v1` responses
 in their documented JSON formats. Retain command IDs across retries and submit the
 reviewed expected versions/acknowledgements. UI actions cannot bypass admission,

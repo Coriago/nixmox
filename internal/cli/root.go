@@ -104,7 +104,7 @@ func NewCommand() *cobra.Command {
 		return operationError(app.Serve(cmd.Context(), config))
 	}}
 	runtime.AddFlags(serve.Flags())
-	root.AddCommand(serve, o.identityCommand(), o.discoveryCommands(), o.clusterCommand(), o.hostCommands(), o.networkCommands(), o.taskCommands(), o.receiptCommand(), o.repositoryCommands(), o.configurationCommands(), o.cacheCommands())
+	root.AddCommand(serve, o.identityCommand(), o.discoveryCommands(), o.clusterCommand(), o.hostCommands(), o.networkCommands(), o.taskCommands(), o.receiptCommand(), o.repositoryCommands(), o.configurationCommands(), o.cacheCommands(), o.tuiCommand())
 	return root
 }
 

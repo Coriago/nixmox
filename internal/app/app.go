@@ -19,6 +19,7 @@ import (
 	"nixmox/internal/gateway"
 	"nixmox/internal/runtime"
 	"nixmox/internal/service"
+	"nixmox/internal/ui/views/browser"
 )
 
 func Serve(ctx context.Context, config runtime.Config) error {
@@ -30,6 +31,10 @@ func Serve(ctx context.Context, config runtime.Config) error {
 	}
 	if err := config.Validate(); err != nil {
 		return err
+	}
+	console, err := browser.Handler(os.Getenv("NIXMOX_UI_ASSETS"))
+	if err != nil {
+		return fmt.Errorf("console assets: %w", err)
 	}
 	endpoints, err := config.HTTPEndpoints()
 	if err != nil {
@@ -122,7 +127,13 @@ func Serve(ctx context.Context, config runtime.Config) error {
 	start := func(run func() error) {
 		workers.Go(func() { results <- run() })
 	}
-	server := &http.Server{Handler: gateway.New(s), ReadHeaderTimeout: 5 * time.Second,
+	api := gateway.New(s)
+	handler := http.NewServeMux()
+	for _, prefix := range []string{"/api/", "/cache/", "/store-cache/"} {
+		handler.Handle(prefix, api)
+	}
+	handler.Handle("/", console)
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10,
 		BaseContext: func(net.Listener) context.Context { return life }}
 	// HTTP stops before workers and persistence. Stream contexts are cancelled so

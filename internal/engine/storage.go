@@ -35,11 +35,11 @@ type StateStore interface {
 	// Watch includes initialization completion; callers reconcile snapshots on reconnect.
 	Watch(context.Context, string) (Subscription[StateEntry], error)
 }
-type ArtifactStore interface {
-	// Only incremental Git bundles, never full remote bases or secret values.
-	Put(context.Context, domain.Bundle, io.Reader) error
-	Open(context.Context, domain.Bundle) (io.ReadCloser, error)
-	Delete(context.Context, domain.Bundle) error
+type ObjectStore interface {
+	// Immutable recipe payloads, never repository snapshots, Nix outputs or secrets.
+	Put(context.Context, domain.StoredObject, io.Reader) error
+	Open(context.Context, domain.StoredObject) (io.ReadCloser, error)
+	Delete(context.Context, domain.StoredObject) error
 }
 type LogStore interface {
 	Append(context.Context, domain.ID, *domain.ID, []byte) (domain.LogEvent, error)

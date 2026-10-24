@@ -110,30 +110,20 @@ type RepositoryCredentialSet struct {
 	CredentialRef ID `json:"credential_ref"`
 }
 
-type RepositoryRebase struct {
-	RepositoryID ID `json:"repository_id"`
-	RefID        ID `json:"ref_id"`
-	OntoRefID    ID `json:"onto_ref_id"`
-}
-
-type RebaseResolve struct {
-	TaskID           ID `json:"task_id"`
-	ResolvedFilesRef ID `json:"resolved_files_ref"`
-}
-
 type TaskTarget struct {
 	TaskID ID `json:"task_id"`
 }
 
-type ArtifactDelete struct {
-	ArtifactID ID  `json:"artifact_id"`
-	PlanID     *ID `json:"plan_id,omitempty"`
-	TaskID     *ID `json:"task_id,omitempty"`
+type RecipeVersionDelete struct {
+	RecipeID ID      `json:"recipe_id"`
+	Version  Version `json:"version"`
+	PlanID   *ID     `json:"plan_id,omitempty"`
+	TaskID   *ID     `json:"task_id,omitempty"`
 }
 
 type RepositoryGCPlan struct {
-	RepositoryID ID   `json:"repository_id"`
-	ArtifactIDs  []ID `json:"artifact_ids,omitempty"`
+	RepositoryID   ID              `json:"repository_id"`
+	RecipeVersions []RecipeVersion `json:"recipe_versions,omitempty"`
 }
 
 type RepositoryGC struct {
@@ -142,9 +132,10 @@ type RepositoryGC struct {
 }
 
 type RepositoryPublish struct {
-	RepositoryID      ID   `json:"repository_id"`
-	RefID             ID   `json:"ref_id"`
-	CreatePullRequest bool `json:"create_pull_request"`
+	RepositoryID      ID             `json:"repository_id"`
+	RefID             *ID            `json:"ref_id,omitempty"`
+	Recipe            *RecipeVersion `json:"recipe,omitempty"`
+	CreatePullRequest bool           `json:"create_pull_request"`
 }
 
 type PublicationMerge struct {

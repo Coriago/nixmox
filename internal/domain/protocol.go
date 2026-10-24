@@ -26,11 +26,10 @@ const (
 	DiscoveryInterval        = 5 * time.Second
 	DiscoveryTTL             = 30 * time.Second
 	DiscoverySearchWindow    = 30 * time.Second
-	ResolutionTTL            = time.Hour
 	WiFiCredentialTTL        = 5 * time.Minute
 	DiagnosticRetention      = 24 * time.Hour
 	CertificateLifetime      = 30 * 24 * time.Hour
 	CertificateRenewal       = 20 * 24 * time.Hour
 	StateBucket              = "nx_state"
-	GitBucket                = "nx_git"
+	ObjectBucket             = "nx_git" // Preserve the existing durable bucket name.
 )

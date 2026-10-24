@@ -16,7 +16,7 @@ var Collections = []Collection{
 	{Path: "repositories", Order: "name,id"},
 	{Path: "configurations", Filters: []string{"repository_id", "ref_id", "commit"}, Order: "name,id", RevisionPinned: true},
 	{Path: "drafts", Filters: []string{"repository_id"}, Order: "id"},
-	{Path: "artifacts", Filters: []string{"repository_id"}, Order: "id"},
+	{Path: "recipes", Filters: []string{"repository_id", "configuration_id"}, Order: "id"},
 	{Path: "preparations", Filters: []string{"host_id"}, Order: "id"},
 	{Path: "media", Filters: []string{"profile_id"}, Order: "id"},
 	{Path: "media/plans", Filters: []string{"writer_id"}, Order: "id"},
@@ -36,6 +36,7 @@ var Singletons = []string{
 	"network/status", "network/wifi/networks", "media/profiles",
 }
 var NestedReads = []Collection{
+	{Path: "recipes/{id}/versions", Order: "-version", RevisionPinned: true},
 	{Path: "cache/locations", Filters: []string{"path"}},
 	{Path: "hosts/{id}/generations", Order: "id"},
 	{Path: "hosts/{id}/disks", Order: "id"},
@@ -49,6 +50,7 @@ var NestedReads = []Collection{
 // Downloads, owner-local log reads and enrollment use explicit route handlers;
 // they are not arbitrary filesystem paths handled by this collection catalog.
 var DetailReads = []string{
+	"recipes/{id}/version/{version_id}",
 	"hosts/{id}/telemetry", "hosts/{id}/installer",
 	"drafts/{id}/diff", "drafts/{id}/files/content",
 	"preparations/{id}/diff", "repositories/{id}/diff",

@@ -13,7 +13,7 @@ import (
 )
 
 func storageLimits(existing bool) comms.StorageLimits {
-	return comms.StorageLimits{Commands: 16 << 20, Results: 16 << 20, State: 8 << 20, Git: 8 << 20, Replicas: 1, Existing: existing}
+	return comms.StorageLimits{Commands: 16 << 20, Results: 16 << 20, State: 8 << 20, Objects: 8 << 20, Replicas: 1, Existing: existing}
 }
 
 // applyTopology runs under topologyMu, but does not hold the membership mutex

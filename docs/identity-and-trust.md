@@ -303,7 +303,7 @@ Leaving retires cluster credentials/grants but retains node ID and SSH/SOPS keys
 | `D/receipts/` | Request fingerprints, admission, and results; survives identity reset |
 | `D/jobs/` | Authoritative local execution records and retained logs |
 | `D/repositories/<id>/` | Fetched base, materialized changes, and pinned Git refs |
-| `D/worktrees/<id>/` | Owner-local draft/rebase/preparation worktrees |
+| `D/worktrees/<id>/` | Owner-local draft/reconciliation/preparation worktrees |
 | `D/observations/` | Target observations and destructive checkpoints |
 | `D/deployments/` | Source/output/generation evidence |
 | `D/broker/` | Embedded NATS/JetStream state; quarantine on cluster removal |

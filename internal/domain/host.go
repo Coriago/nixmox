@@ -73,7 +73,8 @@ type Host struct {
 type Binding struct {
 	RepositoryID ID     `json:"repository_id"`
 	Name         string `json:"name"`
-	RefID        ID     `json:"ref_id"`
+	RefID        ID     `json:"ref_id,omitempty"`
+	RecipeID     *ID    `json:"recipe_id,omitempty"`
 }
 
 type Quorum struct {

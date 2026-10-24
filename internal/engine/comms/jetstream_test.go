@@ -80,7 +80,7 @@ func brokerFixture(t *testing.T) (*nats.Conn, *JetStream, string, *tls.Config) {
 	t.Cleanup(nc.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	j, err := OpenJetStream(ctx, nc, "cluster", "node", StorageLimits{Commands: 4 << 20, Results: 4 << 20, State: 4 << 20, Git: 8 << 20, Replicas: 1})
+	j, err := OpenJetStream(ctx, nc, "cluster", "node", StorageLimits{Commands: 4 << 20, Results: 4 << 20, State: 4 << 20, Objects: 8 << 20, Replicas: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,26 +139,26 @@ func TestJetStreamDurability(t *testing.T) {
 	if e, err := watch.Next(ctx); err != nil || !e.SnapshotComplete {
 		t.Fatalf("watch boundary: %+v %v", e, err)
 	}
-	data := []byte("incremental bundle fixture")
+	data := []byte("immutable recipe version fixture")
 	digest := sha256.Sum256(data)
-	bundle := domain.Bundle{ObjectKey: "repo/artifact", SHA256: domain.Digest(hex.EncodeToString(digest[:])), Bytes: int64(len(data))}
-	if err = j.Put(ctx, bundle, bytes.NewReader(data)); err != nil {
+	object := domain.StoredObject{ObjectKey: "recipe/1", SHA256: domain.Digest(hex.EncodeToString(digest[:])), Bytes: int64(len(data))}
+	if err = j.Put(ctx, object, bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
-	r, err := j.Open(ctx, bundle)
+	r, err := j.Open(ctx, object)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := io.ReadAll(r)
 	r.Close()
 	if err != nil || !bytes.Equal(got, data) {
-		t.Fatalf("artifact: %q %v", got, err)
+		t.Fatalf("object: %q %v", got, err)
 	}
-	if err = j.Put(ctx, bundle, bytes.NewReader([]byte("bad"))); err == nil {
+	if err = j.Put(ctx, object, bytes.NewReader([]byte("bad"))); err == nil {
 		t.Fatal("bad digest accepted")
 	}
 	// Opening storage is safe across reconnects/restarts and must preserve policy.
-	if _, err = OpenJetStream(ctx, nc, "cluster", "node", StorageLimits{Commands: 4 << 20, Results: 4 << 20, State: 4 << 20, Git: 8 << 20, Replicas: 1}); err != nil {
+	if _, err = OpenJetStream(ctx, nc, "cluster", "node", StorageLimits{Commands: 4 << 20, Results: 4 << 20, State: 4 << 20, Objects: 8 << 20, Replicas: 1}); err != nil {
 		t.Fatal(err)
 	}
 	q, err := j.Quorum(ctx)

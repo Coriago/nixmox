@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"nixmox/internal/ui"
 	"slices"
 	"time"
@@ -17,6 +18,10 @@ import (
 
 type frame time.Time
 type Model struct {
+	connection    *views.Connection
+	ctx           context.Context
+	updates       <-chan views.Update
+	selection     views.Selection
 	Core          *views.Model
 	view          views.View
 	width, height int
@@ -29,7 +34,7 @@ type Model struct {
 }
 
 func New(core *views.Model) *Model {
-	m := &Model{Core: core, width: 120, height: 40, content: viewport.New(), search: search.New(), logView: logs.View{Follow: true}}
+	m := &Model{Core: core, width: 120, height: 40, content: viewport.New(), search: search.New(), logView: logs.View{FollowState: &core.LogFollow}}
 	m.resize()
 	m.sync()
 	return m
@@ -37,7 +42,7 @@ func New(core *views.Model) *Model {
 func tick() tea.Cmd {
 	return tea.Tick(progress.FrameInterval, func(t time.Time) tea.Msg { return frame(t) })
 }
-func (m *Model) Init() tea.Cmd { return tick() }
+func (m *Model) Init() tea.Cmd { return tea.Batch(tick(), m.waitUpdate()) }
 func (m *Model) sidebarWidth() int {
 	if m.width < 85 {
 		return 19
@@ -57,19 +62,18 @@ func (m *Model) sync() {
 	}
 }
 func (m *Model) activate(a views.Action) {
-	if a.Kind == "search-focus" {
+	if a.Kind == "search-focus" && m.Core.Modal == nil {
+		if m.view.Find(views.Search) == nil {
+			return
+		}
 		m.search.Focus()
-		m.sync()
-		return
-	}
-	if a.Kind == "follow" {
-		m.logView.Follow = true
 		m.sync()
 		return
 	}
 	old := m.Core.Route()
 	hadModal := m.Core.Modal != nil
 	m.Core.Dispatch(a)
+	m.exchange()
 	if !hadModal && m.Core.Modal != nil {
 		m.modal = confirmation.State{}
 	}
@@ -78,7 +82,6 @@ func (m *Model) activate(a views.Action) {
 	}
 	if old != m.Core.Route() {
 		m.content.GotoTop()
-		m.logView.Follow = true
 	}
 	m.resize()
 	m.sync()
@@ -86,7 +89,7 @@ func (m *Model) activate(a views.Action) {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.search.Editing {
 		switch msg.(type) {
-		case frame, tea.WindowSizeMsg:
+		case frame, tea.WindowSizeMsg, views.Update:
 		default:
 			if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "ctrl+c" {
 				return m, tea.Quit
@@ -98,6 +101,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg := msg.(type) {
+	case views.Update:
+		m.Core.Apply(msg)
+		m.exchange()
+		m.sync()
+		return m, m.waitUpdate()
 	case frame:
 		delta := progress.FrameInterval
 		if !m.last.IsZero() {
@@ -139,14 +147,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if a, ok := views.Shortcut(key); ok {
+			if a.Kind == "search-focus" && m.view.Find(views.Search) != nil {
+				return m, m.search.Focus()
+			}
 			m.activate(a)
 			return m, nil
 		}
 		switch key {
-		case "/":
-			if m.view.Find(views.Search) != nil {
-				return m, m.search.Focus()
-			}
 		case "q":
 			return m, tea.Quit
 		case "enter":

@@ -3,15 +3,11 @@
 package browser
 
 import (
-	"context"
 	_ "embed"
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/maxence-charriere/go-app/v11/pkg/app"
 )
@@ -19,12 +15,19 @@ import (
 //go:embed style.css
 var stylesheet string
 
-// Handler is an isolated, read-only preview; deliberately no operational API.
+// Handler serves bundled assets on the daemon HTTP listener; APIs are mounted by app.
 func Handler(assets string) (http.Handler, error) {
+	if assets == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, err
+		}
+		assets = filepath.Join(filepath.Dir(exe), "../share/nixmox-ui")
+	}
 	for _, name := range []string{"app.wasm", "wasm_exec.js"} {
 		info, err := os.Stat(filepath.Join(assets, name))
 		if err != nil || info.IsDir() {
-			return nil, fmt.Errorf("missing preview asset %s in %s", name, assets)
+			return nil, fmt.Errorf("missing UI asset %s in %s", name, assets)
 		}
 	}
 	Register()
@@ -42,47 +45,14 @@ func Handler(assets string) (http.Handler, error) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		fmt.Fprint(w, styles)
 	})
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "Mock preview: no operational API", http.StatusServiceUnavailable)
-	})
-	mux.Handle("/", &app.Handler{Name: "Nixmox mock console", Title: "Nixmox · Workspace", Description: "Mock cluster console · no host operations", Styles: []string{"/web/console.css"}, BackgroundColor: "#181818", ThemeColor: "#e57000"})
+	mux.Handle("/", &app.Handler{Name: "Nixmox console", Title: "Nixmox · Workspace", Description: "Cluster console", Styles: []string{"/web/console.css"}, BackgroundColor: "#181818", ThemeColor: "#e57000"})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "Read-only mock preview", http.StatusMethodNotAllowed)
+			http.Error(w, "UI asset server does not accept mutations", http.StatusMethodNotAllowed)
 			return
 		}
 		mux.ServeHTTP(w, r)
 	}), nil
-}
-func Serve(ctx context.Context, port int, assets string) error {
-	h, err := Handler(assets)
-	if err != nil {
-		return err
-	}
-	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return err
-	}
-	s := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			if s.Shutdown(shutdown) != nil {
-				s.Close()
-			}
-		case <-done:
-		}
-	}()
-	fmt.Fprintf(os.Stderr, "Mock console: http://%s/ · no real host operations\n", l.Addr())
-	err = s.Serve(l)
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
 }

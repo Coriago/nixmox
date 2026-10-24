@@ -71,7 +71,8 @@ type Configuration struct {
 	Name                 string                `json:"name"`
 	FlakeDirectory       string                `json:"flake_directory"`
 	FlakeAttribute       string                `json:"flake_attribute"`
-	RefID                ID                    `json:"ref_id"`
+	RefID                ID                    `json:"ref_id,omitempty"`
+	RecipeID             *ID                   `json:"recipe_id,omitempty"`
 	Readiness            string                `json:"readiness"`
 	InspectedCommit      Commit                `json:"inspected_commit"`
 	PreparationTemplates *PreparationTemplates `json:"preparation_templates,omitempty"`
@@ -79,17 +80,18 @@ type Configuration struct {
 
 type Draft struct {
 	Record
-	OwnerNodeID       ID           `json:"owner_node_id"`
-	RepositoryID      ID           `json:"repository_id"`
-	RepositoryVersion Version      `json:"repository_version"`
-	BaseCommit        Commit       `json:"base_commit"`
-	TemplateID        string       `json:"template_id"`
-	Values            Values       `json:"values"`
-	ConfigurationName string       `json:"configuration_name"`
-	Files             []FileChange `json:"files"`
-	Validation        Validation   `json:"validation"`
-	AssignedHostID    *ID          `json:"assigned_host_id"`
-	ExpectedVersions  Versions     `json:"expected_versions"`
+	OwnerNodeID       ID             `json:"owner_node_id"`
+	RepositoryID      ID             `json:"repository_id"`
+	RepositoryVersion Version        `json:"repository_version"`
+	Recipe            *RecipeVersion `json:"recipe,omitempty"`
+	BaseCommit        Commit         `json:"base_commit"`
+	TemplateID        string         `json:"template_id"`
+	Values            Values         `json:"values"`
+	ConfigurationName string         `json:"configuration_name"`
+	Files             []FileChange   `json:"files"`
+	Validation        Validation     `json:"validation"`
+	AssignedHostID    *ID            `json:"assigned_host_id"`
+	ExpectedVersions  Versions       `json:"expected_versions"`
 }
 
 type FileChange struct {
@@ -110,6 +112,7 @@ type Validation struct {
 	State        string       `json:"state"`
 	DraftVersion *Version     `json:"draft_version"`
 	Commit       *Commit      `json:"commit"`
+	Recipe       *RecipePin   `json:"recipe,omitempty"`
 	Missing      []string     `json:"missing"`
 	Errors       []FieldError `json:"errors"`
 }
