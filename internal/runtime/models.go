@@ -54,6 +54,8 @@ type Assignment struct {
 }
 
 type Repository struct {
+	Username       string  `json:"username" yaml:"username"`
+	HostKey        string  `json:"host_key" yaml:"host_key"`
 	RemoteURL      string  `json:"remote_url" yaml:"remote_url"`
 	UpstreamBranch string  `json:"upstream_branch" yaml:"upstream_branch"`
 	CredentialRef  *string `json:"credential_ref" yaml:"credential_ref"`

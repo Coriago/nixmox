@@ -111,6 +111,14 @@ func (s *Service) Read(ctx context.Context, request ReadRequest) (json.RawMessag
 			return nil, err
 		}
 		return json.Marshal(locations)
+	case "credentials":
+		if s.Cluster == nil {
+			return nil, credentialMissing()
+		}
+		if s.Cluster.leaf() {
+			return s.Cluster.call(ctx, "", "read", request, true)
+		}
+		return s.Cluster.readCredentials(ctx, request)
 	case "repositories", "configurations":
 		if s.Cluster == nil {
 			return nil, domain.Unavailable("repository metadata")

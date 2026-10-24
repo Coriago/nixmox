@@ -3,6 +3,7 @@ package views
 import (
 	"nixmox/internal/ui"
 	"nixmox/internal/ui/components/button"
+	"nixmox/internal/ui/components/form"
 	logs "nixmox/internal/ui/components/log"
 	"nixmox/internal/ui/components/section"
 	"nixmox/internal/ui/components/table"
@@ -12,6 +13,7 @@ import (
 type BlockKind string
 
 const (
+	Forms    BlockKind = "forms"
 	Heading  BlockKind = "heading"
 	Identity BlockKind = "identity"
 	Tabs     BlockKind = "tabs"
@@ -28,6 +30,7 @@ const (
 // Block carries its data and position. There is no second layout-construction pass.
 type Block struct {
 	Kind    BlockKind
+	Form    *form.Model
 	Fields  []section.Field
 	Buttons []button.Model
 	Metrics []telemetry.Model

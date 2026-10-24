@@ -2,7 +2,11 @@ package terminal
 
 import (
 	"context"
+	"io"
+	"nixmox/internal/domain"
 	"nixmox/internal/ui"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -10,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	confirmation "nixmox/internal/ui/components/confirmation/terminal"
+	forms "nixmox/internal/ui/components/form/terminal"
 	logs "nixmox/internal/ui/components/log/terminal"
 	"nixmox/internal/ui/components/progress"
 	search "nixmox/internal/ui/components/search/terminal"
@@ -27,6 +32,7 @@ type Model struct {
 	width, height int
 	content       viewport.Model
 	search        search.Model
+	formInput     forms.Model
 	focus         views.Action
 	logView       logs.View
 	modal         confirmation.State
@@ -34,7 +40,7 @@ type Model struct {
 }
 
 func New(core *views.Model) *Model {
-	m := &Model{Core: core, width: 120, height: 40, content: viewport.New(), search: search.New(), logView: logs.View{FollowState: &core.LogFollow}}
+	m := &Model{Core: core, width: 120, height: 40, content: viewport.New(), search: search.New(), formInput: forms.New(), logView: logs.View{FollowState: &core.LogFollow}}
 	m.resize()
 	m.sync()
 	return m
@@ -54,6 +60,9 @@ func (m *Model) resize() {
 	m.content.SetHeight(max(3, m.height-8))
 }
 func (m *Model) sync() {
+	if m.formInput.Active && (m.Core.Form == nil || m.Core.Form.ID != m.formInput.FormID) {
+		m.formInput.Reset()
+	}
 	m.view = m.Core.View()
 	m.search.Style(m.view.Theme, m.content.Width(), m.Core.Reduced)
 	m.content.SetContent(m.contentPage().text)
@@ -62,6 +71,15 @@ func (m *Model) sync() {
 	}
 }
 func (m *Model) activate(a views.Action) {
+	if a.Kind == "form-field" && m.Core.Form != nil {
+		for _, field := range m.Core.Form.Fields {
+			if field.ID == a.ID {
+				m.formInput.Begin(m.Core.Form.ID, field)
+				m.sync()
+				return
+			}
+		}
+	}
 	if a.Kind == "search-focus" && m.Core.Modal == nil {
 		if m.view.Find(views.Search) == nil {
 			return
@@ -87,6 +105,56 @@ func (m *Model) activate(a views.Action) {
 	m.sync()
 }
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.formInput.Active {
+		switch msg.(type) {
+		case frame, tea.WindowSizeMsg, views.Update:
+		default:
+			if key, ok := msg.(tea.KeyPressMsg); ok {
+				switch key.String() {
+				case "ctrl+c":
+					m.formInput.Reset()
+					m.Core.Dispatch(views.Action{Kind: "source-form-close"})
+					return m, tea.Quit
+				case "esc":
+					m.formInput.Reset()
+					m.sync()
+					return m, nil
+				case "enter":
+					field, id, value := m.formInput.Field, m.formInput.FormID, m.formInput.Input.Value()
+					switch field.Kind {
+					case "password":
+						data := []byte(value)
+						m.Core.SetFormSecret(id, data)
+						clear(data)
+					case "file":
+						m.Core.SetFormSecret(id, nil)
+						file, err := os.Open(value)
+						if err == nil {
+							data, readErr := io.ReadAll(io.LimitReader(file, domain.CommandPayloadLimit+1))
+							file.Close()
+							if readErr == nil && len(data) <= domain.CommandPayloadLimit {
+								m.Core.SetFormSecret(id, data)
+								m.Core.SetFormValue(id, field.ID, filepath.Base(value))
+							} else {
+								m.Core.Notice = "Credential file unavailable or too large"
+							}
+							clear(data)
+						} else {
+							m.Core.Notice = "Credential file unavailable"
+						}
+					default:
+						m.Core.SetFormValue(id, field.ID, value)
+					}
+					m.formInput.Reset()
+					m.sync()
+					return m, nil
+				}
+			}
+			cmd := m.formInput.Update(msg)
+			m.sync()
+			return m, cmd
+		}
+	}
 	if m.search.Editing {
 		switch msg.(type) {
 		case frame, tea.WindowSizeMsg, views.Update:

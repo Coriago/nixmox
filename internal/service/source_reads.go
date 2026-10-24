@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -91,7 +92,33 @@ func (c *ClusterNode) configurations(ctx context.Context, state domain.Repositor
 		}
 		return nil
 	})
+	var detail *domain.Error
+	if errors.As(err, &detail) && detail.Code == "SOURCE_UNAVAILABLE" && state.Repository.Remote.CredentialRef != nil && !c.leaf() {
+		c.mu.Lock()
+		record, _, lookupErr := c.credentialLocked(ctx, *state.Repository.Remote.CredentialRef)
+		var holder domain.ID
+		if lookupErr == nil {
+			holder, lookupErr = c.credentialHolderLocked(record)
+		}
+		c.mu.Unlock()
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		if holder != c.keys.Identity.NodeID {
+			data, callErr := c.call(ctx, holder, "source.configurations", sourceCatalogRequest{State: state, RefID: refID, Commit: commit}, false)
+			if callErr != nil {
+				return nil, callErr
+			}
+			err = json.Unmarshal(data, &items)
+		}
+	}
 	return items, err
+}
+
+type sourceCatalogRequest struct {
+	State  domain.RepositoryState `json:"state"`
+	RefID  domain.ID              `json:"ref_id"`
+	Commit domain.Commit          `json:"commit"`
 }
 
 func (c *ClusterNode) readSources(ctx context.Context, request ReadRequest) (json.RawMessage, error) {

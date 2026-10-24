@@ -86,6 +86,20 @@ func (m *Model) contentPage() page {
 	controls(v.Toolbar, false)
 	for _, block := range v.Blocks {
 		switch block.Kind {
+		case views.Forms:
+			add(p.Text("accent", block.Form.Title))
+			add(p.Text("muted", ansi.Wrap(block.Form.Note, w, "")))
+			for _, field := range block.Form.Fields {
+				if m.formInput.Active && m.formInput.Field.ID == field.ID {
+					add(ansi.Truncate(m.formInput.View(), w, "…"))
+					continue
+				}
+				value := field.Value
+				if field.Kind == "password" {
+					value = "hidden input"
+				}
+				controls([]button.Model{{Label: field.Label + ": " + value, Action: views.Action{Kind: "form-field", ID: field.ID}}}, false)
+			}
 		case views.Heading:
 			add(p.Text("muted", style.Fit(v.Breadcrumb, w)))
 			add(p.Text("accent", style.Fit(v.Title, w)))

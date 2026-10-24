@@ -98,7 +98,12 @@ func (c *Client) requestOnce(ctx context.Context, method, path string, input, ou
 	if err != nil {
 		return err
 	}
+	return decodeResponse(response, output)
+}
+
+func decodeResponse(response *http.Response, output any) error {
 	defer response.Body.Close()
+	var err error
 	decoder := json.NewDecoder(io.LimitReader(response.Body, domain.QueryTotalLimit+1))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		failure := &APIError{StatusCode: response.StatusCode}

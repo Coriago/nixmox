@@ -5,6 +5,7 @@ import (
 
 	buttons "nixmox/internal/ui/components/button/browser"
 	confirmation "nixmox/internal/ui/components/confirmation/browser"
+	forms "nixmox/internal/ui/components/form/browser"
 	logs "nixmox/internal/ui/components/log/browser"
 	"nixmox/internal/ui/components/search"
 	searches "nixmox/internal/ui/components/search/browser"
@@ -67,6 +68,8 @@ func (c *Component) page(v views.View) app.UI {
 }
 func (c *Component) block(v views.View, b views.Block) app.UI {
 	switch b.Kind {
+	case views.Forms:
+		return forms.Render(*b.Form, c.core.SetFormValue, c.core.SetFormSecret, func(message string) { c.core.Notice = message })
 	case views.Heading:
 		return app.Header().Class("page-heading").Body(
 			app.Div().Class("heading-main").Body(app.P().Class("eyebrow").Text(v.Breadcrumb), app.H1().ID("page-title").TabIndex(-1).Text(v.Title), app.P().Class("subtitle").Text(v.Subtitle)),

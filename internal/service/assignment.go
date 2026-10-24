@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 
 	"nixmox/internal/domain"
@@ -102,20 +103,41 @@ func (c *ClusterNode) inspectAssignment(ctx context.Context, p domain.HostAssign
 		return binding, err
 	}
 	binding.RefID = *source.RefID
-	err = c.withSource(ctx, source, func(path string) error {
+	source.Configuration = p.Configuration
+	err = c.checkConfigurationSource(ctx, source)
+	var detail *domain.Error
+	if errors.As(err, &detail) && detail.Code == "SOURCE_UNAVAILABLE" && state.Repository.Remote.CredentialRef != nil {
+		c.mu.Lock()
+		credential, _, lookupErr := c.credentialLocked(ctx, *state.Repository.Remote.CredentialRef)
+		var holder domain.ID
+		if lookupErr == nil {
+			holder, lookupErr = c.credentialHolderLocked(credential)
+		}
+		c.mu.Unlock()
+		if lookupErr != nil {
+			return binding, lookupErr
+		}
+		if holder != c.keys.Identity.NodeID {
+			_, err = c.call(ctx, holder, "source.check", source, false)
+		}
+	}
+	return binding, err
+}
+
+func (c *ClusterNode) checkConfigurationSource(ctx context.Context, source domain.Source) error {
+	return c.withSource(ctx, source, func(path string) error {
 		descriptors, err := c.nix.Configurations(ctx, source, path)
 		if err != nil {
 			return &domain.Error{Code: "CATALOG_UNAVAILABLE", Message: "Pinned configuration catalog could not be inspected; no revision was substituted"}
 		}
 		for _, d := range descriptors {
-			if d.Name == p.Configuration {
-				source.Configuration, source.FlakeDirectory, source.FlakeAttribute = d.Name, d.FlakeDirectory, d.FlakeAttribute
+			if d.Name == source.Configuration {
+				source.FlakeDirectory, source.FlakeAttribute = d.FlakeDirectory, d.FlakeAttribute
 				return c.nix.CheckConfiguration(ctx, source, path)
 			}
 		}
 		return notFound()
 	})
-	return binding, err
 }
 
 func (c *ClusterNode) acceptAssignment(ctx context.Context, command domain.Command, p domain.HostAssign, binding domain.Binding) (domain.Version, error) {

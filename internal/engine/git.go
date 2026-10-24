@@ -12,6 +12,7 @@ type Worktree interface {
 	Close() error
 }
 type Git interface {
+	CheckRead(context.Context, domain.Repository) error
 	Fetch(context.Context, domain.Repository) (domain.Commit, error)
 	Materialize(context.Context, domain.Source) (Worktree, error)
 	Commit(context.Context, Worktree, []domain.FileManifest, string) (domain.Commit, error)

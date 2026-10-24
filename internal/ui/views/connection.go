@@ -1,6 +1,7 @@
 package views
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,16 +19,19 @@ type Connection struct {
 	API       *client.Client
 	selection chan Selection
 	commands  chan domain.Command
+	imports   chan CredentialSubmission
 }
 type Selection struct{ Host, Task domain.ID }
 type Snapshot struct {
-	Identity    domain.Identity
-	Cluster     domain.ClusterStatus
-	Hosts       []domain.Host
-	Tasks       []domain.Task
-	Discoveries []domain.Discovery
-	Requests    []domain.JoinRequest
-	Warnings    []string
+	Identity     domain.Identity
+	Cluster      domain.ClusterStatus
+	Hosts        []domain.Host
+	Tasks        []domain.Task
+	Discoveries  []domain.Discovery
+	Requests     []domain.JoinRequest
+	Credentials  []domain.Credential
+	Repositories []domain.Repository
+	Warnings     []string
 }
 type Update struct {
 	Snapshot  *Snapshot
@@ -43,7 +47,7 @@ type Update struct {
 }
 
 func NewConnection(api *client.Client) *Connection {
-	return &Connection{API: api, selection: make(chan Selection, 1), commands: make(chan domain.Command, 1)}
+	return &Connection{API: api, selection: make(chan Selection, 1), commands: make(chan domain.Command, 1), imports: make(chan CredentialSubmission, 1)}
 }
 func (c *Connection) Select(s Selection) {
 	select {
@@ -52,7 +56,8 @@ func (c *Connection) Select(s Selection) {
 	}
 	c.selection <- s
 }
-func (c *Connection) Submit(command domain.Command) { c.commands <- command }
+func (c *Connection) Submit(command domain.Command)     { c.commands <- command }
+func (c *Connection) Import(value CredentialSubmission) { c.imports <- value }
 
 func allPages[T any](ctx context.Context, read func(context.Context, domain.PageRequest) (domain.Page[T], error)) ([]T, error) {
 	items := []T{}
@@ -80,7 +85,7 @@ func (c *Connection) snapshot(ctx context.Context) Update {
 		return Update{Err: err}
 	}
 	var wg sync.WaitGroup
-	failures := make([]error, 5)
+	failures := make([]error, 7)
 	wg.Go(func() { s.Cluster, failures[0] = c.API.Cluster(ctx) })
 	wg.Go(func() {
 		s.Hosts, failures[1] = allPages(ctx, func(ctx context.Context, p domain.PageRequest) (domain.Page[domain.Host], error) {
@@ -95,6 +100,16 @@ func (c *Connection) snapshot(ctx context.Context) Update {
 	})
 	if s.Identity.ClusterID != nil {
 		wg.Go(func() {
+			s.Credentials, failures[5] = allPages(ctx, func(ctx context.Context, p domain.PageRequest) (domain.Page[domain.Credential], error) {
+				return c.API.Credentials(ctx, p)
+			})
+		})
+		wg.Go(func() {
+			s.Repositories, failures[6] = allPages(ctx, func(ctx context.Context, p domain.PageRequest) (domain.Page[domain.Repository], error) {
+				return c.API.Repositories(ctx, p)
+			})
+		})
+		wg.Go(func() {
 			s.Requests, failures[4] = allPages(ctx, func(ctx context.Context, p domain.PageRequest) (domain.Page[domain.JoinRequest], error) {
 				p.Filters = map[string]string{"state": "awaiting_approval"}
 				return c.API.Requests(ctx, p)
@@ -104,7 +119,7 @@ func (c *Connection) snapshot(ctx context.Context) Update {
 	wg.Wait()
 	for i, err := range failures {
 		if err != nil {
-			s.Warnings = append(s.Warnings, fmt.Sprintf("%s: %v", []string{"Cluster", "Hosts", "Tasks", "Discovery", "Join requests"}[i], err))
+			s.Warnings = append(s.Warnings, fmt.Sprintf("%s: %v", []string{"Cluster", "Hosts", "Tasks", "Discovery", "Join requests", "Credentials", "Repositories"}[i], err))
 		}
 	}
 	return Update{Snapshot: s}
@@ -163,7 +178,18 @@ func (c *Connection) watchTask(ctx context.Context, id domain.ID, logs bool, emi
 func (c *Connection) Run(ctx context.Context, emit func(Update)) {
 	ctx, cancel := context.WithCancel(ctx)
 	var workers sync.WaitGroup
-	defer func() { cancel(); workers.Wait() }()
+	defer func() {
+		cancel()
+		workers.Wait()
+		for {
+			select {
+			case input := <-c.imports:
+				clear(input.Value)
+			default:
+				return
+			}
+		}
+	}()
 	send := func(u Update) {
 		if ctx.Err() == nil {
 			emit(u)
@@ -281,6 +307,14 @@ func (c *Connection) Run(ctx context.Context, emit func(Update)) {
 				for _, logs := range []bool{false, true} {
 					workers.Go(func() { c.watchTask(selected, s.Task, logs, send) })
 				}
+			}
+		case input := <-c.imports:
+			receipt, err := c.API.ImportCredential(ctx, input.Ingress, bytes.NewReader(input.Value))
+			clear(input.Value)
+			send(Update{Receipt: &receipt, CommandID: input.Ingress.CommandID, Err: err})
+			select {
+			case refresh <- struct{}{}:
+			default:
 			}
 		case command := <-c.commands:
 			var receipt domain.Receipt

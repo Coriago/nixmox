@@ -13,6 +13,7 @@ import (
 	"nixmox/internal/domain"
 	"nixmox/internal/engine"
 	"nixmox/internal/engine/comms"
+	taskengine "nixmox/internal/engine/task"
 )
 
 func (c *ClusterNode) leaf() bool {
@@ -129,7 +130,7 @@ func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, v
 		if err := decodeQuery(q.Payload, &command); err != nil {
 			return nil, err
 		}
-		if !repositoryOperation(command.Type) && command.Type != "host.assign" {
+		if !repositoryOperation(command.Type) && !credentialOperation(command.Type) && command.Type != "host.assign" {
 			return nil, invalid("Operation is not a source command")
 		}
 		receipt, err := s.Submit(ctx, command)
@@ -137,6 +138,68 @@ func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, v
 			return nil, err
 		}
 		return json.Marshal(receipt)
+	}
+	if view && (q.Type == "source.prepare" || q.Type == "source.accept") {
+		var command domain.Command
+		var accepted sourceAcceptance
+		if q.Type == "source.prepare" {
+			if err := decodeQuery(q.Payload, &command); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := decodeQuery(q.Payload, &accepted); err != nil {
+				return nil, err
+			}
+			command.ID = accepted.CommandID
+		}
+		c.mu.Lock()
+		envelope, _, err := readRecord[domain.Envelope](ctx, c.transport.Store, recordKey("command", command.ID))
+		if err == nil && (envelope.OwnerNodeID != q.CallerID || !repositoryOperation(envelope.Command.Type)) {
+			err = invalid("Source executor assignment mismatch")
+		}
+		var state domain.RepositoryState
+		if err == nil && q.Type == "source.prepare" {
+			_, value, decodeErr := Catalog().Decode(envelope.Command)
+			err = decodeErr
+			if err == nil {
+				state, err = c.repositoryInput(ctx, envelope.Command, value)
+			}
+		}
+		c.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if q.Type == "source.prepare" {
+			return json.Marshal(state)
+		}
+		// Reconcile against the executor's checkpoint, not a caller-selected candidate.
+		var task domain.Task
+		data, err := c.call(ctx, q.CallerID, "task.state", taskengine.TaskID(command.ID), false)
+		if err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(data, &task); err != nil {
+			return nil, err
+		}
+		matched := false
+		for _, cp := range task.Checkpoints {
+			if cp.Phase == "fetch" {
+				var checkpoint domain.RepositoryState
+				if json.Unmarshal(cp.Evidence, &checkpoint) == nil {
+					a, _ := json.Marshal(checkpoint)
+					b, _ := json.Marshal(accepted.State)
+					matched = bytes.Equal(a, b)
+				}
+			}
+		}
+		if !matched {
+			return nil, invalid("Pinned source checkpoint unavailable")
+		}
+		result, err := c.acceptSource(ctx, command.ID, envelope.Command.Type, accepted.State)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
 	}
 	if q.Type == "membership.topology" {
 		c.mu.Lock()
@@ -158,7 +221,37 @@ func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, v
 		return json.Marshal(reservation)
 	}
 	if !view {
+		if q.Type == "credential.inventory" || q.Type == "credential.consume" || q.Type == "credential.remove" || q.Type == "credential.removable" || q.Type == "credential.expired" || q.Type == "credential.expire" {
+			var input credentialLocalRequest
+			if err := decodeQuery(q.Payload, &input); err != nil {
+				return nil, err
+			}
+			value, err := c.credentialLocal(ctx, q.Type, input)
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(value)
+		}
 		switch q.Type {
+		case "source.check":
+			var source domain.Source
+			if err := decodeQuery(q.Payload, &source); err != nil {
+				return nil, err
+			}
+			if err := c.checkConfigurationSource(ctx, source); err != nil {
+				return nil, err
+			}
+			return json.Marshal(domain.Empty{})
+		case "source.configurations":
+			var input sourceCatalogRequest
+			if err := decodeQuery(q.Payload, &input); err != nil {
+				return nil, err
+			}
+			items, err := c.configurations(ctx, input.State, input.RefID, input.Commit)
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(items)
 		case "power.inspect":
 			info, err := c.powerInfo()
 			if err != nil {
@@ -228,7 +321,7 @@ func (s *Service) query(ctx context.Context, core *comms.Core, q engine.Query, v
 		if err := decodeQuery(q.Payload, &request); err != nil {
 			return nil, err
 		}
-		if view && request.Collection != "hosts" && request.Collection != "cluster/status" && request.Collection != "repositories" && request.Collection != "configurations" {
+		if view && request.Collection != "hosts" && request.Collection != "cluster/status" && request.Collection != "repositories" && request.Collection != "configurations" && request.Collection != "credentials" {
 			return nil, invalid("This leaf view is not permitted")
 		}
 		if request.Collection == "identity" || request.Collection == "network/status" {

@@ -123,7 +123,7 @@ func Serve(ctx context.Context, config runtime.Config) error {
 	}
 
 	var workers sync.WaitGroup
-	results := make(chan error, len(listeners)+12)
+	results := make(chan error, len(listeners)+14)
 	start := func(run func() error) {
 		workers.Go(func() { results <- run() })
 	}
@@ -155,6 +155,8 @@ func Serve(ctx context.Context, config runtime.Config) error {
 	start(func() error { return s.ServeQueries(life, false) })
 	start(func() error { return s.ServeQueries(life, true) })
 	start(func() error { return s.ReconcileTasks(life) })
+	start(func() error { return s.ServeSecrets(life) })
+	start(func() error { return s.ReconcileCredentials(life) })
 	start(func() error { return s.Cluster.ReconcileMembership(life) })
 	start(func() error { return s.Cluster.ReconcileTopology(life) })
 	if s.Discovery != nil {

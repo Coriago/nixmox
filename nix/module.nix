@@ -117,6 +117,8 @@ in
       remoteUrl = required types.str "Remote Git base URL.";
       upstreamBranch = opt types.str defaults.repository.upstream_branch "Official upstream branch.";
       credentialRef = opt nullable defaults.repository.credential_ref "Optional credential alias.";
+      username = opt types.str "" "Git authentication username; defaults to git.";
+      hostKey = opt types.str "" "Verified Git SSH server public key; never a machine private key.";
     })) d.repositories "Declared remote-backed repositories; never implicitly pushed.";
     credentials = opt (types.attrsOf (sub {
       kind = required (types.enum [

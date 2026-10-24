@@ -38,6 +38,7 @@ func New(s *service.Service) http.Handler {
 	cacheRoutes(router, s)
 	api := router.Group("/api/v1")
 	enrollment(api, s)
+	credentialRoutes(api, s)
 	api.POST("/commands", func(c *gin.Context) {
 		media, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
 		if err != nil || media != "application/json" {
@@ -196,7 +197,7 @@ func failure(c *gin.Context, err error, command *domain.ID) {
 		status = http.StatusTooManyRequests
 	case "NOT_FOUND":
 		status = http.StatusNotFound
-	case "CURSOR_EXPIRED", "COMMAND_EXPIRED":
+	case "CURSOR_EXPIRED", "COMMAND_EXPIRED", "STAGING_EXPIRED":
 		status = http.StatusGone
 	case "RANGE_NOT_SATISFIABLE":
 		status = http.StatusRequestedRangeNotSatisfiable

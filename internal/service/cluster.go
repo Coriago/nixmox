@@ -30,6 +30,7 @@ type ClusterNode struct {
 	cache              *Cache
 	repositoryMu       sync.Mutex
 	git                engine.Git
+	secrets            *identity.SecretStore
 	nix                nix.Engine
 	mu                 sync.Mutex
 	membershipObserver func(domain.ID)
@@ -52,7 +53,8 @@ type ClusterNode struct {
 
 func OpenCluster(ctx context.Context, config runtime.Config, keys *identity.Local, host domain.Host) (*ClusterNode, error) {
 	c := &ClusterNode{life: ctx, config: config, keys: keys, host: host, transport: &comms.Runtime{}, inventory: newInventory(), limiter: rate.NewLimiter(5, 10)}
-	c.git = &git.Engine{Root: config.DataDir}
+	c.secrets = &identity.SecretStore{Root: config.DataDir, NodeID: keys.Identity.NodeID}
+	c.git = &git.Engine{Root: config.DataDir, Credentials: c.gitAuthentication}
 	c.nix = nix.Engine{Runner: task.ProcessRunner{}, PinDirectory: filepath.Join(config.DataDir, "store-roots")}
 	var err error
 	c.cache, err = newCache(c)

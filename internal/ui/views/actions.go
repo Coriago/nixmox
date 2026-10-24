@@ -23,6 +23,28 @@ func (m *Model) actionHint(a Action) string {
 		return "Reconcile the previous command receipt first"
 	}
 	switch a.Kind {
+	case "credential-check", "credential-remove":
+		credential := m.credential(a.ID)
+		if credential == nil || m.identity.ClusterID == nil {
+			return "Credential metadata unavailable"
+		}
+		if a.Kind == "credential-check" && (credential.Kind == "git-http-token" || credential.Kind == "git-ssh-key") && len(m.Repositories) == 0 {
+			return "Import a repository before checking Git access"
+		}
+		if a.Kind == "credential-remove" {
+			if len(credential.Scope.RepositoryIDs) != 0 {
+				return "Remove repository bindings first"
+			}
+			for _, replica := range credential.Replicas {
+				if replica.Source == "runtime_file" {
+					return "Owned by Nix configuration"
+				}
+			}
+		}
+	case "repository-fetch":
+		if m.repository(a.ID) == nil || m.identity.ClusterID == nil {
+			return "Repository metadata unavailable"
+		}
 	case "refresh", "network-check", "shutdown":
 		h := m.Host(a.ID)
 		if h == nil || h.Reachability != "online" {
@@ -72,7 +94,7 @@ func (m *Model) resourceControl(label, kind, id string) button.Model {
 	hint := m.actionHint(a)
 	tone := "primary"
 	switch kind {
-	case "shutdown", "cancel", "reject":
+	case "shutdown", "cancel", "reject", "credential-remove":
 		tone = "danger"
 	case "add", "approve":
 		tone = "success"
@@ -91,10 +113,34 @@ func (m *Model) prepare(a Action) {
 		m.Notice = hint
 		return
 	}
+	if a.Kind == "credential-check" {
+		if credential := m.credential(a.ID); credential != nil && (credential.Kind == "git-http-token" || credential.Kind == "git-ssh-key") {
+			m.openSourceForm("credential-check", a.ID)
+			return
+		}
+	}
 	command := domain.Command{ID: domain.ID("cmd_" + uuid.NewString()), TargetID: m.identity.NodeID}
 	dialog := confirmation.Model{Confirm: "Confirm", Accent: m.resourceControl("", a.Kind, a.ID).Tone}
 	var payload any
 	switch a.Kind {
+	case "repository-fetch":
+		command.Type = "repository.fetch"
+		payload = domain.RepositoryTarget{RepositoryID: domain.ID(a.ID)}
+	case "credential-check":
+		credential := m.credential(a.ID)
+		command.Type = "credential.check"
+		p := domain.CredentialCheckPayload{CredentialID: credential.ID}
+		if credential.Kind == "git-http-token" || credential.Kind == "git-ssh-key" {
+			p.RepositoryID = &credential.Scope.RepositoryIDs[0]
+		}
+		payload = p
+	case "credential-remove":
+		credential := m.credential(a.ID)
+		command.Type = "credential.remove"
+		command.ExpectedVersions = domain.Versions{"credential:" + a.ID: credential.Version}
+		payload = domain.CredentialTarget{CredentialID: credential.ID}
+		dialog.Title, dialog.Target, dialog.Confirm = "Remove credential?", credential.Name+" · "+a.ID, "Remove"
+		dialog.Body = "Delete managed copies from all holders. Unreachable holders block completion. This does not revoke the credential at its provider."
 	case "network-check":
 		command.Type = "network.check"
 		payload = domain.Empty{}
@@ -142,7 +188,7 @@ func (m *Model) prepare(a Action) {
 		return
 	}
 	command.Payload = data
-	if a.Kind == "refresh" || a.Kind == "network-check" {
+	if a.Kind == "refresh" || a.Kind == "network-check" || a.Kind == "credential-check" || a.Kind == "repository-fetch" {
 		m.command = &command
 		m.busy = true
 		return

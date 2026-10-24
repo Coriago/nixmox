@@ -8,6 +8,7 @@ import (
 	"nixmox/internal/domain"
 	"nixmox/internal/ui"
 	"nixmox/internal/ui/components/confirmation"
+	"nixmox/internal/ui/components/form"
 	logs "nixmox/internal/ui/components/log"
 	"nixmox/internal/ui/components/progress"
 	"nixmox/internal/ui/components/theme"
@@ -19,11 +20,19 @@ type Model struct {
 	ThemeIndex, AccentIndex                  int
 	Reduced                                  bool
 	Modal                                    *confirmation.Model
+	Form                                     *form.Model
+	formKind                                 string
+	formSecret                               []byte
+	formRepository                           domain.Repository
+	formCredentialID                         domain.ID
+	secretSubmission                         *CredentialSubmission
 	Cluster                                  Cluster
 	Notice                                   string
 	Hosts                                    []Host
 	Discoveries                              []Discovery
 	Tasks                                    []Task
+	Credentials                              []domain.Credential
+	Repositories                             []domain.Repository
 	LogFollow                                logs.FollowState
 	accumulator                              time.Duration
 	frame                                    uint64
@@ -83,7 +92,14 @@ func (m *Model) Dispatch(a Action) {
 		return
 	}
 	switch a.Kind {
+	case "credential-import", "repository-import", "repository-bind":
+		m.openSourceForm(a.Kind, a.ID)
+	case "source-form-close":
+		m.closeSourceForm()
+	case "source-form-save":
+		m.submitSourceForm()
 	case "page":
+		m.closeSourceForm()
 		if slices.ContainsFunc(Pages, func(p Page) bool { return p.Name == a.ID }) {
 			m.Page = a.ID
 			m.Query = ""
@@ -138,7 +154,7 @@ func (m *Model) Dispatch(a Action) {
 		m.AccentIndex = (m.AccentIndex + 1) % 4
 	case "motion":
 		m.Reduced = !m.Reduced
-	case "refresh", "network-check", "shutdown", "cancel", "approve", "reject", "add":
+	case "refresh", "network-check", "shutdown", "cancel", "approve", "reject", "add", "credential-check", "credential-remove", "repository-fetch":
 		m.prepare(a)
 	case "reconcile":
 		if m.uncertain != "" && !m.busy {

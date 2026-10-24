@@ -43,6 +43,8 @@ type RepositoryResult struct {
 }
 
 type Remote struct {
+	Username      string `json:"username,omitempty"`
+	HostKey       string `json:"host_key,omitempty"`
 	URL           string `json:"url"`
 	CredentialRef *ID    `json:"credential_ref"`
 }

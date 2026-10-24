@@ -82,6 +82,9 @@ func (c *Component) OnMount(ctx app.Context) {
 	})
 }
 func (c *Component) OnDismount() {
+	if c.core != nil {
+		c.core.Close()
+	}
 	if c.cancel != nil {
 		c.cancel()
 		c.cancel = nil
@@ -121,6 +124,9 @@ func (c *Component) exchange() {
 	if selection := c.core.Selection(); selection != c.selection {
 		c.selection = selection
 		c.connection.Select(selection)
+	}
+	if input := c.core.TakeCredentialSubmission(); input != nil {
+		c.connection.Import(*input)
 	}
 	if command := c.core.TakeCommand(); command != nil {
 		c.connection.Submit(*command)

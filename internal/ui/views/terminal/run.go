@@ -26,6 +26,7 @@ func Run(ctx context.Context, api *client.Client) error {
 	}()
 	defer func() { cancel(); <-done }()
 	m := New(views.New())
+	defer m.Core.Close()
 	m.connection, m.ctx, m.updates = connection, ctx, updates
 	_, err := tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	return err
@@ -50,6 +51,9 @@ func (m *Model) exchange() {
 	if selection := m.Core.Selection(); selection != m.selection {
 		m.selection = selection
 		m.connection.Select(selection)
+	}
+	if input := m.Core.TakeCredentialSubmission(); input != nil {
+		m.connection.Import(*input)
 	}
 	if command := m.Core.TakeCommand(); command != nil {
 		m.connection.Submit(*command)

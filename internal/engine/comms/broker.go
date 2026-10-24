@@ -31,7 +31,7 @@ func FullGrants(cluster, node domain.ID) domain.Grants {
 	return domain.Grants{
 		Publish: []string{Subject(cluster, "view", node), prefix + "command.*", prefix + "query.*", prefix + "secret.*", prefix + "reply.*.>",
 			Subject(cluster, "heartbeat", node), Subject(cluster, "result", node), Subject(cluster, "activity", node), Subject(cluster, "log", node) + ".*", Subject(cluster, "progress", node) + ".*", "$JS.API.>", "$JS.ACK.>", "$KV.nx_state.>", "$O.nx_git.>"},
-		Subscribe: []string{prefix + ">", "_INBOX." + shared.Token(node) + ".>", "$KV.nx_state.>", "$O.nx_git.>"},
+		Subscribe: []string{prefix + "view.*", prefix + "command.*", prefix + "query.*", prefix + "reply.*.>", prefix + "heartbeat.*", prefix + "result.*", prefix + "activity.*", prefix + "log.*.*", prefix + "progress.*.*", Subject(cluster, "secret", node), "_INBOX." + shared.Token(node) + ".>", "$KV.nx_state.>", "$O.nx_git.>"},
 	}
 }
 

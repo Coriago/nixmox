@@ -12,17 +12,22 @@ func resolveRepository(cmd *cobra.Command, api *client.Client, selector string) 
 
 func (o *options) repositoryCommands() *cobra.Command {
 	group := &cobra.Command{Use: "repositories", Short: "Import remote-backed source and inspect accepted refs"}
-	var remote, branch, credential string
+	var remote, branch, credential, username, hostKey string
 	add := &cobra.Command{Use: "import NAME", Args: cobra.ExactArgs(1)}
 	add.Flags().StringVar(&remote, "url", "", "Remote URL (no embedded secrets)")
 	add.Flags().StringVar(&branch, "upstream", "main", "Upstream branch")
 	add.Flags().StringVar(&credential, "credential", "", "Managed read credential reference")
 	add.MarkFlagRequired("url")
-	o.mutation(add, "repository.import", func(_ *cobra.Command, _ *client.Client, args []string) (any, domain.Versions, error) {
-		p := domain.RepositoryImport{Name: args[0], RemoteURL: remote, UpstreamBranch: branch}
+	add.Flags().StringVar(&username, "username", "git", "Git authentication username")
+	add.Flags().StringVar(&hostKey, "host-key", "", "Verified Git SSH server public key")
+	o.mutation(add, "repository.import", func(cmd *cobra.Command, api *client.Client, args []string) (any, domain.Versions, error) {
+		p := domain.RepositoryImport{Name: args[0], RemoteURL: remote, UpstreamBranch: branch, Username: username, HostKey: hostKey}
 		if credential != "" {
-			id := domain.ID(credential)
-			p.CredentialRef = &id
+			value, err := resolveCredential(cmd, api, credential)
+			if err != nil {
+				return nil, nil, err
+			}
+			p.CredentialRef = &value.ID
 		}
 		return p, nil, nil
 	})
@@ -90,7 +95,7 @@ func (o *options) repositoryCommands() *cobra.Command {
 		return p, domain.Versions{"repository:" + string(repo.ID): domain.Version(version)}, nil
 	})
 	remoteGroup.AddCommand(set)
-	group.AddCommand(remoteGroup)
+	group.AddCommand(remoteGroup, o.repositoryCredentialCommand())
 	return group
 }
 

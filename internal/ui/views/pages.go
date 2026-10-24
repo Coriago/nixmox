@@ -16,7 +16,7 @@ type Page struct {
 	Build func(*Model, *View)
 }
 
-var Pages = []Page{{"Cluster", clusterPage}, {"Hosts", hostsPage}, {"Tasks", tasksPage}, {"Settings", settingsPage}}
+var Pages = []Page{{"Cluster", clusterPage}, {"Hosts", hostsPage}, {"Tasks", tasksPage}, {"Repositories", repositoriesPage}, {"Settings", settingsPage}}
 
 func hostsPage(m *Model, v *View) {
 	if h := m.Host(m.HostID); h != nil {
@@ -114,7 +114,9 @@ func clusterPage(m *Model, v *View) {
 	v.Add(Block{Kind: Tables, Table: m.hostTable("Cluster hosts", "")}, Block{Kind: Tables, Table: m.taskTable("Active tasks", "", "Active", "")})
 }
 func settingsPage(m *Model, v *View) {
-	v.Subtitle = "Appearance, connection and effective configuration"
+	v.Subtitle = "Credentials, appearance, connection and effective configuration"
+	v.Add(Block{Kind: Controls, Buttons: []button.Model{control("Add credential", "credential-import", "", false)}}, Block{Kind: Tables, Table: m.credentialTable()})
+	m.sourceFormBlocks(v)
 	motion := "Full"
 	if m.Reduced {
 		motion = "Reduced"

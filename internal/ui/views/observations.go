@@ -56,6 +56,12 @@ func (m *Model) Apply(u Update) {
 	if s := u.Snapshot; s != nil {
 		m.connected, m.connectionError = true, ""
 		m.identity = s.Identity
+		if s.Credentials != nil {
+			m.Credentials = s.Credentials
+		}
+		if s.Repositories != nil {
+			m.Repositories = s.Repositories
+		}
 		m.warnings = strings.Join(s.Warnings, " · ")
 		m.Cluster = Cluster{Gateway: string(s.Identity.NodeID)}
 		if s.Identity.ClusterID != nil {

@@ -89,6 +89,8 @@ type HostBootstrap struct {
 }
 
 type RepositoryImport struct {
+	Username       string `json:"username,omitempty"`
+	HostKey        string `json:"host_key,omitempty"`
 	Name           string `json:"name"`
 	RemoteURL      string `json:"remote_url"`
 	UpstreamBranch string `json:"upstream_branch"`
@@ -106,8 +108,10 @@ type RepositoryRemoteSet struct {
 }
 
 type RepositoryCredentialSet struct {
-	RepositoryID  ID `json:"repository_id"`
-	CredentialRef ID `json:"credential_ref"`
+	Username      string `json:"username,omitempty"`
+	HostKey       string `json:"host_key,omitempty"`
+	RepositoryID  ID     `json:"repository_id"`
+	CredentialRef ID     `json:"credential_ref"`
 }
 
 type TaskTarget struct {

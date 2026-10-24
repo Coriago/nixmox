@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
+	"unicode"
 
 	"go.opentelemetry.io/otel/trace"
 	"nixmox/internal/engine/telemetry"
@@ -317,7 +319,7 @@ func (c *Core) Import(ctx context.Context, in engine.SecretIngress, r io.Reader)
 		return domain.Receipt{}, err
 	}
 	defer clear(value)
-	if len(value) > domain.CommandPayloadLimit || in.HolderID == "" || in.CommandID == "" {
+	if len(value) == 0 || len(value) > domain.CommandPayloadLimit || in.HolderID == "" || in.CommandID == "" || strings.ContainsFunc(string(in.CommandID)+string(in.HolderID)+in.Name+in.Kind, unicode.IsControl) {
 		return domain.Receipt{}, errors.New("invalid secret ingress")
 	}
 	msg := nats.NewMsg(Subject(c.Cluster, "secret", in.HolderID))
@@ -330,7 +332,12 @@ func (c *Core) Import(ctx context.Context, in engine.SecretIngress, r io.Reader)
 	if err != nil {
 		return domain.Receipt{}, &domain.Error{Code: "SUBMISSION_UNKNOWN", Message: "Secret import receipt unavailable; query the same command ID"}
 	}
-	var receipt domain.Receipt
-	err = json.Unmarshal(result.Data, &receipt)
-	return receipt, err
+	var reply secretReply
+	if err = json.Unmarshal(result.Data, &reply); err != nil {
+		return domain.Receipt{}, errors.New("invalid secret receipt")
+	}
+	if reply.Error != nil {
+		return domain.Receipt{}, reply.Error
+	}
+	return reply.Receipt, nil
 }

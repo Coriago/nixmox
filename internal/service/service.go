@@ -63,7 +63,7 @@ func (s *Service) Submit(ctx context.Context, command domain.Command) (_ domain.
 		return domain.Receipt{}, err
 	}
 	span.SetName("command.admit " + op.Name)
-	if (repositoryOperation(command.Type) || command.Type == "host.assign") && s.Cluster != nil && s.Cluster.leaf() {
+	if (repositoryOperation(command.Type) || credentialOperation(command.Type) || command.Type == "host.assign") && s.Cluster != nil && s.Cluster.leaf() {
 		data, err := s.Cluster.call(ctx, "", "source.submit", command, true)
 		var receipt domain.Receipt
 		if err == nil {

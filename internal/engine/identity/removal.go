@@ -113,6 +113,11 @@ func (l *Local) finishRetirement(r retirement) error {
 			return err
 		}
 	}
+	// Managed application credentials belong to this membership. Runtime secret
+	// files are external and must be revoked/provisioned by their administrator.
+	if err = root.RemoveAll("credentials"); err != nil {
+		return err
+	}
 	if l.Identity.ClusterID != nil {
 		l.Identity.Version++
 	}

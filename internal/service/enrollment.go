@@ -138,7 +138,13 @@ func (c *ClusterNode) Validate(ctx context.Context, command domain.Command, valu
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch p := value.(type) {
-	case domain.RepositoryImport, domain.RepositoryTarget, domain.RepositoryRemoteSet:
+	case domain.CredentialImport, domain.CredentialCheckPayload, domain.CredentialTarget:
+		if !credentialOperation(command.Type) {
+			return domain.Unavailable(command.Type)
+		}
+		_, err := c.credentialInput(ctx, command, value)
+		return err
+	case domain.RepositoryImport, domain.RepositoryTarget, domain.RepositoryRemoteSet, domain.RepositoryCredentialSet:
 		if !repositoryOperation(command.Type) {
 			return domain.Unavailable(command.Type)
 		}
@@ -457,6 +463,7 @@ func (c *ClusterNode) awaitLeaf(ctx context.Context) (resultErr error) {
 
 func (c *ClusterNode) Definitions(journal engine.LocalStore) []engine.TaskDefinition {
 	definitions := c.repositoryDefinitions(journal)
+	definitions = append(definitions, c.credentialDefinitions(journal)...)
 	definitions = append(definitions, c.assignmentDefinition(journal))
 	for _, kind := range []string{"cluster.create", "cluster.join", "cluster.request.approve", "cluster.request.reject", "cluster.leave", "host.remove", "host.force_full_membership", "host.demote"} {
 		run := func(ctx context.Context, e engine.Execution) (resultErr error) {
@@ -510,6 +517,53 @@ func (c *ClusterNode) PublishCommand(ctx context.Context, envelope domain.Envelo
 		return err
 	}
 	envelope.Scope, envelope.ClusterID = domain.ClusterScope, &c.state.Cluster.ID
+	if envelope.Command.Type == "credential.check" {
+		var p domain.CredentialCheckPayload
+		if err := json.Unmarshal(envelope.Command.Payload, &p); err != nil {
+			return err
+		}
+		record, _, err := c.credentialLocked(ctx, p.CredentialID)
+		if err != nil {
+			return err
+		}
+		holder, err := c.credentialHolderLocked(record)
+		if err != nil {
+			return err
+		}
+		envelope.OwnerNodeID = holder
+		input := credentialLocalRequest{CredentialID: p.CredentialID}
+		if p.RepositoryID != nil {
+			state, _, err := c.repositoryLocked(ctx, *p.RepositoryID)
+			if err != nil {
+				return err
+			}
+			input.Repository = &state.Repository
+		}
+		envelope.Resolved, err = json.Marshal(input)
+		if err != nil {
+			return err
+		}
+	}
+	if envelope.Command.Type == "repository.import" || envelope.Command.Type == "repository.fetch" {
+		_, value, err := Catalog().Decode(envelope.Command)
+		if err != nil {
+			return err
+		}
+		state, err := c.repositoryInput(ctx, envelope.Command, value)
+		if err != nil {
+			return err
+		}
+		if ref := state.Repository.Remote.CredentialRef; ref != nil {
+			record, _, err := c.credentialLocked(ctx, *ref)
+			if err != nil {
+				return err
+			}
+			envelope.OwnerNodeID, err = c.credentialHolderLocked(record)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	member, exists := c.state.Members[envelope.OwnerNodeID]
 	if !exists || member.Removed {
 		return invalid("Executor is not an active member")
@@ -519,6 +573,15 @@ func (c *ClusterNode) PublishCommand(ctx context.Context, envelope domain.Envelo
 		if err := c.reservePower(ctx, envelope.Command); err != nil {
 			return err
 		}
+	}
+	// Expired unclaimed staging is fenced by a durable rejected receipt before
+	// its private bytes are erased. Do not admit a late replay behind that fence.
+	priorReceipt, _, receiptErr := readRecord[domain.AdmissionRecord](ctx, c.transport.Store, recordKey("receipt", envelope.Command.ID))
+	if receiptErr == nil && priorReceipt.Error != nil {
+		return priorReceipt.Error
+	}
+	if receiptErr != nil && !errors.Is(receiptErr, js.ErrKeyNotFound) {
+		return receiptErr
 	}
 	// A durable claim binds the ID before JetStream's time-bounded deduplication.
 	key := fmt.Sprintf("command.%x", sha256.Sum256([]byte(envelope.Command.ID)))
