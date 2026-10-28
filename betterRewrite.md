@@ -20,11 +20,38 @@ The last full member cannot be removed from the cluster without adding another f
 - clusters can only be created by unjoined hosts
 - clusters are assigned a name, a persistent id and a CA
 - cluster creator is automatically a full member
+- creator starts the first nats jetstream server and bootstrap jetstream server
 
 ## cluster destruction
 - to destroy a cluster, all members must be removed from the cluster until the last full member.
 - cluster destruction can then be performed and requires confirmation from the user.
-- after destruction the last member becomes unjoined
+- after destruction the last member becomes unjoined, all nats servers shutdown
+
+## node init
+- when nixmox starts for the first time, it generates a unique node id that persists
+- a tls secret is also created and persisted
+- it does not start a nats jetstream server
+
+## node promotion
+- nodes are promoted to full from pending automatically after a configuration is assigned and deployed successfully
+- the node will start its nats jetsream sever, configure its credentials and wait for it to connect to the cluster
+- the nodes nats client will then establish conncetion with the embedded nats server
+- the node's public age key generated from its ssh host key will be added to the credential store by another full member
+- binary cache will be started using the nix signing key and it will be added to cache peer list
+- full membership rights given
+- member status should be persists across daemon restarts so it knows to start services
+
+## node demotion
+- nodes are demoted from full to pending
+- if the demotion requires a bootstrap server, the selected surviving full member starts it and waits for it to become healthy before continuing
+- if the demoted node hosts the bootstrap server, bootstrap ownership is transferred to a surviving full member first
+- replicas are moved off the node and its jetstream server is removed from metadata membership before shutdown
+- data replication is updated based on the future member count
+- the node's nats client connects to a surviving full member and its embedded nats server is stopped
+- the binary cache is stopped and the node is removed from the cache peer list
+- the node's age key is removed from the credential store recipients
+- full membership rights are removed and pending membership rights are applied
+- pending member status is persisted across daemon restarts
 
 ## forced membership actions
 - hosts can be forced to promote to full or forced to demote to pending
@@ -39,10 +66,6 @@ The last full member cannot be removed from the cluster without adding another f
 - the endpoint will respond if the host was removed and the node will change its state to unjoined.
 - the removal payload from the cluster will be signed by the cluster so the node can confirm its validity
 - a removal can also be removed to let the node rejoin the cluster
-
-## node init
-- when nixmox starts for the first time on a host, it generates a unique node id that persists
-- a tls secret is also created and persisted
 
 ## gitops
 - configure one or more git repositories
@@ -103,7 +126,7 @@ unjoined -(name,id,public-key)-> cluster
 - rejections are saved so further requests by that endpoint are blocked. A rejection can still be removed if accidental.
 - approval will result in a signed certificate
 3. cluster sends a confirmation back to the sender with the signed cert and public CA.
-4. unjoined node will configure its nats with its private key, the new issued certificate and the public CA then join the cluster.
+4. unjoined node will configure its nats client with its private key, the new issued certificate and the public CA then join the cluster.
 
 cluster flow: 
 1. if the cluster is adding the node, it will send a http request to the unjoined node for a CSR
@@ -561,14 +584,32 @@ updateSops: runs a process that updates the sops file with the key
 
 
 ## NATS quorum
-- when there are less than 3 full members, the cluster only has one host for storage replicas
-- only full members serve replicas. pending members cannot host replicas
-- once 3 full members are reached, the cluster automatically snapshots the old data and transitions to jetstream with the number of replicas matching the number of full members
-- number of replicas follows the number of full members both up and down
-- if full members drop below 3, the cluster will automatically transition back into a single replica state, choosing any remaining full member to host the replicas
-- full members that go offline do not affect the transition logic, they must be demoted or removed to change the number of full memebers
-- only operations that use jetstream backed storage are halted
+- nats jetstream servers will run on all full hosts
+- pending members will use nats clients connected to the other full members
+- since nats jetstream requires at least one other peer, a bootstrap jetstream server will be launched on the first node
+- the bootstrap will stay a jetstram peer until 3 full nodes are up and running. Once the 3rd host comes online and healthy, the bootstrap is removed from the cluster.
+- a demotion or member removal that would cause full membership count to drop below 3 will trigger the bootstrap to start on selected surviving host
+- the bootstrap must start and become healthy before the demotion or removal is finalized.
+- a bootstrap record is shared to establish which host will launch the bootstrap server, prefer hosts that previously hosted bootstrap.
+- when there are 2 hosts, the cluster can tolerate the host going down which does not run the bootstrap server.
+- a full member that goes offline is not considered removed from the cluster.
+- removal requires evacuating replicas (if node is online) then removing from metadata peers
+- bootstrap handling should be seamless and automatic
+- data replication should go as follows:
+  - One full host + bootstrap: R2.
+  - Two full hosts + bootstrap: R3.
+  - Three full hosts, bootstrap retired: R3.
+  - Four full hosts: R3.
+  - Five+ full hosts: R3 and R5 on critical data.
+- critical data would be cluster essentials like credentials, membership related.
 
+## NATS Disaster Recovery
+- the cluster is placed in a state where quorum is lost and forceful recovery is desired to recover
+- for instance: 2 full members go offline in a 3 node cluster and the 2 are known to be unrecoverable
+- it is desired that the remaining node take full ownership under admin oversight to recover the cluster and reinstate new hosts
+- quorum disaster recovery can be enacted in this case through any interface connected to the surviving member
+- it will use nats metadata rescue to set $JS.API.META.RESCUE to "quorum_needed":1
+- then the unrecoverable nodes may be removed from the cluster and the bootstrap server should start up if needed.
 
 
 ## security posture v1
@@ -580,11 +621,11 @@ updateSops: runs a process that updates the sops file with the key
     - actions for specific hosts can only be performed by that host's local daemon not remote daemons
     - pending nodes cannot add new members or remove members
 
-(cli, tui, gui) <-(http/sse)-> daemon api <-tls-> nats server
+(cli, tui, gui) <-(http/sse)-> daemon <-tls-> nats jetstream server
                                   |                 |
                                  http              tls 
                                   |                 |
-                               daemon api <-tls-> nats server
+                               daemon <-tls-> nats jetstream server
 
 - no user or role management. access to the api is limited to network connectivity
 - interfaces are not limited to the local daemon api, they can talk directly to other daemon interfaces over the network.
