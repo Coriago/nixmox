@@ -1,5 +1,3 @@
-Implement the rewrite specified in docs/.
-
 KEEP IMPLEMENTATION AS CLEAN AND CONDENSED AS YOU CAN
 KEEP LINES OF CODE AS LOW AS POSSIBLE.
 FAVOR CLEAN ABSTRACTIONS WITH GOOD REUSE.
@@ -8,79 +6,6 @@ READ LIBRARY DOCS AND FOLLOW THEIR CONVENTIONS. NEVER HACK AROUND LIBRARY BEST P
 DO NOT BUILD CUSTOM FRAMEWORKS THAT DUPLICATE THE LIBRARIES WE USE.
 KEEP RESPONSIBILITIES CLEAR, FUNCTIONS FOCUSED, AND NAMES DESCRIPTIVE.
 Do not write readme.md files until the end once the application reaches maturity.
-Create a flake and use its devshell for any tooling you need.
-
-## Scope discipline
-
-- STOP EXPANDING SCOPE. Implement only what the user explicitly requests.
-- Do not add adjacent features, broader refactors, or infrastructure work without approval.
-- If a prerequisite would substantially expand the work, explain the blocker and ask before proceeding.
-- Keep validation focused on the requested change. Respect time limits and stop immediately when told to stop.
-
-# FOLLOW THIS ORDER
-1. read all docs and understand them.
-
-2. create a full scaffold of the code base. Only Implementation, no tests.
-  - THINK DEEP HERE. THIS NEEDS INTENSE FORWARD PLANNING
-  - plan directory structure and files. Keep this focused, do not sprawl.
-  - stub out functions and core interfaces. Leave focused comments, full implementation is not necessary.
-  - create full data models, try and seperate these into seperate files for easy reference
-
-3. core engine implementations, not full application logic
-  - This should focus on mastering the core technologies and how they will be reused throughout nixmox
-  - Make a strong foundation here, we want to use the best of these libraries and abstraction. This can heavily reduce the amount we must implement.
-  - For each of them, do deep research on how they work capturing all of the details we will need. Use context7 and websearch
-  - After research, begin implementation of the core engine. Think about how these functions will be reused throughout the application. 
-  - I have put some examples of things you should cover when tackling each engine, it is not a complete list, use the specs to infer anything I missed.
-  - You may create small go tests here after implementing the engine.
-  - NATS and Jetstream Core Comms Engine
-    - how do we stream logs or any host telemetry etc
-    - how to use kv storage, replication
-    - how to do events, retry/replay lifecycle
-    - raft and how we will handle quorum.
-    - how we do authorizatilon and authentication
-  - OTEL Telemetry Engine
-    - In this case otel is not only for app monitoring but also handles internal features
-    - how will we instrument traces through nats and the browser interfaces
-    - how logs will be attaced to traces
-    - logs from both task execution and logs produced by nixmox
-    - how metrics are created and used. Some metric might be internal to nixmox while some host telemetry is sent to otlp and nats.
-    - how you the ai agent can use this to debug the application, maybe setup a diag/testing collector outside of nixmox?
-  - Task Engine
-    - task handling
-    - log streaming
-    - command execution
-    - state machine and failure scenarios
-    - log adapters for extracting progress and other information, look at nix output monitor, nix diff etc
-  - User Interface Engine
-    - charm, htmx and wasm
-    - Think about all common functionality that the user interfaces will need.
-    - Consolidate and implement this functionality
-    - Plan ahead if new ways to interact with the application come up, how can they easily slot in so it is seamless across cli, tui and browser.
-  - Nix Engine
-    - handle nix related actions
-    - formulate commands to send to task engine
-    - interactions with nix store for cache or other related functions
-  - Git Engine
-    - handle git interactions for cloning, pulling, pushing, publishing etc
-    - handle local git store logic
-
-4. Implement the rest of nixmox
-  - implement all other features based on the spec, use the engines
-  - do NOT make any full e2e tests yet that use vms or other heavy testing frameworks, only go tests.
-  - expand existing engines if you find a appropriate logic is reused.
-
-5. Create a comprehensive e2e test suite
-  - use virtual machines configured via nix to do comprehensive tests.
-  - use the real git repo, real credentials, make a sandbox directory in the repo that acts as a gitops repo for testing
-  - make a happy path that you can test large parts of functionality incrementally.
-  - These are not isolated individual tests where you setup and tear down a vm for each test. Test as much as you can while the vm is up and in known states. 
-  - scale the cluster to multiple hosts
-  - after happy path testing is complete (non destructive flow) start failure testing
-  - stress test cluster, make nodes go offline, reconnect etc
-
-6. Test features that can only be truly validated with real hosts
-
 ## Disposable test machine
 validate real functions that can't be virtualized on the test machine. 
 This would be things such as media, kexec, disk partitioning, wifi testing etc.
@@ -99,6 +24,21 @@ This would be things such as media, kexec, disk partitioning, wifi testing etc.
   independent remote console or power control has been specified.
 - Reboot and kexec are authorized for testing. Do not power off the machine
   without a verified way to power it back on remotely.
+DO NOT MAKE UNIT TESTS THEY ARE TOO BRITTLE. 
+ONLY TESTS ALLOWED ARE 
+  - USAGE TESTS THAT SHOW CLEAR STATIC FUNCTION INPUT AND STATIC FUNCTION OUTPUT
+  - SIMPLE INTEGRATION TESTS THAT CONFIRM DOCUMENTED FUNCTIONALITY
+STOP EXPANDING SCOPE WHEN A COMPLEX PROBLEM IS ENCOUNTERED, DEFER TO USER DECISION
+RECORD FEATURE PROGRESS AND BLOCKERS IN A PROGRESS.md FILE.
+BLOCKER SHOULD BE RECORDED IF IT IS NOT SOLVED AFTER AN IMMEDIATE FIX
+PROGRESS ENTRIES SHOULD BE SINGLE LINE ENTRIES WITH START TIMESTAMP
+IF A BLOCKER HAS TAKEN OVER 5MIN THEN STOP. REPORT THE BLOCKER TO USER WITH WHAT WAS TRIED AND ALTERNATIVE APPROACHES TO TAKE
+MOVE ON TO NEXT FEATURE UNTIL DESIRED USER GOAL REACHED OR HARD BLOCKER ENCOUNTERED
+
+## Worksace Details
+
+Create a flake and use its devshell for any tooling needeed
+Use just files to run services/tests. Ensure it is easy for User to Execute
 
 ## Git workflow
 

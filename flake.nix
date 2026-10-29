@@ -68,8 +68,8 @@
         }
       );
       formatter = each (system: nixpkgs.legacyPackages.${system}.nixfmt);
-      nixosModules.default = import ./nix/module.nix self;
-      nixosModules.installer = import ./nix/installer.nix self;
+      # nixosModules.default = import ./nix/module.nix self;
+      # nixosModules.installer = import ./nix/installer.nix self;
       # Board exports are gated on pinned recipes and physical validation.
     };
 }
