@@ -1,6 +1,5 @@
-// Package logging provides context-correlated slog without requiring telemetry
-// initialization at call sites. Use From(ctx) again when entering a child span.
-package logging
+// Package util provides context-correlated logging and process-owned telemetry.
+package util
 
 import (
 	"context"
@@ -23,6 +22,8 @@ func base(ctx context.Context) *slog.Logger {
 	}
 	return slog.Default()
 }
+
+// From returns a logger correlated with ctx. Call it again when entering a child span.
 func From(ctx context.Context) *slog.Logger {
 	// Only retain correlation, not request cancellation, bodies or credentials.
 	correlation := trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(ctx))

@@ -1,5 +1,4 @@
-// Package telemetry configures the process-owned OTel SDK using native exporters.
-package telemetry
+package util
 
 import (
 	"context"
@@ -19,9 +18,9 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"nixmox/internal/logging"
 )
 
+// Config identifies this process and its optional OTLP/HTTP collector.
 type Config struct {
 	Service    string
 	InstanceID string
@@ -29,12 +28,14 @@ type Config struct {
 	Output     io.Writer
 }
 
-// Start installs providers once at process startup. Empty Endpoint disables export.
+// Start installs OTel providers and structured logging at process startup.
+// An empty Endpoint disables export; a nil Output defaults to stderr.
+// Call shutdown with a live context to flush telemetry before exiting.
 func Start(ctx context.Context, c Config) (shutdown func(context.Context) error, err error) {
 	res := resource.NewSchemaless(attribute.String("service.name", c.Service), attribute.String("service.instance.id", c.InstanceID))
-	tp := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
-	mp := []sdkmetric.Option{sdkmetric.WithResource(res)}
-	lp := []sdklog.LoggerProviderOption{sdklog.WithResource(res)}
+	traceOptions := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
+	metricOptions := []sdkmetric.Option{sdkmetric.WithResource(res)}
+	logOptions := []sdklog.LoggerProviderOption{sdklog.WithResource(res)}
 	var stops []func(context.Context) error
 	shutdown = func(ctx context.Context) error {
 		var result error
@@ -45,7 +46,7 @@ func Start(ctx context.Context, c Config) (shutdown func(context.Context) error,
 	}
 	defer func() {
 		if err != nil {
-			_ = shutdown(ctx)
+			err = errors.Join(err, shutdown(context.WithoutCancel(ctx)))
 		}
 	}()
 	if c.Endpoint != "" {
@@ -65,13 +66,13 @@ func Start(ctx context.Context, c Config) (shutdown func(context.Context) error,
 			return shutdown, e
 		}
 		stops = append(stops, logs.Shutdown)
-		tp = append(tp, sdktrace.WithBatcher(traces))
-		mp = append(mp, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metrics)))
-		lp = append(lp, sdklog.WithProcessor(sdklog.NewBatchProcessor(logs)))
+		traceOptions = append(traceOptions, sdktrace.WithBatcher(traces))
+		metricOptions = append(metricOptions, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metrics)))
+		logOptions = append(logOptions, sdklog.WithProcessor(sdklog.NewBatchProcessor(logs)))
 	}
-	traces := sdktrace.NewTracerProvider(tp...)
-	metrics := sdkmetric.NewMeterProvider(mp...)
-	logs := sdklog.NewLoggerProvider(lp...)
+	traces := sdktrace.NewTracerProvider(traceOptions...)
+	metrics := sdkmetric.NewMeterProvider(metricOptions...)
+	logs := sdklog.NewLoggerProvider(logOptions...)
 	// Providers own exporter shutdown after successful construction.
 	stops = []func(context.Context) error{traces.Shutdown, metrics.Shutdown, logs.Shutdown}
 	otel.SetTracerProvider(traces)
@@ -81,7 +82,7 @@ func Start(ctx context.Context, c Config) (shutdown func(context.Context) error,
 	if c.Output == nil {
 		c.Output = os.Stderr
 	}
-	local := logging.Configure(c.Output, otelslog.NewHandler("nixmox", otelslog.WithLoggerProvider(logs)), nil)
+	local := Configure(c.Output, otelslog.NewHandler("nixmox", otelslog.WithLoggerProvider(logs)), nil)
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { local.Error("telemetry export failed", "error", err) }))
 	return shutdown, nil
 }

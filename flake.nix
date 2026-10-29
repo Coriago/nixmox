@@ -52,6 +52,7 @@
             packages = with pkgs; [
               go
               gopls
+              just
               nodejs # Execute the shared progress controller tests under Go/WASM.
               python3 # Small PTY probe; no application runtime dependency.
               git
