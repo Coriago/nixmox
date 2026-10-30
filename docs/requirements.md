@@ -192,35 +192,151 @@ content: |
 - a decision to join happens either way giving priority to the cluster for authoritative trust.
 - enrollment requests require a discovery id or endpoint address to the cluster or node
 - removed nodes cannot join the cluster
+- enrollment actions on the cluster side are cross host
+- requests can be initiated or approved by another full member, not just the contact host communicating with the unjoined node
+- the contact host must be a full member and remains the certificate issuer and HTTP contact throughout enrollment; pending members cannot add members
+- the enrollment request record is shared in NATS; decisions made on another host are acted on by the contact host
+- discovery-based requests retain the selected public-key thumbprint: the cluster CA key for a discovered cluster, or the node key for a discovered unjoined node
 
 Key exchange
 This is varient of a typical CSR flow
+validation occurs at all steps to ensure that the initial request is still talking to the same cluster/node throughout
+api routes with internal are for daemon to daemon communication, not meant for interface interaction
+unjoined node flow
 1. unjoined nodes will send a csr request to a cluster node with their node id, name, and public key
-unjoined -(name,id,public-key)-> cluster
-2. the cluster will approve or reject the request. 
-- rejections are saved so further requests by that endpoint are blocked. A rejection can still be removed if accidental.
-- approval will result in a signed certificate
-3. cluster sends a confirmation back to the sender with the signed cert and public CA.
+- unjoined interface would send POST `<unjoined>/enrollment/request` with the discovered cluster to connect to
+- unjoined -(name,id,public-key,csr)-> cluster POST `<cluster>/internal/enrollment/request` which sends back request id and public CA
+- if discovery was used, validate that the cluster CA public-key thumbprint matches the returned public CA
+- unjoined should save and persist the requestId, public CA and contact endpoint until enrollment completes or is rejected
+2. the contact host receives the request, validates the CSR, and saves the enrollment record in NATS awaiting approval or rejection.
+- Status updates here from cluster: GET `<cluster>/enrollment/<request-id>`
+- Unjoined serves status updates from cluster here GET `<unjoined>/enrollment/<request-id>`
+- rejections are saved so further requests matching the endpoint, public key, or node id are blocked; matching any one is sufficient. A rejection can still be removed if accidental.
+POST `<cluster>/enrollment/<request-id>/reject` via cluster side interface
+- approval records the approving full member; the contact host issues the certificate and saves it on the request
+POST `<cluster>/enrollment/<request-id>/approve` via cluster side interface
+3. After approval
+- the contact host adds a pending membership record into NATS
+- the contact host sends the request id and signed cert back to the sender POST `<unjoined>/internal/enrollment/confirm`
+- the unjoined node validates the request id, CA signature, node identity, and certificate public key against its saved request and local key
+- if unjoined missed the notification then it can poll request status on `<cluster>/enrollment/<request-id>`
 4. unjoined node will configure its nats client with its private key, the new issued certificate and the public CA then join the cluster.
 
-cluster flow: 
-1. if the cluster is adding the node, it will send a http request to the unjoined node for a CSR
-2. it then issues a cert for the CSR and send the info to the unjoined node's confirmation endpoint
+cluster flow:
+1. cluster node1 discovers unjoined nodeX and sends that to the cluster over nats
+2. cluster node2 or node1 initiates an enrollment request that goes to nats to add nodeX
+- interface requests POST `<node1>/enrollment/request` or POST `<node2>/enrollment/request` with nodeX discovery id and node1 as contactHost
+- node1 must be a full member that observed nodeX; copy the endpoint and expected node-key thumbprint into the enrollment record
+- the initiating full member authorizes this request; no separate approval is required
+- and status can be found at `/enrollment/<request-id>` just like unjoined flow
+3. node1 sees the request record and sends an HTTP POST `<nodeX>/internal/enrollment/add` with cluster id, public CA, contact endpoint, and request id
+- nodeX responds with its node id, name, and CSR, and persists the cluster details and request id
+- node1 validates the CSR and checks its node identity and public-key thumbprint against the selected discovery before issuing
+4. node1 saves the CSR and issued certificate on the enrollment record, adds a pending membership record, and sends the request id and signed cert POST `<nodeX>/internal/enrollment/confirm`
+- nodeX validates the request id, CA signature, node identity, and certificate public key against the details saved during /add and its local key
+- if confirmation is missed, nodeX can retrieve the same result through the contact host's request status endpoint
 
-**Enrollment request**<br>
-Location: NATS; exchanged through daemon HTTP
+**Enrollment request record**<br>
+Location: NATS
 ```yaml
 id: enrollment1
-clusterId: cluster1
-initiatedBy: node
-status: pending
-node:
-  id: node2
+status: completed
+createdAt: "2026-10-29T18:00:00Z"
+
+joiningNode: # Birch is joining the cluster.
+  nodeId: birchNodeID
   name: birch
   endpoint: http://birch.local:8080
-csr: "<CSR PEM containing the node public key>"
-certificate: null
-caCertificate: null
+  publicKeyThumbprint: "sha256:<birch public key digest>"
+  csr: "<birch CSR PEM>"
+  issuedCertificate: "<birch certificate PEM signed by the cluster CA>"
+  discoveryId: discovery1 # Is present when initiated cluster side using a discovery id
+
+cluster: # The cluster Birch is joining.
+  id: cluster1
+  caPublicKeyThumbprint: "sha256:<cluster CA public key digest>"
+  caCertificate: "<public cluster CA certificate PEM>"
+  natsEndpoints:
+    - tls://cedar.local:4222
+    - tls://oak.local:4222
+  contactNode: # Cedar handles HTTP with Birch and issues its certificate.
+    nodeId: cedarNodeID
+    endpoint: http://cedar.local:8080
+
+initiator: oakNodeId
+
+decision:
+  result: approved
+  byNodeId: oakNodeId # this will match initiator when request is coming cluster side
+  decidedAt: "2026-10-29T18:01:00Z"
+
+```
+
+**Enrollment request record — joining node awaiting approval**<br>
+Location: NATS
+```yaml
+id: enrollment2
+status: pending
+createdAt: "2026-10-29T18:00:00Z"
+
+joiningNode:
+  nodeId: birchNodeID
+  name: birch
+  endpoint: http://birch.local:8080
+  publicKeyThumbprint: "sha256:<birch public key digest>"
+  csr: "<birch CSR PEM>"
+  issuedCertificate: null
+  discoveryId: null
+
+cluster:
+  id: cluster1
+  caPublicKeyThumbprint: "sha256:<cluster CA public key digest>"
+  caCertificate: "<public cluster CA certificate PEM>"
+  natsEndpoints:
+    - tls://cedar.local:4222
+    - tls://oak.local:4222
+  contactNode:
+    nodeId: cedarNodeID
+    endpoint: http://cedar.local:8080
+
+initiator: birchNodeID
+
+decision: null # Waiting for a full member to approve or reject.
+```
+
+**Enrollment request record — cluster add by endpoint, before CSR exchange**<br>
+Location: NATS
+```yaml
+id: enrollment3
+status: pending # Authorized, but Cedar has not contacted the endpoint yet.
+createdAt: "2026-10-29T18:00:00Z"
+
+joiningNode:
+  nodeId: null # Learned from the /internal/enrollment/add response.
+  name: null
+  endpoint: http://birch.local:8080
+  publicKeyThumbprint: null
+  csr: null
+  issuedCertificate: null
+  discoveryId: null # Explicit endpoint, not discovery.
+
+cluster:
+  id: cluster1
+  caPublicKeyThumbprint: "sha256:<cluster CA public key digest>"
+  caCertificate: "<public cluster CA certificate PEM>"
+  natsEndpoints:
+    - tls://cedar.local:4222
+    - tls://oak.local:4222
+  contactNode:
+    nodeId: cedarNodeID
+    endpoint: http://cedar.local:8080
+
+initiator: oakNodeId
+
+decision:
+  result: approved # Oak authorized the add; no separate approval is required.
+  byNodeId: oakNodeId
+  decidedAt: "2026-10-29T18:00:00Z"
 ```
 
 ##  discovery
@@ -229,15 +345,47 @@ caCertificate: null
 - sends out available endpoints, node id/cluster id and name
 - this is not required to add hosts, it is just to make it easier
 
-**Discovery advertisement**<br>
+**Cluster discovery broadcast**<br>
 Location: Network discovery broadcast
 ```yaml
-discoveryId: discovery1
-nodeId: node1
+nodeId: node1 # Advertising full member; enrollment contact and issuer.
 clusterId: cluster1
 name: homelab
 endpoints:
   - http://cedar.local:8080
+identity:
+  kind: cluster-ca
+  publicKeyThumbprint: "sha256:<cluster CA public key digest>"
+```
+
+**Unjoined node discovery broadcast**<br>
+Location: Network discovery broadcast
+```yaml
+nodeId: node2
+clusterId: null
+name: birch
+endpoints:
+  - http://birch.local:8080
+identity:
+  kind: node
+  publicKeyThumbprint: "sha256:<node public key digest>"
+```
+
+**Discovery listener record**<br>
+Location: NATS when the listener is clustered; in memory when host unjoined
+```yaml
+id: discovery1
+observedByHostId: node1
+lastSeenAt: "2026-10-29T18:00:00Z"
+advertisement: # Received cluster or unjoined node broadcast.
+  nodeId: node2
+  clusterId: null
+  name: birch
+  endpoints:
+    - http://birch.local:8080
+  identity:
+    kind: node
+    publicKeyThumbprint: "sha256:<node public key digest>"
 ```
 
 ## configurations
