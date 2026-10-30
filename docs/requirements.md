@@ -5,14 +5,17 @@
 Status
 - unjoined: hosts not in a cluster but running nixmox
 - pending: hosts in a cluster but configuration has not assigned and deployed
-- full: hosts that participate in cluster ownership
+- full: trusted hosts with full permissions and cache hosting; connect as NATS clients without hosting cluster servers
+- full-stable: full permissions and cache hosting plus NATS/JetStream servers and replicas; intended for reliably available hosts
 - removed: hosts explicitly removed from the cluster. membership can be reinstated.
 
-Membership statuses exist to determine which membrs should have cluster ownership so the cluster can stay stable.
-Newly joined members are considered pending since they are often followed by fresh installation.
-Until they have chosen a configuration and deployed, we don't want to rely on them. 
-The host that starts the cluster is a full member automatically.
-The last full member cannot be removed from the cluster without adding another full member or destruction of the cluster.
+Unless a specific status or transition is named, "full members" means both full and full-stable members.
+Both have the same credential access and administrative rights. Only full-stable members
+carry server, replica, and quorum responsibilities; client-only full members can sleep or disconnect
+without changing server membership. Sleeping does not automatically change either status.
+Newly joined members are pending until a configuration is assigned and deployed.
+The host that starts the cluster is full-stable automatically.
+The last full-stable member cannot be removed or demoted without another full-stable member or destruction of the cluster.
 
 **Membership Record**<br>
 Location: NATS
@@ -20,7 +23,7 @@ Location: NATS
 nodeId: node1
 name: cedar
 clusterId: cluster1
-status: full
+status: full-stable
 environment: installed # installed or installer; independent of membership status.
 agePublicKey: "<SSH-derived host age public key>"
 configurationId: cedar-uuid
@@ -36,7 +39,7 @@ daemon:
 - unjoined hosts have the option to join an existing cluster or create a new one
 - clusters can only be created by unjoined hosts
 - clusters are assigned a name, a persistent id and a CA
-- cluster creator is automatically a full member
+- cluster creator is automatically a full-stable member
 - creator starts the first nats jetstream server and bootstrap jetstream server
 
 **Cluster identity record**<br>
@@ -51,7 +54,7 @@ ca:
 ```
 
 ## cluster destruction
-- to destroy a cluster, all members must be removed from the cluster until the last full member.
+- to destroy a cluster, all other members must be removed until only the last full-stable member remains.
 - cluster destruction can then be performed and requires confirmation from the user.
 - after destruction the last member becomes unjoined, all nats servers shutdown
 
@@ -74,30 +77,44 @@ resumeTaskIds: [] # Persist reboot, daemon-restart, launch, or install task IDs 
 ```
 
 ## node promotion
-- nodes are promoted to full from pending automatically after a configuration is assigned and deployed successfully
-- the node will start its nats jetsream sever, configure its credentials and wait for it to connect to the cluster
-- the nodes nats client will then establish conncetion with the embedded nats server
-- the node's public age key generated from its ssh host key will be added to the credential store by another full member
-- binary cache will be started using the nix signing key and it will be added to cache peer list
-- full membership rights given
-- member status should be persists across daemon restarts so it knows to start services
+- nodes are promoted from pending to full automatically after a configuration is assigned and deployed successfully
+- the node's public age key generated from its ssh host key is added to the credential store by another full member
+- full membership rights are given; the node remains a NATS client connected to a full-stable member
+- start the binary cache using the Nix signing key and add the node to the cache peer list
+- member status persists across daemon restarts so the node knows which services to start
+
+### promotion to full-stable
+- promotion from full to full-stable is an explicit choice, not an automatic result of deployment
+- verify direct route connectivity with every existing full-stable member over an available LAN or overlay network
+- start the node's NATS/JetStream server with its credentials and wait for it to join the cluster
+- connect the node's NATS client to its embedded server
+- update replication and bootstrap placement using the new full-stable count
+- existing cache hosting continues unchanged
+- persist full-stable status; credential access and administrative permissions are unchanged
 
 ## node demotion
-- nodes are demoted from full to pending
-- if the demotion requires a bootstrap server, the selected surviving full member starts it and waits for it to become healthy before continuing
-- if the demoted node hosts the bootstrap server, bootstrap ownership is transferred to a surviving full member first
-- replicas are moved off the node and its jetstream server is removed from metadata membership before shutdown
-- data replication is updated based on the future member count
-- the node's nats client connects to a surviving full member and its embedded nats server is stopped
-- the binary cache is stopped and the node is removed from the cache peer list
-- the node's age key is removed from the credential store recipients
-- full membership rights are removed and pending membership rights are applied
-- pending member status is persisted across daemon restarts
+
+### full-stable to full
+- the last full-stable member cannot be demoted
+- if the demotion requires a bootstrap server, a surviving full-stable member starts it and waits for it to become healthy before continuing
+- if the demoted node hosts the bootstrap server, transfer bootstrap ownership to a surviving full-stable member first
+- move replicas off the node and remove its JetStream server from metadata membership before stopping it
+- update replication based on the future full-stable count
+- connect the node's NATS client to a surviving full-stable member and stop its embedded server
+- retain cache hosting and cache peer membership
+- retain the node's credential-store recipient entry and full permissions; persist full status
+
+### full to pending
+- a full-stable node first completes the server demotion above before becoming pending
+- stop the binary cache and remove the node from the cache peer list
+- remove the node's age key from the credential store recipients
+- remove full permissions and apply pending permissions
+- persist pending status; the node remains a client connected to a full-stable member
 
 ## forced membership actions
-- hosts can be forced to promote to full or forced to demote to pending
-- only full members can send forceful memebership actions
-- force demotion can not happen on the last full member
+- hosts can be forced to promote to full or forced to demote to pending; server participation changes use the full-stable transitions above
+- only full members can send forceful membership actions
+- force demotion cannot happen on the last full-stable member
 - promotions/demotions are queued one at a time to avoid race conditions
 - these actions are not a recommended path, they are here for testing and fallback scenarios.
 
@@ -157,7 +174,7 @@ sha: "567856785678"
 - membership or public-key changes update the global recipient record and all existing credential documents; changing the global record alone does not change decryption access
 - only full members have access to decrypt and update the secrets.
 - everytime a full member is added, their public key is added to sops and keys are updated
-- full members that are demoted or leave are removed
+- members demoted to pending or removed from the cluster are removed from the recipient list; full-stable to full does not revoke access
 - credential sops is initialized on cluster creation and stores the cluster CA and default nix signing key
 - actions that require credentials will be performed on hosts that have access to the credentials
 - EX: publishing a recipe, updating sops in for a configuration or enrolling another host
@@ -795,8 +812,9 @@ progress:
 - reboot is considered complete once back online and reboot validated using boot info
 - shutdown is considered complete once the shutdown command is sent to the host. ensure shutdown command is scheduled on a small delay.
 - check quorum before powering down. transfer bootstrap if running on host and ensure healthy transition before shutdown.
-- do not modify full membership count
-- if this is the only node skip bootstrap transfer
+- power tasks do not change membership status or full-stable count
+- quorum and bootstrap checks apply when stopping a full-stable host; stopping a client-only full or pending host does not remove a server
+- if this is the only full-stable node skip bootstrap transfer
 - force option will skip all checks and result in immediate power down.
 - evacuate option will try to move data replicas off of node before power down. 
 
@@ -919,6 +937,7 @@ resourceLogs:
 
 ## cluster cache
 - a cluster cache is used to transfer built artifacts across hosts
+- both full and full-stable members host cache peers; pending members can fetch artifacts through reachable cache gateways
 - the cache is a gateway proxy to all other peer caches so only one url is used
 - the gateway proxy uses bounded timeouts and fail over to other peers to try and prevent stalls and failures in case peers go down
 - gateway proxy will try all peers to see if they have the package cached
@@ -1145,7 +1164,8 @@ launcher:
 ### installer launchers
 - an installer launcher transitions a running machine with nixmox into an installer state off of the runtime drives
 - a task exists called launch-installer to run the launcher and make the host boot into the installer. Err if already in installer
-- the running host will trigger a demotion action to pending if it was a full member, demotion must finish before launching
+- the running host triggers demotion to pending if it was full or full-stable; server evacuation for full-stable must finish before launching
+- before launching, preserve a reachable LAN endpoint of a surviving full-stable member for NATS and artifact access; installer connectivity must not depend on overlay credentials
 - the correct launcher is chosen based on hardware
 - kexec is used if available on the host
 - rebooting into a connected boot device is an alternative when kexec is not possible
@@ -1232,6 +1252,7 @@ result: null
 - a /health endpoint is added to the daemon so user interfaces connected to it can check reachability to the daemon
 - health endpoint is not queried by other daemons
 - the health endpoint also returns nats server/client status and reachability to the server/cluster
+- the local NATS server check is not applicable for full or pending members, which run only clients
 - interface can inform user of where the issue lies between it and the cluster
 - endpoint can also include a general daemon status: starting, online, disconnected, shutting down
 - health poller should use appropriate timeout, retry, and probe logic
@@ -1248,24 +1269,48 @@ checks:
   cluster: {status: healthy}
 ```
 
+## multi-network
+- discovery and enrollment use LAN; installers do not require overlay credentials
+- members publish their LAN and overlay endpoints and keep them updated as interfaces change
+- Nixmox prefers reachable overlay endpoints, falls back to LAN, and automatically updates NATS routes and client connection candidates; this also applies to cache and other HTTP access
+- full-stable members accept NATS connections on LAN and overlay interfaces; every full-stable pair must have a direct route, which may use either network
+- full and pending members need only one reachable full-stable server, with alternatives for reconnect; only full-stable members publish NATS listener endpoints
+- network changes preserve node identity and membership status; TLS certificates must cover the connection names/IPs used
+
+**Member network endpoints**<br>
+Location: NATS, within the membership record
+```yaml
+nodeId: node1
+endpoints:
+  - network: overlay
+    interface: tailscale0
+    http: http://cedar.example.ts.net:8080
+    natsClient: tls://cedar.example.ts.net:4222
+    natsRoute: nats-route://cedar.example.ts.net:6222
+  - network: lan
+    interface: wlan0
+    http: http://192.168.1.20:8080
+    natsClient: tls://192.168.1.20:4222
+    natsRoute: nats-route://192.168.1.20:6222
+```
+
 ## NATS quorum
-- nats jetstream servers will run on all full hosts
-- pending members will use nats clients connected to the other full members
-- since nats jetstream requires at least one other peer, a bootstrap jetstream server will be launched on the first node
-- the bootstrap will stay a jetstram peer until 3 full nodes are up and running. Once the 3rd host comes online and healthy, the bootstrap is removed from the cluster.
-- a demotion or member removal that would cause full membership count to drop below 3 will trigger the bootstrap to start on selected surviving host
-- the bootstrap must start and become healthy before the demotion or removal is finalized.
-- a bootstrap record is shared to establish which host will launch the bootstrap server, prefer hosts that previously hosted bootstrap.
-- when there are 2 hosts, the cluster can tolerate the host going down which does not run the bootstrap server.
-- a full member that goes offline is not considered removed from the cluster.
-- removal requires evacuating replicas (if node is online) then removing from metadata peers
+- NATS/JetStream servers run only on full-stable hosts; all server counts below refer to full-stable hosts
+- full and pending members use NATS clients connected to full-stable members
+- a bootstrap JetStream server is launched on the first full-stable node to start the configured clustered topology
+- the bootstrap stays a JetStream peer until 3 full-stable nodes are healthy, then is removed
+- demotion or removal that drops the full-stable count below 3 starts the bootstrap on a surviving full-stable host before the transition is finalized
+- a bootstrap record is shared to establish which full-stable host launches it; prefer hosts that previously hosted it
+- with 2 full-stable hosts, the cluster can tolerate losing the host that does not run the bootstrap server
+- going offline does not remove a member or change its status; a sleeping client-only full member does not affect server quorum or replication counts
+- removing a full-stable member requires evacuating replicas (if online) and removing its metadata peer; removing a client-only full member requires neither
 - bootstrap handling should be seamless and automatic
 - data replication should go as follows:
-  - One full host + bootstrap: R2.
-  - Two full hosts + bootstrap: R3.
-  - Three full hosts, bootstrap retired: R3.
-  - Four full hosts: R3.
-  - Five+ full hosts: R3 and R5 on critical data.
+  - One full-stable host + bootstrap: R2.
+  - Two full-stable hosts + bootstrap: R3.
+  - Three full-stable hosts, bootstrap retired: R3.
+  - Four full-stable hosts: R3.
+  - Five+ full-stable hosts: R3 and R5 on critical data.
 - critical data would be cluster essentials like credentials, membership related.
 
 **Bootstrap ownership record**<br>
@@ -1279,9 +1324,9 @@ bootstrap:
 
 ## NATS Disaster Recovery
 - the cluster is placed in a state where quorum is lost and forceful recovery is desired to recover
-- for instance: 2 full members go offline in a 3 node cluster and the 2 are known to be unrecoverable
+- for instance: 2 full-stable members go offline in a cluster with 3 full-stable hosts, and the 2 are known to be unrecoverable
 - it is desired that the remaining node take full ownership under admin oversight to recover the cluster and reinstate new hosts
-- quorum disaster recovery can be enacted in this case through any interface connected to the surviving member
+- quorum disaster recovery can be enacted in this case through an interface connected to the surviving full-stable member
 - it will use nats metadata rescue to set $JS.API.META.RESCUE to "quorum_needed":1
 - then the unrecoverable nodes may be removed from the cluster and the bootstrap server should start up if needed.
 
@@ -1308,7 +1353,7 @@ bootstrap:
 - backup and restore
 - no automatic rollbacks
 - users/auth login into interfaces 
-- single host reinstall, must have another full member.
+- reinstall of the last full-stable host; another full-stable member must preserve the cluster.
 
 ## daemon components and flow
 See [componenets.md](componenets.md) for components, startup flow, NATS subjects and storage choices.
