@@ -31,6 +31,7 @@ result
 # Editor/IDE
 # .idea/
 # .vscode/
+PROGRESS.md
 
 # Python test harness bytecode
 __pycache__/

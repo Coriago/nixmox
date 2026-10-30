@@ -1,4 +1,4 @@
-# Nixmox Feature guide
+# Nixmox Requirements guide
 
 ## membership
 
@@ -469,11 +469,29 @@ updateSops: runs a process that updates the sops file with the key
 - the task manager for a host will routinely check what tasks are running against what local task runners are running. if a task runner had crashed and failed to report status, then the task manager will mark the task as unknown.
 - global task cleanup will happen periodically to cleanup tasks for other hosts. a task will be set to unknown status if the task is running for over 30 mins since the host of the task went offline. this is to ensure no tasks stay running indefinetly.
 - tasks can also have a manual review state where they halt execution and await approval before continuing. The approval can happen in the middle of the task, it does not have to be the beginning
+- tasks have concurrency protection setting for tasks types that would conflict. Ex: power tasks or deployments
 
 ### task log adapters
 - tasks can use log adapters to parse logs into task progress telemetry
 - the raw log will still be streamed, the adapter will parse independently during task execution 
 - an example adapter would be nix builds which can send download speed, number of packages built, progress of packages being downloaded etc.
+
+## power tasks
+- there are tasks for reboot and shutdown of a host
+- current boot information is added to the task
+- reboot is considered complete once back online and reboot validated using boot info
+- shutdown is considered complete once the shutdown command is sent to the host. ensure shutdown command is scheduled on a small delay.
+- check quorum before powering down. transfer bootstrap if running on host and ensure healthy transition before shutdown.
+- do not modify full membership count
+- if this is the only node skip bootstrap transfer
+- force option will skip all checks and result in immediate power down.
+- evacuate option will try to move data replicas off of node before power down. 
+
+## daemon update
+- daemon systemd service is not restarted on deployment apply.
+- a task is available for restarting the daemon similar to power tasks
+- daemon restart behaves just like reboot but instead restarts daemon and the completion check is on daemon start time.
+- hosts should update their membership record in nats if they have a daemon update ready and require daemon restart
 
 ## host telemetry, progress updates and log streams
 - live telemetry and logs are sent from all hosts to display in any interface connected to any host daemon
@@ -481,6 +499,20 @@ updateSops: runs a process that updates the sops file with the key
 - logs streams must keep full history when streaming batached logs using replay
 - logs are stored for historical viewing and will have a ttl of 5 days by default.
 - telemetry and progress updates do not need full history or replay, the most up to date information is favored here.
+- host metrics can have different update frequencies
+- high frequency metrics 2 sec
+  - cpu usage
+  - memory usage
+  - disk bytes/sec
+  - IOPS
+  - network usage
+  - network latency
+- low frequency metrics 60sec
+  - disk info: partitions, size, free space, format
+  - memory info: mem type and freq
+  - cpu info: name, arch, core count, etc
+  - network info: interfaces, interface info 
+- host metrics should use opentelemetry format and libraries
 
 ## cluster cache
 - a cluster cache is used to transfer built artifacts across hosts
@@ -494,12 +526,12 @@ updateSops: runs a process that updates the sops file with the key
 - nixmox will add the the cache proxy and public key as extra substituters and trusted keys via cli flags on build actions
 - the nixmox module can configure nix settings to trust the cache proxy and the keys
 
-##  builds
+##  builds tasks
 - nix build tasks are used to build nixos configurations or packages on a host
 - you can schedule builds on any host from the interface allowing for cross host building
 - nix builds should configure a log adapter inspired by nix output manager to send build telemetry
 
-## deployment
+## deployment tasks
 - a deployment consists of a build, a review and finally activation
 - a deployment targets
   - configuration or recipe at a specific pin on the targetRepo.
@@ -553,6 +585,7 @@ updateSops: runs a process that updates the sops file with the key
 
 ### installer launchers
 - an installer launcher transitions a running machine with nixmox into an installer state off of the runtime drives
+- a task exists called launch-installer to run the launcher and make the host boot into the installer. Err if already in installer
 - the running host will trigger a demotion action to pending if it was a full member, demotion must finish before launching
 - the correct launcher is chosen based on hardware
 - kexec is used if available on the host
@@ -582,6 +615,14 @@ updateSops: runs a process that updates the sops file with the key
 - hosts in pending or in an installer state can not create media
 - no confirmation necessary on drive selected
 
+## Status / Health Checking
+- reachability/status of other hosts should come from nats, not a custom hookup
+- a /health endpoint is added to the daemon so user interfaces connected to it can check reachability to the daemon
+- health endpoint is not queried by other daemons
+- the health endpoint also returns nats server/client status and reachability to the server/cluster
+- interface can inform user of where the issue lies between it and the cluster
+- endpoint can also include a general daemon status: starting, online, disconnected, shutting down
+- health poller should use appropriate timeout, retry, and probe logic
 
 ## NATS quorum
 - nats jetstream servers will run on all full hosts
@@ -630,7 +671,10 @@ updateSops: runs a process that updates the sops file with the key
 - no user or role management. access to the api is limited to network connectivity
 - interfaces are not limited to the local daemon api, they can talk directly to other daemon interfaces over the network.
 
-
+## NOT SUPPORTED
+- backup and restore
+- users/auth login into interfaces 
+- single host reinstall, must have another full member.
 
 ## daemon components and flow
 See [componenets.md](componenets.md) for components, startup flow, NATS subjects and storage choices.
