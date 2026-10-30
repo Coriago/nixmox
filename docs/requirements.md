@@ -83,6 +83,25 @@ resumeTaskIds: [] # Persist reboot, daemon-restart, launch, or install task IDs 
 - start the binary cache using the Nix signing key and add the node to the cache peer list
 - member status persists across daemon restarts so the node knows which services to start
 
+**Node promotion task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: promote1
+tasktype: node-promotion
+hostId: node1 # Full member coordinating the transition for node2.
+status: succeeded
+concurrency:
+  exclusiveResources: ["cluster:cluster1:membership", "host:node2:system"]
+inputs:
+  nodeId: node2
+  toStatus: full
+  force: false
+context:
+  previousStatus: pending
+result:
+  membershipStatus: full
+```
+
 ### promotion to full-stable
 - promotion from full to full-stable is an explicit choice, not an automatic result of deployment
 - verify direct route connectivity with every existing full-stable member over an available LAN or overlay network
@@ -91,6 +110,25 @@ resumeTaskIds: [] # Persist reboot, daemon-restart, launch, or install task IDs 
 - update replication and bootstrap placement using the new full-stable count
 - existing cache hosting continues unchanged
 - persist full-stable status; credential access and administrative permissions are unchanged
+
+**Full-stable promotion task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: promote2
+tasktype: node-promotion
+hostId: node1
+status: succeeded
+concurrency:
+  exclusiveResources: ["cluster:cluster1:membership", "host:node2:system"]
+inputs:
+  nodeId: node2
+  toStatus: full-stable
+  force: false
+context:
+  previousStatus: full
+result:
+  membershipStatus: full-stable
+```
 
 ## node demotion
 
@@ -111,11 +149,55 @@ resumeTaskIds: [] # Persist reboot, daemon-restart, launch, or install task IDs 
 - remove full permissions and apply pending permissions
 - persist pending status; the node remains a client connected to a full-stable member
 
+**Node demotion task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: demote1
+tasktype: node-demotion
+hostId: node1 # Remains a full member while node2 is demoted.
+status: succeeded
+concurrency:
+  exclusiveResources: ["cluster:cluster1:membership", "host:node2:system"]
+inputs:
+  nodeId: node2
+  toStatus: pending # Use full to remove server responsibilities only.
+  force: false
+context:
+  previousStatus: full-stable
+result:
+  membershipStatus: pending
+```
+
+## node removal
+- removal is a task coordinated by a surviving full member
+- online full-stable removal follows the server demotion procedure, including bootstrap transfer, replica evacuation, and metadata peer removal
+- full permissions, credential access, and cache peer membership are removed as applicable
+- the last full-stable member cannot be removed without another full-stable member or cluster destruction
+- normal removal contacts the node; force removal supports an offline node
+
+**Node removal task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: remove1
+tasktype: node-removal
+hostId: node1 # Surviving full member, not the node being removed.
+status: succeeded
+concurrency:
+  exclusiveResources: ["cluster:cluster1:membership", "host:node2:system"]
+inputs:
+  nodeId: node2
+  force: false
+context:
+  previousStatus: full
+result:
+  membershipStatus: removed
+```
+
 ## forced membership actions
 - hosts can be forced to promote to full or forced to demote to pending; server participation changes use the full-stable transitions above
 - only full members can send forceful membership actions
 - force demotion cannot happen on the last full-stable member
-- promotions/demotions are queued one at a time to avoid race conditions
+- promotion, demotion, and removal tasks are queued one at a time across the cluster to avoid race conditions
 - these actions are not a recommended path, they are here for testing and fallback scenarios.
 
 ### force removal
@@ -124,6 +206,24 @@ resumeTaskIds: [] # Persist reboot, daemon-restart, launch, or install task IDs 
 - the endpoint will respond if the host was removed and the node will change its state to unjoined.
 - the removal payload from the cluster will be signed by the cluster so the node can confirm its validity
 - a removal can also be removed to let the node rejoin the cluster
+
+**Force-removal task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: remove2
+tasktype: node-removal
+hostId: node1 # Surviving full member; node2 is offline.
+status: succeeded
+concurrency:
+  exclusiveResources: ["cluster:cluster1:membership", "host:node2:system"]
+inputs:
+  nodeId: node2
+  force: true
+context:
+  previousStatus: full-stable
+result:
+  membershipStatus: removed
+```
 
 **Signed force-removal response**<br>
 Location: Daemon HTTP response; removal record in NATS
@@ -1083,21 +1183,11 @@ result:
 ```
 
 ### fresh deployments
-- a fresh deployment task includes disk formatting and deployment onto the associated disks in disko
-- must first be in an installer state to do fresh deployment
-- fresh deployment does not transition the node into an installer state if it is not in one, that is a seperate action
-- no reviews for fresh deployments, built artifacts must transfer into the target drive
-- must transfer persisted ids into the destination installation from the installer environment
-  - node id
-  - node tls keys 
-  - cluster issued keys, cluster CA, cluster id and connection info
-  - wifi credentials
-  - ssh host key
-  - the task id of the deployment
-- fresh install task is complete once the reboot is performed and post install validation complete
-- post install validation ensures connection to cluster established, expected configuration generation is active and ids are set
-- host is promoted to full membership
-
+- requires an installer environment; entering it is a separate task
+- select a configuration or recipe, then run install-finalize compatibility checks against the intended installed layout and use the best compatible result before formatting
+- build the system, format the selected disks with disko, and install without a review step
+- run install-finalize
+- complete after validating cluster connectivity, the expected generation, and preserved identity; promote the host to full
 
 **Fresh deployment task (base task specialization)**<br>
 Location: NATS
@@ -1122,6 +1212,7 @@ links:
       role: build
 context:
   previousBootId: installer-boot1
+  finalizeId: finalize-pi-uboot-sd # Selected by checks for SD U-Boot with NVMe root.
 result:
   bootId: installed-boot1
   generation: 1
@@ -1132,56 +1223,133 @@ result:
   membershipStatus: full
 ```
 
-##  installers
-- bare installation environment containing nixmox daemon
-- installer starts up into the nixmox client tui with installer flag
-- a network connectivity check is performed on network devices
-- if no connection, prompt is shown that the device needs to be wired or connected via wifi if that interfaces is available
-- built for the corresponding hardware, x86, arm, or hardware specific like raspberry pi
-- build can happen on other hosts for another hosts hardware
-- incremental deployments can not run in an installer, only fresh deployments
-- new ssh host keys, node ids, and node keys are generated on each installer start unless started by a launcher
+## installers
+- a hardware-specific boot environment containing the daemon and installer TUI; supports fresh deployments only
+- check connectivity on startup and prompt for wired or Wi-Fi setup if needed
+- use preserved identity when supplied; otherwise generate node and SSH host keys and a node id
+- definitions contain hardware requirements and pinned build inputs; artifacts belong to build tasks
+- installers can be built on another capable host
 
-**Installer environment record**<br>
-Location: Local host (preserved across installer transitions)
+**Installer definition**<br>
+Location: NATS
 ```yaml
-nodeId: node2
-environment: installer
-system: x86_64-linux
-bootId: installer-boot1
-resumeTaskIds: [install1] # launch1 during entry; install1 when installation begins.
-launcher:
-  taskId: launch1
-  method: efi
-  returnBoot:
-    method: efi
-    previousBootOrder: ["0001", "0002"]
-    installerBootEntry: "0002"
-    installedBootEntry: null # Set after installation creates the destination entry.
-    restoreBootOrder: true
+id: installer-pi-uboot
+name: Raspberry Pi CM4 U-Boot installer
+requirements:
+  systems: [aarch64-linux]
+  boards: [raspberry-pi-cm4]
+  firmware: uboot
+build:
+  targetRepo:
+    id: repo1
+    ref: main
+    sha: "123412341234"
+  flakeDir: .
+  installable: packages.aarch64-linux.installer-pi-cm4
 ```
 
-### installer launchers
-- an installer launcher transitions a running machine with nixmox into an installer state off of the runtime drives
-- a task exists called launch-installer to run the launcher and make the host boot into the installer. Err if already in installer
-- the running host triggers demotion to pending if it was full or full-stable; server evacuation for full-stable must finish before launching
-- before launching, preserve a reachable LAN endpoint of a surviving full-stable member for NATS and artifact access; installer connectivity must not depend on overlay credentials
-- the correct launcher is chosen based on hardware
-- kexec is used if available on the host
-- rebooting into a connected boot device is an alternative when kexec is not possible
-- efi boot is used on uefi machines that do not have kexec
-- raspberry pi eeprom used to transition to an sd card when using full nvme boot
-- raspberry pi uboot is another option if sd card is used for boot and nvme as root
-- installer launch method and return-boot details must survive the transition so installation can select the destination boot entry/device and undo temporary boot changes
-- launchers must ensure these values persist from the old environment
-  - node id
-  - node tls keys
-  - cluster issued keys, cluster CA, cluster id and connection info
-  - wifi credentials (ensure network connection is maintained)
-  - ssh host key
-  - launcher task id and return-boot details
+## install-prepare
+- each implementation checks the current host hardware, boot layout, and selected installer, returning compatibility and preference; the task does not contain hardware-selection logic
+- for a Pi booting entirely from NVMe, prepare-pi-eeprom can stage the SD installer and configure EEPROM boot selection for entry
+- stages a built installer, preserves node identity, cluster enrollment, Wi-Fi configuration, and the launch task id, then performs the reboot or kexec transition
+- keeps boot and preservation files outside disks that installation will format
+- preserves LAN access to a full-stable member for NATS and artifacts without requiring overlay credentials
+- owns its temporary boot state and cleanup
+- for Pi SD U-Boot, stage the kernel, initrd, and device tree on SD and configure extlinux to boot the installer
 
-**Installer launcher task (base task specialization)**<br>
+supported:
+- prepare-kexec
+- prepare-efi
+- prepare-pi-uboot-sd
+- prepare-pi-eeprom
+
+**Install-prepare definition**<br>
+Location: NATS
+```yaml
+id: prepare-pi-eeprom
+name: Prepare Raspberry Pi NVMe to SD installer entry
+method: pi-eeprom # Implementation owns compatibility checks and execution.
+```
+
+**Install-prepare preservation record — host to installer**<br>
+Location: Local private SD handoff into the installer, outside the installation target disks
+```yaml
+nodeId: node2
+status: pending
+environment: installer
+installerId: installer-pi-uboot
+system: aarch64-linux
+previousBootId: boot-before-installer
+resumeTaskIds: [launch1]
+
+# File references name private files carried into the installer with this record.
+identity:
+  privateKeyFile: node.key
+  sshHostKeyFile: ssh_host_ed25519_key
+cluster:
+  id: cluster1
+  certificateFile: node.crt
+  caFile: cluster-ca.crt
+  natsEndpoints:
+    - tls://192.168.1.20:4222
+network:
+  wifiConfigFiles: [wifi.nmconnection]
+
+```
+
+## install-finalize
+- each implementation checks target hardware and the intended installed configuration, returning compatibility and preference
+- runs after installation and before reboot; preserves identity, enrollment, Wi-Fi configuration, deployment task id, and validation information into the installed system
+- configures boot from the installed configuration and target hardware
+- methods are daemon implementations running in the installer environment
+- for Pi SD U-Boot, keep firmware and U-Boot on SD and generate boot files for the new system and NVMe root using NixOS bootloader tooling; the installed configuration must maintain that SD boot partition
+- select the installed boot entry after its files and preservation are written
+
+supported:
+- finalize-kexec
+- finalize-pi-uboot-sd
+- finalize-pi-eeprom
+- finalize-efi
+
+**Install-finalize definition**<br>
+Location: NATS
+```yaml
+id: finalize-pi-uboot-sd
+name: Finalize Raspberry Pi SD U-Boot with NVMe root
+method: uboot-sd # Implementation owns compatibility checks and execution.
+```
+
+**Install-finalize preservation record — installer to host**<br>
+Location: Local destination installation, written by install-finalize before reboot
+```yaml
+nodeId: node2
+status: pending # Promoted to full after post-install validation.
+environment: installed
+previousBootId: installer-boot1
+resumeTaskIds: [install1]
+expectedGeneration: 1
+
+# File references name private files copied alongside this record, not old-host paths.
+identity:
+  privateKeyFile: node.key
+  sshHostKeyFile: ssh_host_ed25519_key
+cluster:
+  id: cluster1
+  certificateFile: node.crt
+  caFile: cluster-ca.crt
+  natsEndpoints:
+    - tls://192.168.1.20:4222
+network:
+  wifiConfigFiles: [wifi.nmconnection]
+```
+
+## launch installer task
+- reject if already in an installer; otherwise select an installer and run install-prepare compatibility checks against the current host layout to choose the best compatible result
+- build the installer through a child task and transfer the output to the target host if needed
+- demote full/full-stable hosts to pending, completing server evacuation where required
+- invoke install-prepare; complete when the host returns in the installer environment
+
+**Launch installer task (base task specialization)**<br>
 Location: NATS
 ```yaml
 id: launch1
@@ -1190,11 +1358,18 @@ hostId: node2
 status: succeeded
 concurrency:
   exclusiveResources: ["host:node2:system"]
-inputs: {} # The launcher is chosen from the target hardware.
+inputs:
+  installerId: installer-pi-uboot # Selected for the target board.
+  buildHostId: node1
+links:
+  childTasks:
+    - taskId: installer-build1 # Builds inputs.installerId.
+      role: build
 context:
   previousBootId: boot-before-installer
+  prepareId: prepare-pi-eeprom # Selected by checks for the current NVMe-only boot layout.
 result:
-  method: efi
+  method: pi-eeprom
   environment: installer
   bootId: installer-boot1
   membershipStatus: pending
@@ -1222,8 +1397,10 @@ networks:
 - sd cards or usb devices can be formatted with a bootable installer
 - in the interface, a user can select which host the drive is connected to, default is the daemon the interface is connected to
 - select a drive from a dropdown
-- choose the target host for the installer and choose a which host will do the initial build. default is the current host
-- then execute the build of the installer and formatting of the drive
+- select an installer definition for the hardware that will boot the media; it does not need to be an enrolled host
+- select a host capable of building that installer, defaulting to the current host when capable
+- the host writing the drive, the build host, and the hardware that will boot the media can all be different
+- build the selected installer, transfer the build output to the host owning the drive if needed, and write it to the selected drive
 - hosts in pending or in an installer state can not create media
 - no confirmation necessary on drive selected
 
@@ -1232,14 +1409,14 @@ Location: NATS
 ```yaml
 id: media1
 tasktype: create-boot-media
-hostId: node1
+hostId: node1 # Owns and writes the selected drive; not the installer target.
 status: running
 concurrency:
   exclusiveResources: ["host:node1:system"]
 inputs:
   device: /dev/disk/by-id/usb-example-installer
-  targetHostId: node2
-  buildHostId: node1
+  installerId: installer-pi-uboot # Determines the target hardware and build inputs.
+  buildHostId: node3 # Builds the installer; may differ from the drive-owning host.
 links:
   childTasks:
     - taskId: media-build1
