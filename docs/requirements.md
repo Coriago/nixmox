@@ -1507,6 +1507,26 @@ bootstrap:
 - it will use nats metadata rescue to set $JS.API.META.RESCUE to "quorum_needed":1
 - then the unrecoverable nodes may be removed from the cluster and the bootstrap server should start up if needed.
 
+## Daemon Handling
+- use nats subscriptions for any logic that is triggered, do not use pollers or looping processes 
+  - membership updates
+  - process/schedule a new task 
+  - handle a new credential
+  - new enrollment
+- only use longer lived subprocesses for daemon publish information
+  - host telemetry polling
+  - a running task
+  - git polling
+- serving processes
+  - http server 
+  - browser serve
+  - nats client
+  - nats server
+- most other actions are triggered through the api
+  - api is kept thin and generally forwards the info to nats
+  - interface deploy to host -> api dispatch deploy host task -> nats -> process deploy host task
+  - api handles things like paging/filters
+
 
 ## security posture v1
 - backend systems use encrypted traffic when talking with nats.
@@ -1533,4 +1553,4 @@ bootstrap:
 - reinstall of the last full-stable host; another full-stable member must preserve the cluster.
 
 ## daemon components and flow
-See [componenets.md](componenets.md) for components, startup flow, NATS subjects and storage choices.
+See [implementation-components.md](implementation-components.md) for implementation responsibilities and [cli-api-reference.md](cli-api-reference.md) for commands and API routes.
