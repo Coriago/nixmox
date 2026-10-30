@@ -14,6 +14,23 @@ Until they have chosen a configuration and deployed, we don't want to rely on th
 The host that starts the cluster is a full member automatically.
 The last full member cannot be removed from the cluster without adding another full member or destruction of the cluster.
 
+**Membership Record**<br>
+Location: NATS
+```yaml
+nodeId: node1
+name: cedar
+clusterId: cluster1
+status: full
+environment: installed # installed or installer; independent of membership status.
+agePublicKey: "<SSH-derived host age public key>"
+configurationId: cedar-uuid
+daemon:
+  version: "0.1.0"
+  startedAt: "2026-10-29T18:00:00Z"
+  updateReady: true
+  availableVersion: "0.2.0"
+```
+
 ## cluster creation
 - clusters can be created from any interface once the nixmox service is running
 - unjoined hosts have the option to join an existing cluster or create a new one
@@ -21,6 +38,17 @@ The last full member cannot be removed from the cluster without adding another f
 - clusters are assigned a name, a persistent id and a CA
 - cluster creator is automatically a full member
 - creator starts the first nats jetstream server and bootstrap jetstream server
+
+**Cluster identity record**<br>
+Location: NATS
+```yaml
+id: cluster1
+name: homelab
+createdByNodeId: node1
+ca:
+  certificate: "<public CA certificate PEM>"
+  credentialId: cluster-ca
+```
 
 ## cluster destruction
 - to destroy a cluster, all members must be removed from the cluster until the last full member.
@@ -31,6 +59,19 @@ The last full member cannot be removed from the cluster without adding another f
 - when nixmox starts for the first time, it generates a unique node id that persists
 - a tls secret is also created and persisted
 - it does not start a nats jetstream server
+
+**node persistent state record**<br>
+Location: Local host (persistent)
+```yaml
+nodeId: node1
+name: cedar
+clusterId: null
+status: unjoined
+environment: installed
+identity:
+  privateKeyFile: /var/lib/nixmox/node.key
+resumeTaskIds: [] # Persist reboot, daemon-restart, launch, or install task IDs before transition.
+```
 
 ## node promotion
 - nodes are promoted to full from pending automatically after a configuration is assigned and deployed successfully
@@ -67,6 +108,17 @@ The last full member cannot be removed from the cluster without adding another f
 - the removal payload from the cluster will be signed by the cluster so the node can confirm its validity
 - a removal can also be removed to let the node rejoin the cluster
 
+**Signed force-removal response**<br>
+Location: Daemon HTTP response; removal record in NATS
+```yaml
+payload:
+  clusterId: cluster1
+  nodeId: node2
+  status: removed
+  removedAt: "2026-10-29T18:10:00Z"
+signature: "<cluster signature>"
+```
+
 ## gitops
 - configure one or more git repositories
 - pull on cadence and notify other hosts when updates are available
@@ -74,8 +126,8 @@ The last full member cannot be removed from the cluster without adding another f
 - tracked repos can be added or removed through the interface
 - credentials can be associated to a tracked repo for publishing to the repo or private repo auth
 
-Tracked repository without credentials:
-
+**Tracked repository without credentials**<br>
+Location: NATS
 ```yaml
 id: repo1
 name: nixos-configs
@@ -85,8 +137,8 @@ ref: main
 sha: "123412341234"
 ```
 
-Tracked repository with credentials:
-
+**Tracked repository with credentials**<br>
+Location: NATS
 ```yaml
 id: repo2
 name: private-configs
@@ -100,13 +152,36 @@ sha: "567856785678"
 - credentials are secret values stored in the cluster and used for cluster CA, git, sops or nix signing.
 - all full members get access to cluster credentials
 - secrets in credentials are encrypted using sops and age keys generated from the ssh host keys
-- the encrypted sops files and sops metadata are stored in the nats store
+- one global credential-store record contains authorized full member ids and their current public age keys, maintained from membership records
+- each credential record in NATS stores the complete SOPS-encrypted file, including embedded decryption metadata, in its content field; no .sops.yaml is stored for the credential store
+- membership or public-key changes update the global recipient record and all existing credential documents; changing the global record alone does not change decryption access
 - only full members have access to decrypt and update the secrets.
 - everytime a full member is added, their public key is added to sops and keys are updated
 - full members that are demoted or leave are removed
 - credential sops is initialized on cluster creation and stores the cluster CA and default nix signing key
 - actions that require credentials will be performed on hosts that have access to the credentials
 - EX: publishing a recipe, updating sops in for a configuration or enrolling another host
+
+**Credential store record**<br>
+Location: NATS
+```yaml
+clusterId: cluster1
+recipients: # Current full members and public keys from membership records.
+  - nodeId: node1
+    agePublicKey: "<node1 age public key>"
+  - nodeId: node2
+    agePublicKey: "<node2 age public key>"
+```
+
+**Encrypted credential record**<br>
+Location: NATS
+```yaml
+id: githubCredentialId
+name: private-repository-access
+type: git
+content: |
+  <complete SOPS-encrypted file, including its embedded metadata>
+```
 
 ##  enrollment
 - process where new hosts running nixmox join a cluster
@@ -132,11 +207,38 @@ cluster flow:
 1. if the cluster is adding the node, it will send a http request to the unjoined node for a CSR
 2. it then issues a cert for the CSR and send the info to the unjoined node's confirmation endpoint
 
+**Enrollment request**<br>
+Location: NATS; exchanged through daemon HTTP
+```yaml
+id: enrollment1
+clusterId: cluster1
+initiatedBy: node
+status: pending
+node:
+  id: node2
+  name: birch
+  endpoint: http://birch.local:8080
+csr: "<CSR PEM containing the node public key>"
+certificate: null
+caCertificate: null
+```
+
 ##  discovery
 - make enrollment easier by letting nodes find clusters and clusters find nodes
 - broadcast happens on common port
 - sends out available endpoints, node id/cluster id and name
 - this is not required to add hosts, it is just to make it easier
+
+**Discovery advertisement**<br>
+Location: Network discovery broadcast
+```yaml
+discoveryId: discovery1
+nodeId: node1
+clusterId: cluster1
+name: homelab
+endpoints:
+  - http://cedar.local:8080
+```
 
 ## configurations
 - configurations is a registry of nixos configurations
@@ -145,6 +247,8 @@ cluster flow:
 - they do not have to be commited to the remote repo when using a recipe
 - hosts must select a configuration from the registry to become full members.
 
+**Configuration Record**<br>
+Location: NATS
 ```yaml
 id: cedar-uuid
 name: cedar
@@ -168,8 +272,8 @@ affect a host consuming that recipe. Hosts must update to the new recipe version
 - a recipe using a soure recipe can have its definition edited but it will create a new recipe and version that is no longer attached to the source and will not be updated from it. the original recipe will still exist and can be updated with new versions.
 - a repo recipe can set definition fields: fields, observations, outputs, flakeDir, flakeConfiguration
 
-Here is recipe stored at runtime that uses a recipe from a repo
-
+**Recipe Record**<br>
+Location: NATS
 ```yaml
 id: "recipe1-uuid"
 version: 6
@@ -252,8 +356,8 @@ collected:
 ```
 
 Here is the configuration recipe in repo1
-.nixmox/recipes/myrecipe.yaml
-
+**Repository Recipe Definition**<br>
+Location: Git repository: .nixmox/recipes/myrecipe.yaml
 ```yaml
 flakeDir: .
 flakeConfiguration: "{{ .Name }}"
@@ -453,6 +557,26 @@ updateSops: runs a process that updates the sops file with the key
 - publish can be commited directly to the target ref or a pull request can be opened into the target ref
 - credentials for the remote repo must be set in order to publish
 
+**Recipe publication task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: publish1
+tasktype: recipe-publication
+hostId: node1
+status: succeeded
+inputs:
+  recipeId: recipe1-uuid
+  recipeVersion: 6
+  targetRepo:
+    id: repo1
+    ref: main
+    sha: "123412341234"
+  mode: pull-request
+result:
+  commitSha: "abcdef123456"
+  pullRequestUrl: https://github.com/example/nixos-configs/pull/12
+```
+
 ## tasks
 - tasks are a generic concept for performing tracked operations on hosts
 - they allow for easy visibility across the cluster or a host to see what has failed, what is currently running etc.
@@ -471,10 +595,51 @@ updateSops: runs a process that updates the sops file with the key
 - tasks can also have a manual review state where they halt execution and await approval before continuing. The approval can happen in the middle of the task, it does not have to be the beginning
 - tasks have concurrency protection setting for tasks types that would conflict. Ex: power tasks or deployments
 
+**Base task record**<br>
+Location: NATS
+```yaml
+id: build1
+tasktype: build
+hostId: node1
+status: running # queued, running, manual-review, succeeded, failed, cancelled, unknown
+createdAt: "2026-10-29T18:00:00Z"
+startedAt: "2026-10-29T18:00:01Z"
+finishedAt: null
+links:
+  parentTaskId: deploy1
+  retryOfTaskId: null
+  afterSuccessOfTaskIds: []
+  childTasks: []
+  outputs: [] # References such as {id: review1, kind: deployment-diff}.
+concurrency:
+  exclusiveResources: [] # Conflicting tasks share a resource, e.g. host:node1:system.
+inputs: {} # Type-specific inputs; specialization examples omit unchanged base fields.
+context: {} # Durable execution facts retained across restarts, not live progress.
+review: null # When awaiting approval: {outputId: review1, approvedAt: null}.
+result: null
+error: null # On failure: {message: "Build failed; see task logs"}.
+```
+
 ### task log adapters
 - tasks can use log adapters to parse logs into task progress telemetry
 - the raw log will still be streamed, the adapter will parse independently during task execution 
 - an example adapter would be nix builds which can send download speed, number of packages built, progress of packages being downloaded etc.
+
+**Build progress update**<br>
+Location: NATS (live updates)
+```yaml
+taskId: build1
+hostId: node1
+observedAt: "2026-10-29T18:00:20Z"
+tasktype: build
+phase: building
+progress:
+  buildsCompleted: 4
+  buildsTotal: 12
+  downloadsCompleted: 8
+  downloadsTotal: 10
+  downloadBytesPerSecond: 10485760
+```
 
 ## power tasks
 - there are tasks for reboot and shutdown of a host
@@ -487,11 +652,49 @@ updateSops: runs a process that updates the sops file with the key
 - force option will skip all checks and result in immediate power down.
 - evacuate option will try to move data replicas off of node before power down. 
 
+**Reboot task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: reboot1
+tasktype: reboot
+hostId: node1
+status: succeeded
+concurrency:
+  exclusiveResources: ["host:node1:system"]
+inputs:
+  force: false
+  evacuate: false
+context:
+  previousBootId: boot1
+result:
+  bootId: boot2
+  validatedAt: "2026-10-29T18:05:00Z"
+```
+
 ## daemon update
 - daemon systemd service is not restarted on deployment apply.
 - a task is available for restarting the daemon similar to power tasks
 - daemon restart behaves just like reboot but instead restarts daemon and the completion check is on daemon start time.
 - hosts should update their membership record in nats if they have a daemon update ready and require daemon restart
+
+**Daemon restart task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: restart1
+tasktype: daemon-restart
+hostId: node1
+status: succeeded
+concurrency:
+  exclusiveResources: ["host:node1:system"]
+inputs:
+  force: false
+  evacuate: false
+context:
+  previousStartedAt: "2026-10-29T18:00:00Z"
+result:
+  startedAt: "2026-10-29T19:00:00Z"
+  version: "0.2.0"
+```
 
 ## host telemetry, progress updates and log streams
 - live telemetry and logs are sent from all hosts to display in any interface connected to any host daemon
@@ -514,6 +717,58 @@ updateSops: runs a process that updates the sops file with the key
   - network info: interfaces, interface info 
 - host metrics should use opentelemetry format and libraries
 
+**Host telemetry and log records (independent records, logical view)**<br>
+Location: NATS (live telemetry; retained logs)
+```yaml
+# OTLP-shaped YAML; metrics and logs are independent payloads.
+resourceMetrics:
+  - resource:
+      attributes:
+        - key: host.id
+          value: {stringValue: node1}
+    scopeMetrics:
+      - scope: {name: nixmox.host}
+        metrics:
+          - name: system.memory.usage
+            unit: By
+            gauge:
+              dataPoints:
+                - attributes:
+                    - key: system.memory.state
+                      value: {stringValue: used}
+                  timeUnixNano: "1793296820000000000"
+                  asInt: "8589934592"
+          - name: system.disk.io
+            unit: By
+            sum:
+              aggregationTemporality: 2 # Cumulative; derive bytes/sec from successive samples.
+              isMonotonic: true
+              dataPoints:
+                - attributes:
+                    - key: device
+                      value: {stringValue: nvme0n1}
+                    - key: disk.io.direction
+                      value: {stringValue: read}
+                  startTimeUnixNano: "1793296800000000000"
+                  timeUnixNano: "1793296820000000000"
+                  asInt: "209715200"
+resourceLogs:
+  - resource:
+      attributes:
+        - key: host.id
+          value: {stringValue: node1}
+    scopeLogs:
+      - scope: {name: nixmox.tasks}
+        logRecords:
+          - timeUnixNano: "1793296820000000000"
+            severityNumber: 9
+            severityText: INFO
+            body: {stringValue: "building cedar system closure"}
+            attributes:
+              - key: nixmox.task.id
+                value: {stringValue: build1}
+```
+
 ## cluster cache
 - a cluster cache is used to transfer built artifacts across hosts
 - the cache is a gateway proxy to all other peer caches so only one url is used
@@ -526,10 +781,48 @@ updateSops: runs a process that updates the sops file with the key
 - nixmox will add the the cache proxy and public key as extra substituters and trusted keys via cli flags on build actions
 - the nixmox module can configure nix settings to trust the cache proxy and the keys
 
+**Cluster cache information**<br>
+Location: Local daemon (derived cache information)
+```yaml
+gatewayUrl: http://cedar.local:8080/cache
+publicKey: "<Nix cache public signing key>"
+signingCredentialId: nix-signing-key
+peers:
+  - nodeId: node1
+    storeUrl: http://cedar.local:8080/store-cache
+  - nodeId: node2
+    storeUrl: http://birch.local:8080/store-cache
+```
+
 ##  builds tasks
 - nix build tasks are used to build nixos configurations or packages on a host
 - you can schedule builds on any host from the interface allowing for cross host building
 - nix builds should configure a log adapter inspired by nix output manager to send build telemetry
+
+**Build task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: build1
+tasktype: build
+hostId: node1
+status: succeeded
+links:
+  parentTaskId: deploy1
+  retryOfTaskId: null
+  afterSuccessOfTaskIds: []
+  childTasks: []
+  outputs: [] # References such as {id: review1, kind: deployment-diff}.
+inputs:
+  targetRepo:
+    id: repo1
+    ref: main
+    sha: "123412341234"
+  flakeDir: .
+  installable: configurations.nixos.cedar.config.system.build.toplevel
+result:
+  storePaths:
+    - /nix/store/<hash>-nixos-system-cedar
+```
 
 ## deployment tasks
 - a deployment consists of a build, a review and finally activation
@@ -546,15 +839,81 @@ updateSops: runs a process that updates the sops file with the key
 - a check box for auto approve is next to the deploy button if you want to automatically approve the review
 - --approve can be used for the cli
 
+**Deployment task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: deploy1
+tasktype: deployment
+hostId: node1
+status: manual-review
+concurrency:
+  exclusiveResources: ["host:node1:system"]
+inputs:
+  configurationId: cedar-uuid
+  targetRepo:
+    id: repo1
+    ref: main
+    sha: "123412341234"
+  buildHostId: node1
+  autoApprove: false
+links:
+  childTasks:
+    - taskId: build1
+      role: build
+  outputs:
+    - id: review1
+      kind: deployment-diff
+review:
+  outputId: review1
+  approvedAt: null
+result: null # On success: {generation: 43, storePath: /nix/store/<hash>-nixos-system-cedar}.
+```
+
 ### deployment diff review
 - compare current generation to new generation
 - save store paths of each in the review
 - after approval, just activate do not build again
 
+**Deployment review output**<br>
+Location: NATS
+```yaml
+id: review1
+taskId: deploy1
+kind: deployment-diff
+current:
+  generation: 42
+  storePath: /nix/store/<old-hash>-nixos-system-cedar
+proposed:
+  storePath: /nix/store/<hash>-nixos-system-cedar
+packages:
+  added: [{name: ripgrep, version: "14.1.1"}]
+  removed: []
+  updated:
+    - name: curl
+      fromVersion: "8.10.0"
+      toVersion: "8.11.0"
+```
+
 ### rollback
 - rollback to the last generation can be performed on the fly
 - rollback to specific generations will not be done in v1 right now
 - rollback can be performed multiple times going further back as long as the generation has not been garbage collected
+
+**Rollback task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: rollback1
+tasktype: rollback
+hostId: node1
+status: succeeded
+concurrency:
+  exclusiveResources: ["host:node1:system"]
+inputs:
+  target: previous-generation
+result:
+  generation: 42
+  storePath: /nix/store/<old-hash>-nixos-system-cedar
+```
 
 ### fresh deployments
 - a fresh deployment task includes disk formatting and deployment onto the associated disks in disko
@@ -573,6 +932,39 @@ updateSops: runs a process that updates the sops file with the key
 - host is promoted to full membership
 
 
+**Fresh deployment task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: install1
+tasktype: fresh-deployment
+hostId: node2
+status: succeeded
+concurrency:
+  exclusiveResources: ["host:node2:system"]
+inputs:
+  recipeId: recipe1-uuid
+  recipeVersion: 6
+  targetRepo:
+    id: repo1
+    ref: main
+    sha: "123412341234"
+  buildHostId: node1
+links:
+  childTasks:
+    - taskId: install-build1
+      role: build
+context:
+  previousBootId: installer-boot1
+result:
+  bootId: installed-boot1
+  generation: 1
+  validation:
+    clusterConnected: true
+    expectedGenerationActive: true
+    identityPreserved: true
+  membershipStatus: full
+```
+
 ##  installers
 - bare installation environment containing nixmox daemon
 - installer starts up into the nixmox client tui with installer flag
@@ -583,6 +975,25 @@ updateSops: runs a process that updates the sops file with the key
 - incremental deployments can not run in an installer, only fresh deployments
 - new ssh host keys, node ids, and node keys are generated on each installer start unless started by a launcher
 
+**Installer environment record**<br>
+Location: Local host (preserved across installer transitions)
+```yaml
+nodeId: node2
+environment: installer
+system: x86_64-linux
+bootId: installer-boot1
+resumeTaskIds: [install1] # launch1 during entry; install1 when installation begins.
+launcher:
+  taskId: launch1
+  method: efi
+  returnBoot:
+    method: efi
+    previousBootOrder: ["0001", "0002"]
+    installerBootEntry: "0002"
+    installedBootEntry: null # Set after installation creates the destination entry.
+    restoreBootOrder: true
+```
+
 ### installer launchers
 - an installer launcher transitions a running machine with nixmox into an installer state off of the runtime drives
 - a task exists called launch-installer to run the launcher and make the host boot into the installer. Err if already in installer
@@ -591,20 +1002,53 @@ updateSops: runs a process that updates the sops file with the key
 - kexec is used if available on the host
 - rebooting into a connected boot device is an alternative when kexec is not possible
 - efi boot is used on uefi machines that do not have kexec
-- raspberry pi eeprom may be used to transition to an sd card when using full nvme boot
+- raspberry pi eeprom used to transition to an sd card when using full nvme boot
 - raspberry pi uboot is another option if sd card is used for boot and nvme as root
+- installer launch method and return-boot details must survive the transition so installation can select the destination boot entry/device and undo temporary boot changes
 - launchers must ensure these values persist from the old environment
   - node id
   - node tls keys
   - cluster issued keys, cluster CA, cluster id and connection info
   - wifi credentials (ensure network connection is maintained)
   - ssh host key
+  - launcher task id and return-boot details
+
+**Installer launcher task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: launch1
+tasktype: launch-installer
+hostId: node2
+status: succeeded
+concurrency:
+  exclusiveResources: ["host:node2:system"]
+inputs: {} # The launcher is chosen from the target hardware.
+context:
+  previousBootId: boot-before-installer
+result:
+  method: efi
+  environment: installer
+  bootId: installer-boot1
+  membershipStatus: pending
+```
 
 ### local network management
 - hosts booted into an installer environment may need to connect to wifi network to talk with a cluster
 - a utility is bundled into the nixmox interface to manage a network connection for the local host
 - the nixmox local network utility can search for and show available wifi networks and signal strength
 - a network can be selected and a password entered to connect
+
+**Local Wi-Fi network listing**<br>
+Location: Local daemon (network listing)
+```yaml
+hostId: node2
+interface: wlan0
+networks:
+  - ssid: homelab
+    security: wpa2
+    signalPercent: 82
+    connected: true
+```
 
 ## boot media
 - sd cards or usb devices can be formatted with a bootable installer
@@ -615,6 +1059,26 @@ updateSops: runs a process that updates the sops file with the key
 - hosts in pending or in an installer state can not create media
 - no confirmation necessary on drive selected
 
+**Boot media task (base task specialization)**<br>
+Location: NATS
+```yaml
+id: media1
+tasktype: create-boot-media
+hostId: node1
+status: running
+concurrency:
+  exclusiveResources: ["host:node1:system"]
+inputs:
+  device: /dev/disk/by-id/usb-example-installer
+  targetHostId: node2
+  buildHostId: node1
+links:
+  childTasks:
+    - taskId: media-build1
+      role: build
+result: null
+```
+
 ## Status / Health Checking
 - reachability/status of other hosts should come from nats, not a custom hookup
 - a /health endpoint is added to the daemon so user interfaces connected to it can check reachability to the daemon
@@ -623,6 +1087,18 @@ updateSops: runs a process that updates the sops file with the key
 - interface can inform user of where the issue lies between it and the cluster
 - endpoint can also include a general daemon status: starting, online, disconnected, shutting down
 - health poller should use appropriate timeout, retry, and probe logic
+
+**Daemon health response**<br>
+Location: Daemon HTTP /health response
+```yaml
+nodeId: node1
+status: online
+checkedAt: "2026-10-29T18:00:20Z"
+checks:
+  natsClient: {status: healthy}
+  natsServer: {status: healthy}
+  cluster: {status: healthy}
+```
 
 ## NATS quorum
 - nats jetstream servers will run on all full hosts
@@ -643,6 +1119,15 @@ updateSops: runs a process that updates the sops file with the key
   - Four full hosts: R3.
   - Five+ full hosts: R3 and R5 on critical data.
 - critical data would be cluster essentials like credentials, membership related.
+
+**Bootstrap ownership record**<br>
+Location: NATS
+```yaml
+clusterId: cluster1
+bootstrap:
+  hostId: node1
+  previousHostIds: [node1]
+```
 
 ## NATS Disaster Recovery
 - the cluster is placed in a state where quorum is lost and forceful recovery is desired to recover
@@ -673,6 +1158,7 @@ updateSops: runs a process that updates the sops file with the key
 
 ## NOT SUPPORTED
 - backup and restore
+- no automatic rollbacks
 - users/auth login into interfaces 
 - single host reinstall, must have another full member.
 
