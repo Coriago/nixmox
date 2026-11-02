@@ -1,12 +1,13 @@
 # Implementation components
 
-Proposed implementation boundaries for [requirements.md](requirements.md). External commands and routes are in [cli-api-reference.md](cli-api-reference.md). Package paths below are suggestions, not an inventory of implemented code.
+Proposed implementation boundaries for [requirements.md](requirements.md). External commands and routes are in [cli-api-reference.md](cli-api-reference.md). Package paths below are suggestions, not an inventory of implemented code. See the [non-UI code catalog](code-catalog.md) for existing files, functions, reuse points, and integration caveats.
 
 ## Libraries
 
 | Library | Use |
 | --- | --- |
 | go-git | Repository access, revision resolution, worktrees, commits, and pushes. |
+| go-nix | Nix store paths, NAR archives, narinfo metadata and signatures, hashes, and derivation parsing; use supported library APIs instead of custom Nix-format implementations. |
 | Gin | HTTP routing and middleware. |
 | Cobra | CLI commands, flags, and help. |
 | Viper | Configuration files, environment variables, and flag bindings; not shared application state. |

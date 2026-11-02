@@ -56,6 +56,8 @@
               nodejs # Execute the shared progress controller tests under Go/WASM.
               python3 # Small PTY probe; no application runtime dependency.
               git
+              sops
+              ssh-to-age
               jq # Disposable CLI-only multi-node smoke check.
               greptimedb
               opentelemetry-collector-contrib
