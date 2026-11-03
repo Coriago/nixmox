@@ -15,6 +15,7 @@ import (
 	"nixmox/internal/deployment"
 	"nixmox/internal/discovery"
 	"nixmox/internal/domain"
+	"nixmox/internal/enrollment"
 	"nixmox/internal/installer"
 	"nixmox/internal/recipe"
 	"nixmox/internal/source"
@@ -22,6 +23,9 @@ import (
 )
 
 type Services struct {
+	HostDisks      func(context.Context, string) (any, error)
+	Enrollment     *enrollment.Service
+	Pending        bool
 	Discovery      cluster.Store[discovery.Record]
 	Deployments    *deployment.Service
 	Metrics        cluster.Metrics
@@ -42,11 +46,13 @@ type Services struct {
 }
 
 type Server struct {
-	Discovery     *discovery.Service
-	UI            http.Handler
-	Health        func(context.Context) domain.Health
-	CreateCluster func(context.Context, string) (domain.Cluster, error)
-	Services      func() (*Services, error)
+	InviteEnrollment  func(context.Context, enrollment.Request) (enrollment.JoiningNode, error)
+	ConfirmEnrollment func(context.Context, enrollment.Confirmation) error
+	Discovery         *discovery.Service
+	UI                http.Handler
+	Health            func(context.Context) domain.Health
+	CreateCluster     func(context.Context, string) (domain.Cluster, error)
+	Services          func() (*Services, error)
 }
 
 func (s Server) Handler() http.Handler {
@@ -75,10 +81,23 @@ func (s Server) Handler() http.Handler {
 			c.AbortWithStatusJSON(503, gin.H{"error": "cluster unavailable"})
 			return
 		}
+		if services.Pending {
+			if c.Request.Method != http.MethodGet {
+				c.AbortWithStatusJSON(403, gin.H{"error": "pending member cannot perform cluster mutations"})
+				return
+			}
+			switch c.FullPath() {
+			case "/cluster", "/hosts/:id", "/hosts/:id/metrics/stream", "/hosts/:id/disks":
+			default:
+				c.AbortWithStatusJSON(503, gin.H{"error": "service unavailable on pending member"})
+				return
+			}
+		}
 		c.Set("services", services)
 		c.Next()
 	})
 	s.registerClusterRoutes(router, clustered)
+	s.registerEnrollmentRoutes(router, clustered)
 	registerHostRoutes(clustered)
 	registerDeploymentRoutes(clustered)
 	registerInstallerRoutes(clustered)

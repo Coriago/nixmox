@@ -3,22 +3,69 @@ package host
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"os"
+	"path/filepath"
 )
 
-// Disks returns the local host's disk inventory; dispatch belongs to the caller.
-func (p Process) Disks(ctx context.Context) (json.RawMessage, error) {
+type Disk struct {
+	Device   string `json:"device"`
+	Size     uint64 `json:"size"`
+	Model    string `json:"model"`
+	Serial   string `json:"serial"`
+	ReadOnly bool   `json:"readOnly"`
+}
+
+// Disks returns whole disks with stable by-id paths where available. It never
+// selects an installation target or treats a partition as a whole disk.
+func (p Process) Disks(ctx context.Context) ([]Disk, error) {
 	data, err := p.Run(ctx, "", nil, "lsblk", "--json", "--bytes", "--output", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL,RM,RO")
 	if err != nil {
 		return nil, err
 	}
-	if !json.Valid(data) {
-		return nil, errors.New("invalid lsblk JSON")
+	var inventory struct {
+		Devices []struct {
+			Path     string `json:"path"`
+			Type     string `json:"type"`
+			Size     uint64 `json:"size"`
+			Model    string `json:"model"`
+			Serial   string `json:"serial"`
+			ReadOnly bool   `json:"ro"`
+		} `json:"blockdevices"`
 	}
-	return data, nil
+	if err = json.Unmarshal(data, &inventory); err != nil {
+		return nil, err
+	}
+	stable := map[string]string{}
+	entries, err := os.ReadDir("/dev/disk/by-id")
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, entry := range entries {
+		path := filepath.Join("/dev/disk/by-id", entry.Name())
+		target, err := filepath.EvalSymlinks(path)
+		if err == nil && stable[target] == "" {
+			stable[target] = path
+		}
+	}
+	disks := []Disk{}
+	for _, device := range inventory.Devices {
+		if device.Type != "disk" {
+			continue
+		}
+		path := device.Path
+		if stable[path] != "" {
+			path = stable[path]
+		}
+		disks = append(disks, Disk{Device: path, Size: device.Size, Model: device.Model, Serial: device.Serial, ReadOnly: device.ReadOnly})
+	}
+	return disks, nil
 }
 
-func (p Process) Hardware(ctx context.Context) (string, error) {
-	data, err := p.Run(ctx, "", nil, "nixos-generate-config", "--show-hardware-config", "--no-filesystems")
+func (p Process) Hardware(ctx context.Context, noFileSystems bool) (string, error) {
+	args := []string{"--show-hardware-config"}
+	if noFileSystems {
+		args = append(args, "--no-filesystems")
+	}
+	data, err := p.Run(ctx, "", nil, "nixos-generate-config", args...)
 	return string(data), err
 }

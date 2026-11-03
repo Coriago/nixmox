@@ -15,6 +15,7 @@ type ClusterCA struct {
 }
 
 type Member struct {
+	EnrollmentRequestID  string     `json:"enrollmentRequestId,omitempty"`
 	NodeID               string     `json:"nodeId"`
 	Name                 string     `json:"name"`
 	ClusterID            string     `json:"clusterId"`

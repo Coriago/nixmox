@@ -10,9 +10,9 @@ test-backend:
 test-backend-race:
     CGO_ENABLED=1 go test -race ./internal/identity ./internal/cluster ./internal/task ./internal/source ./internal/host ./internal/cache ./internal/credentials ./internal/client ./internal/cli ./internal/recipe ./internal/configuration ./internal/api ./internal/util ./internal/daemon -count=1 -timeout=120s
 
-# Local mTLS cluster creation, recipe API/observations, and cold-restart integration.
+# mTLS cluster/enrollment, recipe observations and server/client cold restarts.
 test-runtime:
-    go test ./internal/daemon -run TestClusterLifecycle -count=1 -v -timeout=90s
+    go test ./internal/daemon -run 'Test(ClusterLifecycle|InstallerEnrollment)' -count=1 -v -timeout=90s
 
 # Shared UI/component and HTTP workflow tests.
 test-ui:
@@ -29,7 +29,7 @@ ui-assets:
 
 # Evaluate every architecture/profile/format, including image assertions.
 check-installers:
-    nix eval --json "path:{{justfile_directory()}}#packages" --apply 'systems: builtins.mapAttrs (_: packages: builtins.mapAttrs (_: package: package.drvPath) (builtins.removeAttrs packages ["default"])) systems'
+    nix eval --json "git+file://{{justfile_directory()}}#packages" --apply 'systems: builtins.mapAttrs (_: packages: builtins.mapAttrs (_: package: package.drvPath) (builtins.removeAttrs packages ["default"])) systems'
 
 # Discovery transport, unjoined/shared storage and HTTP reads; loopback-only test traffic.
 test-discovery:
@@ -41,7 +41,7 @@ test-installers:
 
 # Native architecture; use installer, installer-vm or their -kexec variants.
 build-installer package="installer-vm":
-    nix build "path:{{justfile_directory()}}#{{package}}" --out-link result
+    nix build "git+file://{{justfile_directory()}}#{{package}}" --out-link result
 
 # Independent phase 1 or chained phases. Resume with --resume RUN --after CHECKPOINT.
 # Add --keep-vms to retain guests and collector on success or failure.

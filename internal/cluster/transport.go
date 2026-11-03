@@ -48,7 +48,7 @@ func Connect(endpoints []string, config *tls.Config, nodeID string) (*nats.Conn,
 			return nil, errors.New("NATS endpoint must use tls://")
 		}
 	}
-	return nats.Connect(strings.Join(endpoints, ","), nats.Secure(config.Clone()), nats.Name(nodeID), nats.Timeout(5*time.Second), nats.MaxReconnects(-1), nats.ReconnectWait(time.Second))
+	return nats.Connect(strings.Join(endpoints, ","), nats.Secure(config.Clone()), nats.Name(nodeID), nats.CustomInboxPrefix("_INBOX."+nodeID), nats.Timeout(5*time.Second), nats.MaxReconnects(-1), nats.ReconnectWait(time.Second))
 }
 
 // NewServer validates mTLS for clients and routes without starting listeners.

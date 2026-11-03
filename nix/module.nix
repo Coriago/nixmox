@@ -125,6 +125,9 @@ in
         "sshd-keygen.service"
       ];
       path = [
+        pkgs.bash
+        pkgs.util-linux
+        pkgs.nixos-install-tools
         pkgs.nix
         pkgs.sops
         pkgs.ssh-to-age

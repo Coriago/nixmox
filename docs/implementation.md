@@ -5,7 +5,7 @@ Implementation ownership and code map for [requirements.md](requirements.md). Co
 ## status
 - cluster creation, cold restart, recipe/configuration lifecycles and the local build/log pipeline have integration coverage
 - CLI command availability does not imply backend support
-- enrollment, networking and installation packages are not implemented
+- cluster-initiated enrollment and pending client startup are implemented; unjoined-initiated approval/rejection, networking management and fresh installation remain incomplete
 - local installed full-stable deployment is implemented and phase-1 VM-tested; membership/quorum reconciliation, distributed dispatch, rollback, power operations, publication and credential-store reconciliation remain missing or incomplete
 - the code map covers non-UI application code with selected UI integration points; functions are grouped by responsibility, not an exhaustive helper inventory
 - terminal/browser interfaces share the HTTP client and build monitor; component tests do not establish a complete multi-host workflow
@@ -51,10 +51,11 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
   - `configureAccounts`, `routePorts`, `strconvPort`: NATS account and port setup
   - `Close`, `Run`: service cleanup, HTTP lifetime and graceful shutdown
 - main/bootstrap peers start concurrently; bounded bucket-open retries allow restored stream leaders to elect
-- startup always constructs main/bootstrap peers on one host and provisions two replicas; topology planning is not wired to membership changes
+- full-stable startup constructs main/bootstrap peers on one host and provisions two replicas; pending startup connects only a client; full-client startup and topology transitions remain unwired
 - recipe/configuration services and Git-only refresh are wired; registry discovery has no runtime trigger
-- cluster host/repository/credential-ID observations and member age-key lookup are wired; host disk/hardware callbacks are unset
-- only the build runner is registered; enrollment and client-only member startup are not implemented
+- cluster host/repository/credential-ID observations, member age-key lookup and host-specific NATS disk/hardware observations are wired
+- build/deployment and gated installer runners are registered; pending nodes expose read-only host observations but do not yet execute durable installation tasks
+- [client.go](../internal/daemon/client.go) restores pending certificates/endpoints without servers or signing secrets; [authorization.go](../internal/daemon/authorization.go) watches authoritative membership and reloads certificate-mapped NATS permissions
 
 ## shared records
 - [internal/domain/cluster.go](../internal/domain/cluster.go): `Cluster`, `ClusterCA`, `Member`, `DaemonInfo`, `Endpoint`, `Health` and `Check`
@@ -87,6 +88,7 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
 - [internal/cluster/logs.go](../internal/cluster/logs.go): retained OTLP host/task logs with five-day retention
   - `LogSubject`, `Logs.Provision`, `Append`: subject validation, stream setup and traced writes
   - `Follow`, `Read`: ordered replay-to-live delivery and bounded history
+- [internal/cluster/authorization.go](../internal/cluster/authorization.go) isolates client reply inboxes and host observation subscriptions; pending clients cannot mutate membership, credentials or JetStream configuration
 - planned cluster coordination owns serialized membership transitions, bootstrap placement, replicas, metadata peers and administrator-directed quorum rescue
 
 ## durable tasks
@@ -154,8 +156,8 @@ Location: `internal/configuration`
 - [internal/host/build.go](../internal/host/build.go): `Builder.Run` builds pinned sources with optional cache settings; `ParseBuildResult` validates paths through go-nix; `Builder.Runner` adapts task inputs
 - the daemon leaves `CacheURL` and `CachePublicKey` unset, so builds do not automatically use the cluster cache
 - the source commit is pinned, but the build command does not disable flake lock updates
-- [internal/host/inspect.go](../internal/host/inspect.go): `Process.Disks` uses `lsblk`; `Process.Hardware` generates hardware configuration without filesystem declarations
-- local helpers do not dispatch remote work
+- [internal/host/inspect.go](../internal/host/inspect.go): `Process.Disks` returns whole-disk choices with stable by-id paths; `Process.Hardware` honors the requested filesystem exclusion
+- [internal/host/observations.go](../internal/host/observations.go) and [daemon observations](../internal/daemon/observations.go) dispatch bounded, read-only inventory over host-specific NATS subjects; callers cannot supply arbitrary commands
 - [internal/host/metrics.go](../internal/host/metrics.go) samples CPU, memory, disk and network counters every two seconds using gopsutil and OTLP protobufs
 - [internal/cluster/metrics.go](../internal/cluster/metrics.go) publishes replaceable core-NATS observations and bounded latest-value subscriptions for host SSE; low-frequency inventory and latency metrics remain pending
 
@@ -185,7 +187,8 @@ Location: `internal/configuration`
 - HTTP has no authentication/authorization middleware or TLS listener; NATS mTLS does not protect the API, so remote access requires host-level protection
 - API domain files stay in one package and register only their own routes:
   - [cluster.go](../internal/api/cluster.go): creation and identity
-  - [hosts.go](../internal/api/hosts.go): host reads, local builds and NATS-backed telemetry SSE
+  - [hosts.go](../internal/api/hosts.go): host reads, remote disk inventory, local builds and NATS-backed telemetry SSE
+  - [enrollment.go](../internal/api/enrollment.go): cluster invitations, request reads and internal CSR/confirmation adapters
   - [deployments.go](../internal/api/deployments.go): local assignment and deployment submission
   - [credentials.go](../internal/api/credentials.go): public credential metadata only
   - [installers.go](../internal/api/installers.go): pinned installer registration, method catalogs, compatibility checks and gated launch/finalize submission
@@ -197,7 +200,8 @@ Location: `internal/configuration`
   - [cache.go](../internal/api/cache.go): forwarding
   - [http.go](../internal/api/http.go): bounded JSON, errors, paging, versions and SSE framing
 - credential list/show expose public metadata only; cache-info exposes the signing public key and cache route paths
-- cluster destroy/recover, repository update/remove, credential mutations/recipient APIs, host disks, enrollment, membership/power, fresh install and publication routes are absent
+- cluster destroy/recover, repository update/remove, credential mutations/recipient APIs, unjoined enrollment requests/approval/rejection, membership/power, fresh install and publication routes are absent
+- pending APIs reject cluster mutations; only cluster identity, host reads/metrics and local disk inventory are currently exposed
 - task lists implement cursor/limit only; CLI host/status/type filters are ignored
 - task events deliver the current KV snapshot and changes, not historical replay from `Last-Event-ID`; log streams do replay by sequence
 - host-log read routes exist, but the daemon has no host-log producer; build stderr is persisted under task logs
@@ -234,16 +238,18 @@ Location: `internal/configuration`
 - provider lifetime is separate from retained-log persistence in `cluster.Logs`; local/OTLP process logs are not automatically retained as host logs
 - `util.Start` supplies no literal-secret redaction list; sensitive structured attributes are masked, but task output cannot be assumed to scrub arbitrary secrets
 
-## discovery and planned enrollment/networking
+## discovery, enrollment and planned networking
 - [discovery model](../internal/discovery/model.go), [storage](../internal/discovery/service.go) and [UDP transport](../internal/discovery/udp.go): bounded IPv4 LAN advertisements on UDP 47890, observer-tagged records, unjoined memory storage and one-minute NATS expiry after joining; disconnected members never fall back to local storage
 - [daemon discovery](../internal/daemon/discovery.go): process-owned listener, active-interface HTTP endpoints, node-key or cluster-CA thumbprints; [HTTP reads](../internal/api/discovery.go) work before and after joining
 - advertisements are untrusted hints, not authentication; enrollment must verify the selected key. `discovery-port = 0` disables discovery; host firewall policy must allow the configured UDP port
-- `internal/enrollment` remains planned: approval, CSR exchange, issuance and rejection records
-- `internal/network`: endpoint publication and preferred connection candidates; local installer Wi-Fi scanning/configuration
-- these packages are intended boundaries, not implemented services
+- [internal/enrollment](../internal/enrollment) owns shared invitation records and contact-owned processing through KV watches; discovery retains the selected identity and candidate endpoints, with identity-checked endpoint fallback
+- [daemon enrollment](../internal/daemon/enrollment.go) persists invitations, validates CSR/key continuity, signs with the contact's encrypted CA credential, and verifies confirmation before saving pending startup state
+- issued proofs are saved before membership/notification; membership records bind the enrollment request ID so retries cannot authorize a different invitation against an existing identity
+- unjoined-initiated requests, approval/rejection/removal matching and missed-confirmation polling remain unimplemented
+- `internal/network` remains planned: endpoint refresh/preference and installer Wi-Fi scanning/configuration
 
 ## deferred runtime and task work
-- daemon startup must restore pending/full members as NATS clients without starting JetStream servers
+- pending client startup is implemented; full-client startup and promotion/demotion transitions still need wiring
 - persistent tasks must be saved locally, exempt from local unknown marking, and resumed from checkpoints when the daemon returns
 - global cleanup must mark running tasks unknown after their owner has been offline for 30 minutes; this cleanup is also still missing
 - these requirements are not implemented in this installer work; live transitions remain gated until recovery and safe membership demotion are wired
@@ -258,7 +264,7 @@ Location: [internal/installer](../internal/installer)
 - built-in prepare/finalize method catalogs are code-owned; registered installer definitions and launch/finalize tasks are NATS-backed
 - daemon registers both runners, but leaves the `Transition` boundary unwired: safe demotion, private boot payload staging, persistent-task registration and installed-state preservation still need implementation
 - launch/finalize return unavailable before submitting work until that boundary is wired; compatibility results report execution readiness separately
-- remote dispatch/transfer, fresh disk partitioning/formatting, enrollment and media writing remain unimplemented
+- remote installation dispatch/transfer, fresh disk partitioning/formatting and media writing remain unimplemented
 - checks cover generic x86_64 and UEFI ARM64 platforms, not board-specific support or proof that a particular kernel will boot
 
 ## installer images
@@ -270,13 +276,14 @@ Location: [internal/installer](../internal/installer)
 - networking belongs in the Nixmox TUI; its network controls/backend remain unimplemented, not replaced with an external setup UI
 - customize through `nixosModules.installer` or `nixosModules.installer-vm`; add authorized keys or network settings in the consuming configuration
 - run `nix develop -c just check-installers` to evaluate all variants and `nix develop -c just build-installer installer-vm` to build the native VM ISO
-- ARM64 builds require an ARM64 builder or configured emulation; live prepare/finalize integration, enrollment and fresh installation remain unavailable
+- ARM64 builds require an ARM64 builder or configured emulation; live prepare/finalize integration and fresh installation remain unavailable
 
 ## tests and development
 - [internal/testutil/nats.go](../internal/testutil/nats.go): reusable `JetStream` TLS fixture with cleanup; not a production multi-peer bootstrap test
 - write usage examples and high-level integrations; reuse fixtures rather than new harnesses
 - [poc/jetstream_bootstrap_test.go](../poc/jetstream_bootstrap_test.go): experimental topology coverage, separate from runtime wiring
 - [internal/daemon/runtime_test.go](../internal/daemon/runtime_test.go): HTTP cluster/recipe/configuration lifecycle and cold-restart persistence
+- [internal/daemon/enrollment_test.go](../internal/daemon/enrollment_test.go): contact-owned enrollment with endpoint fallback, certificate-mapped pending permissions, remote disk inventory and client-only cold restart
 - [internal/configuration/lifecycle_test.go](../internal/configuration/lifecycle_test.go): real Git/JetStream import, sync, fork, independent realizations, upgrades and previews
 - [internal/api/configurations_test.go](../internal/api/configurations_test.go): independent realizations over HTTP
 - [installer examples](../internal/installer/checks_test.go), [return checkpoint test](../internal/installer/launch_test.go) and [installer CLI integration](../internal/api/installers_test.go): selection, finalizer checks, runner return validation and real CLI/API/NATS registration; not boot or task-manager restart recovery tests
@@ -297,7 +304,7 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - `test`: full Go suite
 - `test-backend`: backend checks, excluding daemon, UI and PoC
 - `test-backend-race`: backend plus daemon under the race detector
-- `test-runtime`: cluster creation and cold restart
+- `test-runtime`: cluster creation, installer enrollment, remote inventory and server/client cold restart
 - `test-configurations`: recipe/configuration/API usage and lifecycle checks
 - `test-installers`: installer examples and CLI/API/NATS wiring plus affected packages; no reboot, kexec or disk operations
 - `e2e-phase1` runs independently; `e2e-phase2` inherits its live VM1. Phase 3 is separated into `phase3.nu` and `e2e-phase3`, but VM3/quorum/kexec acceptance is still explicitly blocked. The additional stress/destruction work in `test/plan.md` remains planned.
@@ -318,8 +325,8 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - [flake.lock](../flake.lock): pinned Nix inputs
 - [.envrc](../.envrc): `use flake` through direnv
 - [go.mod](../go.mod), [go.sum](../go.sum): Go toolchain/dependencies and checksums
-- [nix/module.nix](../nix/module.nix): `services.nixmox`, typed configuration, boot environment, package override, private state and systemd service
-- [justfile](../justfile): build, run and test recipes
+- [nix/module.nix](../nix/module.nix): `services.nixmox`, typed configuration, boot environment, package override, private state and systemd service; service PATH includes Bash, util-linux and NixOS installation tools for recipe commands and host inventory
+- [justfile](../justfile): build, run and test recipes; installer builds/evaluations use Git-filtered inputs so retained VM sockets are excluded
 - the NixOS module does not configure cache trust, firewall access or SSH host-key provisioning; its generated configuration is public in the Nix store
 
 ## validation
@@ -330,9 +337,10 @@ Checked against the working tree on 2026-11-03, including uncommitted files.
 - `e2e-phase1` additionally validates the booted NixOS module and two real local deployments on a private bootloader-backed disk, including executing the installed test package
 - `test/vms.json` centralizes static machine wiring and recipe configuration inputs; configuration creation reuses the machine key as its name and the wired NIC MAC, then uses daemon-collected host/disk choices and raw hardware output
 - the Nushell configuration workflow checks rendered files and retained hardware; VM3 currently has planned static settings but no boot package or launch workflow
-- phase 2 remains incomplete: enrollment routes and remote disk/hardware collection are missing, so its acceptance script must fail rather than substitute SSH observations or manually enroll guests
+- resumed phase 2 on retained VMs reached `vm2-configured`: real discovery enrollment, pending client restart, remote disk/hardware collection and recipe rendering passed using development binaries and temporary service PATH additions; this is not a clean full-suite pass
+- fresh installation, reboot persistence and promotion remain incomplete; their acceptance gates still fail rather than reporting false success
 - the shared guest LAN uses QEMU hub/socket links only; VM1's configuration supplies standard DHCP. Each guest retains separate user-mode NAT for management/internet, avoiding SLIRP processing guest-to-guest traffic
-- these checks do not validate multi-host enrollment, fresh installation, physical hardware or interactive browser/terminal behavior
+- these checks do not validate fresh installation, promotion, physical hardware or interactive browser/terminal behavior
 
 ## maintenance
 - update the owning entry when files or responsibilities move

@@ -10,6 +10,19 @@ import (
 )
 
 func registerHostRoutes(clustered *gin.RouterGroup) {
+	clustered.GET("/hosts/:id/disks", func(c *gin.Context) {
+		collect := services(c).HostDisks
+		if collect == nil {
+			c.Status(503)
+			return
+		}
+		result, err := collect(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		c.JSON(200, result)
+	})
 	clustered.GET("/hosts/:id/metrics/stream", func(c *gin.Context) {
 		svc := services(c)
 		if svc.Metrics.Connection == nil {

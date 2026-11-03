@@ -32,6 +32,7 @@ import (
 	"nixmox/internal/deployment"
 	"nixmox/internal/discovery"
 	"nixmox/internal/domain"
+	"nixmox/internal/enrollment"
 	"nixmox/internal/host"
 	"nixmox/internal/identity"
 	"nixmox/internal/installer"
@@ -65,26 +66,30 @@ type startup struct {
 	Cluster         domain.Cluster       `json:"cluster"`
 	Member          domain.Member        `json:"member"`
 	Certificate     string               `json:"certificate"`
+	NATSEndpoints   []string             `json:"natsEndpoints,omitempty"`
 	SeedCredentials []credentials.Record `json:"seedCredentials,omitempty"`
 }
 
 type Runtime struct {
-	discovery  *discovery.Service
-	config     Config
-	node       *identity.Node
-	lifetime   context.Context
-	cancel     context.CancelFunc
-	mu         sync.RWMutex
-	transition sync.Mutex
-	services   *api.Services
-	ui         http.Handler
-	client     *nats.Conn
-	servers    []*server.Server
-	gateway    *cache.Gateway
-	workers    sync.WaitGroup
-	failures   chan error
-	status     string
-	started    time.Time
+	discovery         *discovery.Service
+	config            Config
+	node              *identity.Node
+	lifetime          context.Context
+	cancel            context.CancelFunc
+	mu                sync.RWMutex
+	transition        sync.Mutex
+	services          *api.Services
+	ui                http.Handler
+	client            *nats.Conn
+	servers           []*server.Server
+	serverOptions     []*server.Options
+	authorization     sync.Mutex
+	authorizedMembers string
+	gateway           *cache.Gateway
+	workers           sync.WaitGroup
+	failures          chan error
+	status            string
+	started           time.Time
 }
 
 // Open starts only a private identity for an unjoined node; it does not launch
@@ -148,7 +153,7 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 }
 
 func (r *Runtime) Handler() http.Handler {
-	return (api.Server{Discovery: r.discovery, Health: r.Health, CreateCluster: r.CreateCluster, Services: r.Services, UI: r.ui}).Handler()
+	return (api.Server{InviteEnrollment: r.inviteEnrollment, ConfirmEnrollment: r.confirmEnrollment, Discovery: r.discovery, Health: r.Health, CreateCluster: r.CreateCluster, Services: r.Services, UI: r.ui}).Handler()
 }
 
 func (r *Runtime) Services() (*api.Services, error) {
@@ -283,12 +288,19 @@ func (r *Runtime) saveStartup(saved startup) error {
 }
 
 func (r *Runtime) start(saved startup) (err error) {
+	if saved.Member.Status == "pending" {
+		return r.startPending(saved)
+	}
+	if saved.Member.Status != "full-stable" {
+		return errors.New("unsupported startup membership role")
+	}
 	ctx, cancel := context.WithTimeout(r.lifetime, 30*time.Second)
 	defer cancel()
 	r.mu.Lock()
 	r.status = "starting"
 	r.mu.Unlock()
 	var servers []*server.Server
+	var serverOptions []*server.Options
 	var nc *nats.Conn
 	var gateway *cache.Gateway
 	success := false
@@ -354,6 +366,7 @@ func (r *Runtime) start(saved startup) (err error) {
 	if err = configureAccounts(&options, r.node.State.NodeID); err != nil {
 		return err
 	}
+	serverOptions = append(serverOptions, options.Clone())
 	main, err := cluster.NewServer(options)
 	if err != nil {
 		return err
@@ -370,6 +383,7 @@ func (r *Runtime) start(saved startup) (err error) {
 	if err = configureAccounts(&options, r.node.State.NodeID); err != nil {
 		return err
 	}
+	serverOptions = append(serverOptions, options.Clone())
 	bootstrap, err := cluster.NewServer(options)
 	if err != nil {
 		return err
@@ -419,7 +433,7 @@ func (r *Runtime) start(saved startup) (err error) {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	buckets := []string{"CLUSTER", "MEMBERS", "CREDENTIALS", "RECIPIENTS", "TASKS", "OUTPUTS", "LOCKS", "REPOS", "CONFIGURATIONS", "RECIPES", "INSTALLERS"}
+	buckets := []string{"CLUSTER", "MEMBERS", "CREDENTIALS", "RECIPIENTS", "TASKS", "OUTPUTS", "LOCKS", "REPOS", "CONFIGURATIONS", "RECIPES", "INSTALLERS", "ENROLLMENT"}
 	for _, bucket := range buckets {
 		if _, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 2}); err != nil {
 			return fmt.Errorf("provision bucket %s: %w", bucket, err)
@@ -440,6 +454,10 @@ func (r *Runtime) start(saved startup) (err error) {
 	if err != nil {
 		return fmt.Errorf("open members: %w", err)
 	}
+	enrollments, err := cluster.OpenStore[enrollment.Request](ctx, js, "ENROLLMENT")
+	if err != nil {
+		return err
+	}
 	credentialStore, err := cluster.OpenStore[credentials.Record](ctx, js, "CREDENTIALS")
 	if err != nil {
 		return fmt.Errorf("open credentialStore: %w", err)
@@ -459,9 +477,14 @@ func (r *Runtime) start(saved startup) (err error) {
 	if _, err = recipients.Create(ctx, "recipients", credentials.Recipients{ClusterID: saved.Cluster.ID, Recipients: []credentials.Recipient{{NodeID: saved.Member.NodeID, AgePublicKey: saved.Member.AgePublicKey}}}); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return err
 	}
+	publicClientURL, publicRouteURL := *clientURL, *routeURL
+	if endpoint, parseErr := url.Parse(r.config.AdvertiseURL); parseErr == nil && endpoint.Hostname() != "" {
+		publicClientURL.Host = net.JoinHostPort(endpoint.Hostname(), clientURL.Port())
+		publicRouteURL.Host = net.JoinHostPort(endpoint.Hostname(), routeURL.Port())
+	}
 	member := saved.Member
 	member.Daemon = domain.DaemonInfo{Version: Version, StartedAt: r.started}
-	member.Endpoints = []domain.Endpoint{{Network: "lan", HTTP: r.config.AdvertiseURL, NATSClient: main.ClientURL(), NATSRoute: routeURL.String()}}
+	member.Endpoints = []domain.Endpoint{{Network: "lan", HTTP: r.config.AdvertiseURL, NATSClient: publicClientURL.String(), NATSRoute: publicRouteURL.String()}}
 	current, err := members.Get(ctx, member.NodeID)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		_, err = members.Create(ctx, member.NodeID, member)
@@ -472,7 +495,7 @@ func (r *Runtime) start(saved startup) (err error) {
 		}
 		member = current.Value
 		member.Daemon = domain.DaemonInfo{Version: Version, StartedAt: r.started}
-		member.Endpoints = []domain.Endpoint{{Network: "lan", HTTP: r.config.AdvertiseURL, NATSClient: main.ClientURL(), NATSRoute: routeURL.String()}}
+		member.Endpoints = []domain.Endpoint{{Network: "lan", HTTP: r.config.AdvertiseURL, NATSClient: publicClientURL.String(), NATSRoute: publicRouteURL.String()}}
 		_, err = members.Update(ctx, member.NodeID, member, current.Revision)
 	}
 	if err != nil {
@@ -562,6 +585,22 @@ func (r *Runtime) start(saved startup) (err error) {
 		Repositories: repos,
 	}
 	collector := &configuration.Collector{
+		HostDisks: func(ctx context.Context, nodeID string) (any, error) {
+			if _, err := members.Get(ctx, nodeID); err != nil {
+				return nil, err
+			}
+			var output json.RawMessage
+			err := host.Observe(ctx, nc, nodeID, host.ObservationRequest{Kind: "disks"}, &output)
+			return output, err
+		},
+		HostHardware: func(ctx context.Context, nodeID string, noFileSystems bool) (string, error) {
+			if _, err := members.Get(ctx, nodeID); err != nil {
+				return "", err
+			}
+			var output string
+			err := host.Observe(ctx, nc, nodeID, host.ObservationRequest{Kind: "hardware", NoFileSystems: noFileSystems}, &output)
+			return output, err
+		},
 		Members:      members,
 		Repositories: repos,
 		Sources:      sources,
@@ -591,7 +630,10 @@ func (r *Runtime) start(saved startup) (err error) {
 	manager.Runners["deployment"] = deployments.Runner
 	manager.Runners["configuration-build"] = deployments.Build
 	metrics := cluster.Metrics{Connection: nc}
+	enrollmentService := &enrollment.Service{NodeID: member.NodeID, Requests: enrollments, Members: members, Clusters: clusterStore, Discovery: discoveryStore, Issue: r.issueEnrollment, Authorize: func(ctx context.Context) error { return r.refreshAuthorization(ctx, members) }}
 	svc := &api.Services{
+		HostDisks:      collector.HostDisks,
+		Enrollment:     enrollmentService,
 		Discovery:      discoveryStore,
 		Metrics:        metrics,
 		Deployments:    deployments,
@@ -625,11 +667,40 @@ func (r *Runtime) start(saved startup) (err error) {
 	r.mu.Lock()
 	r.client = nc
 	r.servers = servers
+	r.serverOptions = serverOptions
 	r.gateway = gateway
 	r.services = svc
 	r.status = "online"
 	r.mu.Unlock()
+	r.authorization.Lock()
+	r.authorizedMembers = authorizationKey([]domain.Member{{NodeID: member.NodeID, Status: "full-stable"}})
+	r.authorization.Unlock()
+	if err = r.refreshAuthorization(ctx, members); err != nil {
+		return err
+	}
+	if err = r.startObservations(nc, member.NodeID); err != nil {
+		return err
+	}
 	success = true
+	r.workers.Go(func() {
+		err := members.Watch(r.lifetime, ">", func(_ *cluster.Record[domain.Member], _ bool) error {
+			return r.refreshAuthorization(r.lifetime, members)
+		})
+		if err != nil && r.lifetime.Err() == nil {
+			select {
+			case r.failures <- err:
+			default:
+			}
+		}
+	})
+	r.workers.Go(func() {
+		if err := enrollmentService.Run(r.lifetime); err != nil && r.lifetime.Err() == nil {
+			select {
+			case r.failures <- err:
+			default:
+			}
+		}
+	})
 	r.workers.Go(func() { host.Metrics(r.lifetime, member.NodeID, metrics) })
 	r.workers.Go(func() {
 		if err := manager.Run(r.lifetime); err != nil && r.lifetime.Err() == nil {
@@ -645,16 +716,7 @@ func (r *Runtime) start(saved startup) (err error) {
 // Every embedded server needs independent account instances and an explicitly
 // JetStream-enabled application account, including in clustered mode.
 func configureAccounts(options *server.Options, nodeID string) error {
-	var parsed server.Options
-	if err := parsed.ProcessConfigString(fmt.Sprintf(`accounts {
- APP { jetstream: enabled, users: [{user: %q}] }
- SYS {}
-}
-system_account: SYS`, "CN="+nodeID)); err != nil {
-		return err
-	}
-	options.Accounts, options.Users, options.SystemAccount = parsed.Accounts, parsed.Users, parsed.SystemAccount
-	return nil
+	return cluster.ConfigureAccounts(options, []domain.Member{{NodeID: nodeID, Status: "full-stable"}})
 }
 
 // Negative route ports are for disposable integration servers. Reserve them
