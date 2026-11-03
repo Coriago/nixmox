@@ -62,6 +62,10 @@
               go
               gopls
               just
+              nushell # CLI-driven VM E2E scripts.
+              openssh
+              procps # Verify disposable VM session ownership before cleanup.
+              util-linux # Isolate disposable VM processes in their own session.
               nodejs # Execute the shared progress controller tests under Go/WASM.
               python3 # Small PTY probe; no application runtime dependency.
               git

@@ -7,6 +7,14 @@ import (
 )
 
 func registerCacheRoutes(clustered *gin.RouterGroup) {
+	clustered.GET("/cache-info", func(c *gin.Context) {
+		svc := services(c)
+		if svc.CachePublicKey == "" || svc.StoreCache == nil || svc.Cache == nil {
+			c.Status(503)
+			return
+		}
+		c.JSON(200, gin.H{"publicKey": svc.CachePublicKey, "storePath": "/store-cache", "gatewayPath": "/cache"})
+	})
 	clustered.GET("/cache/*path", func(c *gin.Context) {
 		http.StripPrefix("/cache", services(c).Cache).ServeHTTP(c.Writer, c.Request)
 	})

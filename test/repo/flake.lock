@@ -1,0 +1,50 @@
+{
+  "nodes": {
+    "nixmox": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1793718826,
+        "narHash": "sha256-QAgzicxCVAyGPD2UIP/wz89dC+dBmm4Tu8UrfXnYPko=",
+        "owner": "Coriago",
+        "repo": "nixmox",
+        "rev": "7f9cb9264e5ca725ae6acbcce4e09495e7b77937",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Coriago",
+        "ref": "dev/rewrite-foundation",
+        "repo": "nixmox",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1792502884,
+        "narHash": "sha256-IoNisKcGbUjdd45qCqywGMCYmZ5EnkxezvLII0FWwNA=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "02c087f3fe673c9e317f206a627cb6b910336dbe",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixmox": "nixmox",
+        "nixpkgs": [
+          "nixmox",
+          "nixpkgs"
+        ]
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

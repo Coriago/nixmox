@@ -4,6 +4,7 @@
 # Binaries for programs and plugins
 /bin/
 /ui-assets/
+/test/runs/
 *.exe
 *.exe~
 *.dll

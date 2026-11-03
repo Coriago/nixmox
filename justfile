@@ -39,6 +39,10 @@ test-installers:
 build-installer package="installer-vm":
     nix build "path:{{justfile_directory()}}#{{package}}" --out-link result
 
+# CLI-driven single-host VM acceptance test; keeps disk/logs in test/runs.
+e2e-phase1 ref="dev/rewrite-foundation":
+    nu test/scripts/run.nu --ref {{quote(ref)}}
+
 # These recipes do not start a cluster.
 build:
     go build -o bin/nixmox ./cmd/nixmox

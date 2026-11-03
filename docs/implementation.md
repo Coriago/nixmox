@@ -182,7 +182,8 @@ Location: `internal/configuration`
   - [logs.go](../internal/api/logs.go): retained logs and streams
   - [cache.go](../internal/api/cache.go): forwarding
   - [http.go](../internal/api/http.go): bounded JSON, errors, paging, versions and SSE framing
-- cluster destroy/recover, repository update/remove, credential CRUD, host assignment/disks/metrics, enrollment, membership/power, deployment/install and publication routes are absent
+- credential list/show expose public metadata only; cache-info exposes the signing public key and cache route paths
+- cluster destroy/recover, repository update/remove, credential mutations/recipient APIs, host assignment/disks/metrics, enrollment, membership/power, deployment/install and publication routes are absent
 - task lists implement cursor/limit only; CLI host/status/type filters are ignored
 - task events deliver the current KV snapshot and changes, not historical replay from `Last-Event-ID`; log streams do replay by sequence
 - host-log read routes exist, but the daemon has no host-log producer; build stderr is persisted under task logs
@@ -282,6 +283,8 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - `test-runtime`: cluster creation and cold restart
 - `test-configurations`: recipe/configuration/API usage and lifecycle checks
 - `test-installers`: installer examples and CLI/API/NATS wiring plus affected packages; no reboot, kexec or disk operations
+- `e2e-phase1`: Nushell CLI acceptance test with a bootloader-backed private VM disk; artifacts under `test/runs`, explicit interrupted-run cleanup via `nu test/scripts/stop.nu RUN_DIRECTORY`
+- phase-1 VM validation currently passes unjoined startup, cluster/full-stable/bootstrap and credential/cache readiness; fails at the missing host telemetry stream. GitHub registration and both deployments are written but not yet reached; fixture publication to the GitHub test branch is still pending
 - `test-ui`: shared UI examples and HTTP workflows
 - `test-build-monitor`: real Nix build, retained logs, SSE and shared monitor
 - `test-registry`: real Nix configuration discovery

@@ -571,6 +571,8 @@ func (r *Runtime) start(saved startup) (err error) {
 	}
 
 	svc := &api.Services{
+		Credentials:    credentialStore,
+		CachePublicKey: local.PublicKey(),
 		Cluster:        clusterStore,
 		Members:        members,
 		Repositories:   repos,

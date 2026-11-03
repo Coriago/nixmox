@@ -11,6 +11,7 @@ import (
 
 	"nixmox/internal/cluster"
 	"nixmox/internal/configuration"
+	"nixmox/internal/credentials"
 	"nixmox/internal/domain"
 	"nixmox/internal/installer"
 	"nixmox/internal/recipe"
@@ -19,6 +20,8 @@ import (
 )
 
 type Services struct {
+	Credentials    cluster.Store[credentials.Record]
+	CachePublicKey string
 	Cluster        cluster.Store[domain.Cluster]
 	Members        cluster.Store[domain.Member]
 	Repositories   cluster.Store[source.Repository]
@@ -77,6 +80,7 @@ func (s Server) Handler() http.Handler {
 	registerTaskRoutes(clustered)
 	registerLogRoutes(clustered)
 	registerCacheRoutes(clustered)
+	registerCredentialRoutes(clustered)
 	if s.UI != nil {
 		router.NoRoute(func(c *gin.Context) {
 			path := c.Request.URL.Path

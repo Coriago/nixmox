@@ -1,0 +1,11 @@
+flakeDir: .
+flakeConfiguration: vm1
+fields: {}
+observations:
+  configuration:
+    type: repoFile
+    repo: "{{ .recipeSource }}"
+    path: .nixmox/recipes/testpkg.nix.tmpl
+outputs:
+  hosts/vm1/configuration.nix:
+    template: "{{ .observations.configuration }}"
