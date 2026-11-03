@@ -20,6 +20,7 @@ import (
 
 	"nixmox/internal/client"
 	"nixmox/internal/daemon"
+	"nixmox/internal/discovery"
 	"nixmox/internal/util"
 )
 
@@ -90,6 +91,7 @@ func (c console) daemonCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			config := daemon.Config{
+				DiscoveryPort:      c.config.GetInt("discovery-port"),
 				UIAssets:           c.config.GetString("ui-assets"),
 				Environment:        c.config.GetString("environment"),
 				StateDir:           c.config.GetString("state-dir"),
@@ -114,6 +116,7 @@ func (c console) daemonCommand() *cobra.Command {
 	f.String("listen", "127.0.0.1:8080", "HTTP listen address")
 	f.String("advertise", "http://127.0.0.1:8080", "Reachable HTTP URL advertised to peers")
 	f.String("nats-host", "127.0.0.1", "NATS client and route bind address")
+	f.Int("discovery-port", discovery.DefaultPort, "LAN discovery UDP port (0 disables discovery)")
 	f.Int("nats-port", 4222, "NATS client port")
 	f.Int("route-port", 6222, "NATS route port")
 	f.Int("bootstrap-port", 4223, "Bootstrap NATS client port")

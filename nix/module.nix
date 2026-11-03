@@ -62,6 +62,11 @@ in
             default = "127.0.0.1";
             description = "Bind address for embedded NATS client and route listeners.";
           };
+          discovery-port = lib.mkOption {
+            type = lib.types.ints.between 0 65535;
+            default = 47890;
+            description = "LAN discovery UDP port; zero disables discovery. Firewall remains host-owned.";
+          };
           nats-port = lib.mkOption {
             type = lib.types.port;
             default = 4222;

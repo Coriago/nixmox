@@ -62,9 +62,9 @@ def main [run: path, --handoff-only] {
 
     # Check the private guest LAN in both directions before asking for discovery.
     let from_vm2 = (guest $run "curl --fail --silent http://192.168.77.1:8080/health" --port 22222 | from json)
-    let interfaces = (guest $run "ip -j -4 address show" --port $machine.sshPort | from json)
+    let interfaces = (guest $run "ip -j address show" --port $machine.sshPort | from json)
     let lan = ($interfaces | where address == $machine.mac | first)
-    let address = ($lan.addr_info | where scope == "global" | first | get local)
+    let address = ($lan.addr_info | where family == "inet" and scope == "global" | first | get local)
     let contact = $"http://($address):8080"
     let from_vm1 = (guest $run $"curl --fail --silent ($contact)/health" | from json)
     assert equal $from_vm2.nodeId $previous.nodeId
@@ -73,14 +73,22 @@ def main [run: path, --handoff-only] {
 
     print --stderr "\n=== Phase 2 | Discover the installer ===\n"
 
-    print --stderr $"+ nixmox --endpoint ($endpoint) --json discovery list"
-    let discovery = (
-        ^nixmox --endpoint $endpoint --json discovery list
-        | from json
-        | inspect
-    )
-
-    let candidate = ($discovery.items | where advertisement.nodeId == $health.nodeId | first)
+    mut candidate = null
+    for attempt in 0..14 {
+        print --stderr $"+ nixmox --endpoint ($endpoint) --json discovery list"
+        let discovery = (
+            ^nixmox --endpoint $endpoint --json discovery list
+            | from json
+            | inspect
+        )
+        let matches = ($discovery.items | where advertisement.nodeId == $health.nodeId)
+        if ($matches | is-not-empty) {
+            $candidate = ($matches | first)
+            break
+        }
+        sleep 2sec
+    }
+    assert ($candidate != null) "Installer was not discovered within 30 seconds"
     assert equal $candidate.advertisement.clusterId null
     assert ($contact in $candidate.advertisement.endpoints)
 

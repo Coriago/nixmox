@@ -1,5 +1,13 @@
-{ pkgs, ... }:
 {
+  config,
+  lib,
+  pkgs,
+  ...
+}:
+{
+  networking.firewall.allowedUDPPorts = lib.optional (
+    config.services.nixmox.config.discovery-port != 0
+  ) config.services.nixmox.config.discovery-port;
   networking.firewall.allowedTCPPorts = [
     22
     8080

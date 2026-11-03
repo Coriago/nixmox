@@ -13,6 +13,7 @@ import (
 	"nixmox/internal/configuration"
 	"nixmox/internal/credentials"
 	"nixmox/internal/deployment"
+	"nixmox/internal/discovery"
 	"nixmox/internal/domain"
 	"nixmox/internal/installer"
 	"nixmox/internal/recipe"
@@ -21,6 +22,7 @@ import (
 )
 
 type Services struct {
+	Discovery      cluster.Store[discovery.Record]
 	Deployments    *deployment.Service
 	Metrics        cluster.Metrics
 	Credentials    cluster.Store[credentials.Record]
@@ -40,6 +42,7 @@ type Services struct {
 }
 
 type Server struct {
+	Discovery     *discovery.Service
 	UI            http.Handler
 	Health        func(context.Context) domain.Health
 	CreateCluster func(context.Context, string) (domain.Cluster, error)
@@ -64,6 +67,7 @@ func (s Server) Handler() http.Handler {
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, s.Health(c.Request.Context()))
 	})
+	s.registerDiscoveryRoutes(router)
 	clustered := router.Group("")
 	clustered.Use(func(c *gin.Context) {
 		services, err := s.Services()

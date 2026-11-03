@@ -29,6 +29,7 @@ import (
 	"nixmox/internal/configuration"
 	"nixmox/internal/credentials"
 	"nixmox/internal/deployment"
+	"nixmox/internal/discovery"
 	"nixmox/internal/domain"
 	"nixmox/internal/host"
 	"nixmox/internal/identity"
@@ -43,6 +44,7 @@ import (
 const Version = "0.1.0-dev"
 
 type Config struct {
+	DiscoveryPort      int
 	Environment        string
 	UIAssets           string
 	StateDir           string
@@ -65,6 +67,7 @@ type startup struct {
 }
 
 type Runtime struct {
+	discovery  *discovery.Service
 	config     Config
 	node       *identity.Node
 	lifetime   context.Context
@@ -135,11 +138,15 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 		r.Close()
 		return nil, err
 	}
+	if err = r.startDiscovery(); err != nil {
+		r.Close()
+		return nil, err
+	}
 	return r, nil
 }
 
 func (r *Runtime) Handler() http.Handler {
-	return (api.Server{Health: r.Health, CreateCluster: r.CreateCluster, Services: r.Services, UI: r.ui}).Handler()
+	return (api.Server{Discovery: r.discovery, Health: r.Health, CreateCluster: r.CreateCluster, Services: r.Services, UI: r.ui}).Handler()
 }
 
 func (r *Runtime) Services() (*api.Services, error) {
@@ -416,6 +423,13 @@ func (r *Runtime) start(saved startup) (err error) {
 			return fmt.Errorf("provision bucket %s: %w", bucket, err)
 		}
 	}
+	if _, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "DISCOVERY", Storage: jetstream.FileStorage, Replicas: 2, TTL: discovery.Lifetime, MaxBytes: 4 << 20, MaxValueSize: 16 << 10}); err != nil {
+		return fmt.Errorf("provision discovery: %w", err)
+	}
+	discoveryStore, err := cluster.OpenStore[discovery.Record](ctx, js, "DISCOVERY")
+	if err != nil {
+		return err
+	}
 	clusterStore, err := cluster.OpenStore[domain.Cluster](ctx, js, "CLUSTER")
 	if err != nil {
 		return fmt.Errorf("open clusterStore: %w", err)
@@ -576,6 +590,7 @@ func (r *Runtime) start(saved startup) (err error) {
 	manager.Runners["configuration-build"] = deployments.Build
 	metrics := cluster.Metrics{Connection: nc}
 	svc := &api.Services{
+		Discovery:      discoveryStore,
 		Metrics:        metrics,
 		Deployments:    deployments,
 		Credentials:    credentialStore,

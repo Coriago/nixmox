@@ -10,7 +10,10 @@
       bind-dynamic = true;
       dhcp-range = "192.168.77.100,192.168.77.150,255.255.255.0,1h";
       # Guests retain their separate management-NAT default route and DNS.
-      dhcp-option = [ "option:router" "option:dns-server" ];
+      dhcp-option = [
+        "option:router"
+        "option:dns-server"
+      ];
     };
   };
 }
