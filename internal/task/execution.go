@@ -18,6 +18,18 @@ type Execution struct {
 
 func (e *Execution) Task() domain.Task { return e.record.Value }
 
+// LinkChild retains the child operation on the parent without replacing its inputs.
+func (e *Execution) LinkChild(ctx context.Context, child domain.ChildTask) error {
+	task := e.record.Value
+	for _, existing := range task.Links.ChildTasks {
+		if existing.TaskID == child.TaskID {
+			return nil
+		}
+	}
+	task.Links.ChildTasks = append(task.Links.ChildTasks, child)
+	return e.save(ctx, task)
+}
+
 func (e *Execution) Checkpoint(ctx context.Context, key string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {

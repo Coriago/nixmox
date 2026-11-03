@@ -166,5 +166,6 @@ func (c console) addMutations(root *cobra.Command) {
 	child(root, "task").AddCommand(approve)
 	c.addVersionedCommands(root)
 	c.addHostJobs(root)
+	c.addInstallers(root)
 	c.addSecrets(root)
 }

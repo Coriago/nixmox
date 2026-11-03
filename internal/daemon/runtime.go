@@ -31,6 +31,8 @@ import (
 	"nixmox/internal/domain"
 	"nixmox/internal/host"
 	"nixmox/internal/identity"
+	"nixmox/internal/installer"
+	"nixmox/internal/installer/installers"
 	"nixmox/internal/recipe"
 	"nixmox/internal/source"
 	"nixmox/internal/task"
@@ -40,6 +42,7 @@ import (
 const Version = "0.1.0-dev"
 
 type Config struct {
+	Environment        string
 	UIAssets           string
 	StateDir           string
 	Name               string
@@ -84,9 +87,22 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	if config.StateDir == "" {
 		return nil, errors.New("state directory required")
 	}
+	if config.Environment == "" {
+		config.Environment = "installed"
+	}
+	if config.Environment != "installed" && config.Environment != "installer" {
+		return nil, errors.New("environment must be installed or installer")
+	}
 	node, err := identity.Open(config.StateDir, config.Name)
 	if err != nil {
 		return nil, err
+	}
+	if node.State.Environment != config.Environment {
+		node.State.Environment = config.Environment
+		if err = node.Save(); err != nil {
+			node.Close()
+			return nil, err
+		}
 	}
 	lifetime, cancel := context.WithCancel(ctx)
 	r := &Runtime{config: config, node: node, lifetime: lifetime, cancel: cancel, failures: make(chan error, 1), status: "online", started: time.Now().UTC()}
@@ -110,6 +126,7 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	if err == nil {
 		var saved startup
 		if err = json.Unmarshal(data, &saved); err == nil {
+			saved.Member.Environment = config.Environment
 			err = r.start(saved)
 		}
 	}
@@ -392,7 +409,7 @@ func (r *Runtime) start(saved startup) (err error) {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	buckets := []string{"CLUSTER", "MEMBERS", "CREDENTIALS", "RECIPIENTS", "TASKS", "OUTPUTS", "LOCKS", "REPOS", "CONFIGURATIONS", "RECIPES"}
+	buckets := []string{"CLUSTER", "MEMBERS", "CREDENTIALS", "RECIPIENTS", "TASKS", "OUTPUTS", "LOCKS", "REPOS", "CONFIGURATIONS", "RECIPES", "INSTALLERS"}
 	for _, bucket := range buckets {
 		if _, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 2}); err != nil {
 			return fmt.Errorf("provision bucket %s: %w", bucket, err)
@@ -468,6 +485,10 @@ func (r *Runtime) start(saved startup) (err error) {
 	if err != nil {
 		return fmt.Errorf("open recipes: %w", err)
 	}
+	installerDefinitions, err := cluster.OpenStore[installers.Definition](ctx, js, "INSTALLERS")
+	if err != nil {
+		return fmt.Errorf("open installers: %w", err)
+	}
 	logs := cluster.Logs{JS: js}
 	if err = logs.Provision(ctx, 2); err != nil {
 		return err
@@ -508,6 +529,16 @@ func (r *Runtime) start(saved startup) (err error) {
 		Runners:   map[string]task.Runner{"build": builder.Runner},
 	}
 
+	installerService := &installer.Service{
+		HostID: member.NodeID, Definitions: installerDefinitions, Tasks: manager,
+		Repository: builder.Repository,
+		Inspect: func(ctx context.Context) (installers.Target, error) {
+			return installer.InspectLocal(ctx, member.NodeID, saved.Member.Environment)
+		},
+	}
+	manager.Runners[installer.LaunchTask] = installerService.Runner
+	manager.Runners[installer.FinalizeTask] = installerService.FinalizeRunner
+
 	recipeService := &recipe.Service{
 		Repository:   recipe.Repository{Records: recipes},
 		Sources:      sources,
@@ -547,6 +578,7 @@ func (r *Runtime) start(saved startup) (err error) {
 		Configurations: configurationService,
 		Registry:       registry,
 		Recipes:        recipeService,
+		Installers:     installerService,
 		Tasks:          manager,
 		Logs:           logs,
 		Cache:          gateway,

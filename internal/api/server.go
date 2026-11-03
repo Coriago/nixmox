@@ -12,6 +12,7 @@ import (
 	"nixmox/internal/cluster"
 	"nixmox/internal/configuration"
 	"nixmox/internal/domain"
+	"nixmox/internal/installer"
 	"nixmox/internal/recipe"
 	"nixmox/internal/source"
 	"nixmox/internal/task"
@@ -24,6 +25,7 @@ type Services struct {
 	Configurations *configuration.Service
 	Registry       *configuration.Registry
 	Recipes        *recipe.Service
+	Installers     *installer.Service
 	Sources        source.Manager
 	Tasks          *task.Manager
 	Logs           cluster.Logs
@@ -68,6 +70,7 @@ func (s Server) Handler() http.Handler {
 	})
 	s.registerClusterRoutes(router, clustered)
 	registerHostRoutes(clustered)
+	registerInstallerRoutes(clustered)
 	registerRepositoryRoutes(clustered)
 	registerRecipeRoutes(clustered)
 	registerConfigurationRoutes(clustered)

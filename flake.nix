@@ -9,20 +9,29 @@
         "aarch64-linux"
       ];
       each = nixpkgs.lib.genAttrs systems;
+      installers = import ./nix/installers { inherit self nixpkgs systems; };
     in
     {
       packages = each (
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          vendorHash = "sha256-hgztBdYKVLkPvo02QKrcdu/xzH/x5LTe+FGKpAXO4jg=";
+          vendorHash = "sha256-1Ya+vSHR1DJiTPZhUiEb3bIBnOctACtyaIzZqWAIkkI=";
         in
         {
+          installer = installers.${system}.general.iso.config.system.build.isoImage;
+          installer-vm = installers.${system}.vm.iso.config.system.build.isoImage;
+          installer-kexec = installers.${system}.general.kexec.config.system.build.kexecTree;
+          installer-vm-kexec = installers.${system}.vm.kexec.config.system.build.kexecTree;
           default = pkgs.buildGoModule {
             pname = "nixmox";
             version = "0.1.0-dev";
             src = self;
             inherit vendorHash;
+            nativeCheckInputs = [
+              pkgs.sops
+              pkgs.ssh-to-age
+            ];
             subPackages = [ "cmd/nixmox" ];
             env.CGO_ENABLED = "0"; # Bootstrap agents must not require a host libc.
             postBuild = ''
@@ -71,8 +80,29 @@
         }
       );
       formatter = each (system: nixpkgs.legacyPackages.${system}.nixfmt);
-      # nixosModules.default = import ./nix/module.nix self;
-      # nixosModules.installer = import ./nix/installer.nix self;
-      # Board exports are gated on pinned recipes and physical validation.
+      nixosModules.default = import ./nix/module.nix self;
+      nixosModules.installer = {
+        imports = [
+          self.nixosModules.default
+          ./nix/installers/general.nix
+        ];
+      };
+      nixosModules.installer-vm = {
+        imports = [
+          self.nixosModules.default
+          ./nix/installers/vm.nix
+        ];
+      };
+      nixosConfigurations = nixpkgs.lib.foldlAttrs (
+        configs: system: profiles:
+        configs
+        // nixpkgs.lib.foldlAttrs (
+          configs: profile: formats:
+          configs
+          // nixpkgs.lib.mapAttrs' (
+            format: machine: nixpkgs.lib.nameValuePair "installer-${profile}-${system}-${format}" machine
+          ) formats
+        ) { } profiles
+      ) { } installers;
     };
 }

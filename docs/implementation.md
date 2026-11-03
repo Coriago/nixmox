@@ -174,6 +174,7 @@ Location: `internal/configuration`
 - API domain files stay in one package and register only their own routes:
   - [cluster.go](../internal/api/cluster.go): creation and identity
   - [hosts.go](../internal/api/hosts.go): host reads and local builds
+  - [installers.go](../internal/api/installers.go): pinned installer registration, method catalogs, compatibility checks and gated launch/finalize submission
   - [repositories.go](../internal/api/repositories.go): repository reads, creation and refresh
   - [recipes.go](../internal/api/recipes.go): definitions, edits and sync
   - [configurations.go](../internal/api/configurations.go): versions, inputs, collection, upgrades and previews
@@ -199,6 +200,7 @@ Location: `internal/configuration`
 - [internal/cli/mutate.go](../internal/cli/mutate.go): `addMutations` registers domain actions
 - [internal/cli/versions.go](../internal/cli/versions.go): `versionFlag`, `versionPath`, `addVersionedCommands` map immutable lifecycle operations
 - [internal/cli/hosts.go](../internal/cli/hosts.go): `addHostJobs` maps build/deploy/install/rollback/installer/media requests
+- [internal/cli/installers.go](../internal/cli/installers.go): installer registration, pair selection and finalizer checks/submission
 - [internal/cli/secrets.go](../internal/cli/secrets.go): `secretInput`, `addSecrets` use bounded stdin/hidden prompts, never password arguments
 - [internal/cli/ui.go](../internal/cli/ui.go): `uiCommand` opens the shared-client terminal console; `ui` and `tui` are aliases
 - [cmd/nixmox/main_js.go](../cmd/nixmox/main_js.go): WASM entrypoint registering the go-app browser console
@@ -222,15 +224,35 @@ Location: `internal/configuration`
 - `internal/network`: endpoint publication and preferred connection candidates; local installer Wi-Fi scanning/configuration
 - these packages are intended boundaries, not implemented services
 
-## planned installation
-Location: `internal/install` (not implemented)
-- installer registry: definitions and pinned build inputs
-- method registry: built-in prepare/finalize compatibility and preference
-- launch runner: installer build, transfer, demotion and prepare execution
-- prepare methods: boot staging, private identity/network handoff and reboot/kexec
-- fresh deployment: system build, disk formatting, installation and completion validation
-- finalize methods: destination identity/network state and installed boot entry
-- media runner: installer transfer and writing to the selected drive
+## deferred runtime and task work
+- daemon startup must restore pending/full members as NATS clients without starting JetStream servers
+- persistent tasks must be saved locally, exempt from local unknown marking, and resumed from checkpoints when the daemon returns
+- global cleanup must mark running tasks unknown after their owner has been offline for 30 minutes; this cleanup is also still missing
+- these requirements are not implemented in this installer work; live transitions remain gated until recovery and safe membership demotion are wired
+
+## installer
+Location: [internal/installer](../internal/installer)
+- `installers/`: general and QEMU/KVM profiles, immutable pinned build definitions and hardware compatibility checks
+- `service.go`, `checks.go`, `inspect.go`: NATS `INSTALLERS` registration, local host observations and ranked installer/prepare pairs; explicit IDs do not bypass incompatibility
+- `launch.go`, `build.go`: capture selected build inputs, link a build child task, recheck compatibility, call demotion/handoff boundaries and checkpoint before kexec; success requires a changed boot ID, installer environment and exact staged system path
+- `prepare/`: method interface and kexec checks/execution; uses `kexec --load` followed by `systemctl kexec`, not an immediate forced reboot
+- `finalize/`, `finalize.go`: general method checks and task runner; require a separate mounted root and preservation callback, then delegate closure/profile/bootloader setup to `nixos-install --system`
+- built-in prepare/finalize method catalogs are code-owned; registered installer definitions and launch/finalize tasks are NATS-backed
+- daemon registers both runners, but leaves the `Transition` boundary unwired: safe demotion, private boot payload staging, persistent-task registration and installed-state preservation still need implementation
+- launch/finalize return unavailable before submitting work until that boundary is wired; compatibility results report execution readiness separately
+- remote dispatch/transfer, fresh disk partitioning/formatting, enrollment and media writing remain unimplemented
+- checks cover generic x86_64 and UEFI ARM64 platforms, not board-specific support or proof that a particular kernel will boot
+
+## installer images
+- [nix/installers](../nix/installers): shared installer environment, general hardware profile and QEMU/virtio VM profile
+- exports `installer`, `installer-vm`, `installer-kexec` and `installer-vm-kexec` packages for x86_64-linux and aarch64-linux
+- ISO images support UEFI; x86_64 also supports BIOS. Generic ARM64 images are not Raspberry Pi firmware images
+- kexec outputs use the upstream NixOS kernel/self-contained initrd bundle; they do not implement Nixmox prepare or identity handoff
+- local and serial consoles launch the Nixmox TUI automatically; profiles enable the installer daemon and key-only SSH, with no embedded credentials or disk layout
+- networking belongs in the Nixmox TUI; its network controls/backend remain unimplemented, not replaced with an external setup UI
+- customize through `nixosModules.installer` or `nixosModules.installer-vm`; add authorized keys or network settings in the consuming configuration
+- run `nix develop -c just check-installers` to evaluate all variants and `nix develop -c just build-installer installer-vm` to build the native VM ISO
+- ARM64 builds require an ARM64 builder or configured emulation; live prepare/finalize integration, enrollment and fresh installation remain unavailable
 
 ## tests and development
 - [internal/testutil/nats.go](../internal/testutil/nats.go): reusable `JetStream` TLS fixture with cleanup; not a production multi-peer bootstrap test
@@ -239,6 +261,7 @@ Location: `internal/install` (not implemented)
 - [internal/daemon/runtime_test.go](../internal/daemon/runtime_test.go): HTTP cluster/recipe/configuration lifecycle and cold-restart persistence
 - [internal/configuration/lifecycle_test.go](../internal/configuration/lifecycle_test.go): real Git/JetStream import, sync, fork, independent realizations, upgrades and previews
 - [internal/api/configurations_test.go](../internal/api/configurations_test.go): independent realizations over HTTP
+- [installer examples](../internal/installer/checks_test.go), [return checkpoint test](../internal/installer/launch_test.go) and [installer CLI integration](../internal/api/installers_test.go): selection, finalizer checks, runner return validation and real CLI/API/NATS registration; not boot or task-manager restart recovery tests
 - [identity tests](../internal/identity/identity_test.go): persistence, exclusive ownership and certificate enrollment
 - [task tests](../internal/task/manager_test.go): durable review/approval and linked retries
 - [source tests](../internal/source/source_test.go): pinned checkout and safe worktree access
@@ -258,6 +281,7 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - `test-backend-race`: backend plus daemon under the race detector
 - `test-runtime`: cluster creation and cold restart
 - `test-configurations`: recipe/configuration/API usage and lifecycle checks
+- `test-installers`: installer examples and CLI/API/NATS wiring plus affected packages; no reboot, kexec or disk operations
 - `test-ui`: shared UI examples and HTTP workflows
 - `test-build-monitor`: real Nix build, retained logs, SSE and shared monitor
 - `test-registry`: real Nix configuration discovery
@@ -271,7 +295,7 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - [flake.lock](../flake.lock): pinned Nix inputs
 - [.envrc](../.envrc): `use flake` through direnv
 - [go.mod](../go.mod), [go.sum](../go.sum): Go toolchain/dependencies and checksums
-- [nix/module.nix](../nix/module.nix): `services.nixmox`, typed configuration, package override, private state and systemd service
+- [nix/module.nix](../nix/module.nix): `services.nixmox`, typed configuration, boot environment, package override, private state and systemd service
 - [justfile](../justfile): build, run and test recipes
 - the NixOS module does not configure cache trust, firewall access or SSH host-key provisioning; its generated configuration is public in the Nix store
 

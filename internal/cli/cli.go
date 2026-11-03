@@ -91,6 +91,7 @@ func (c console) daemonCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			config := daemon.Config{
 				UIAssets:           c.config.GetString("ui-assets"),
+				Environment:        c.config.GetString("environment"),
 				StateDir:           c.config.GetString("state-dir"),
 				Name:               c.config.GetString("name"),
 				Listen:             c.config.GetString("listen"),
@@ -106,6 +107,7 @@ func (c console) daemonCommand() *cobra.Command {
 		},
 	}
 	f := command.Flags()
+	f.String("environment", "installed", "Boot environment: installed or installer")
 	f.String("ui-assets", "", "Browser assets directory (default: installed package assets)")
 	f.String("state-dir", "/var/lib/nixmox", "Private persistent state directory")
 	f.String("name", "", "Node name (defaults to hostname on first startup)")

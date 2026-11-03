@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"nixmox/internal/cluster"
+	"nixmox/internal/installer"
 	"nixmox/internal/recipe"
 )
 
@@ -52,8 +53,12 @@ func body(c *gin.Context, destination any) bool {
 func fail(c *gin.Context, err error) {
 	status := http.StatusInternalServerError
 	message := "operation failed"
-	if errors.Is(err, recipe.ErrInvalid) {
+	if errors.Is(err, recipe.ErrInvalid) || errors.Is(err, installer.ErrInvalid) {
 		status = http.StatusBadRequest
+		message = err.Error()
+	}
+	if errors.Is(err, installer.ErrUnavailable) {
+		status = http.StatusServiceUnavailable
 		message = err.Error()
 	}
 	if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrKeyDeleted) {

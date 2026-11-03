@@ -27,6 +27,18 @@ ui-assets:
     GOOS=js GOARCH=wasm go build -trimpath -o ui-assets/app.wasm ./cmd/nixmox
     install -m644 "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui-assets/wasm_exec.js
 
+# Evaluate every architecture/profile/format, including image assertions.
+check-installers:
+    nix eval --json "path:{{justfile_directory()}}#packages" --apply 'systems: builtins.mapAttrs (_: packages: builtins.mapAttrs (_: package: package.drvPath) (builtins.removeAttrs packages ["default"])) systems'
+
+# Installer components and CLI/API/NATS integration; no kexec, reboot or disk writes.
+test-installers:
+    go test ./internal/installer/... ./internal/api ./internal/cli ./internal/task ./internal/daemon -count=1 -timeout=90s
+
+# Native architecture; use installer, installer-vm or their -kexec variants.
+build-installer package="installer-vm":
+    nix build "path:{{justfile_directory()}}#{{package}}" --out-link result
+
 # These recipes do not start a cluster.
 build:
     go build -o bin/nixmox ./cmd/nixmox

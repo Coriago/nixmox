@@ -892,6 +892,9 @@ result:
 - global task cleanup will happen periodically to cleanup tasks for other hosts. a task will be set to unknown status if the task is running for over 30 mins since the host of the task went offline. this is to ensure no tasks stay running indefinetly.
 - tasks can also have a manual review state where they halt execution and await approval before continuing. The approval can happen in the middle of the task, it does not have to be the beginning
 - tasks have concurrency protection setting for tasks types that would conflict. Ex: power tasks or deployments
+- tasks that are marked for persistence will be exempt from being marked unknown except for the global check
+- tasks marked with peristence are resumed as soon as the daemon comes back online.
+- persistent tasks should follow good checkpoint handling and understand how to resume based on saved checkpoints  
 
 **Base task record**<br>
 Location: NATS
@@ -916,6 +919,7 @@ context: {} # Durable execution facts retained across restarts, not live progres
 review: null # When awaiting approval: {outputId: review1, approvedAt: null}.
 result: null
 error: null # On failure: {message: "Build failed; see task logs"}.
+persist: true # marks that the task will be saved to a local file and persist even after interruption
 ```
 
 ### task log adapters

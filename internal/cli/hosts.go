@@ -77,6 +77,9 @@ func (c console) addHostJobs(root *cobra.Command) {
 				if buildHost := flag(cmd, "build-host"); buildHost != "" {
 					payload["buildHostId"] = buildHost
 				}
+				if action == "launch" {
+					payload["prepareId"] = flag(cmd, "prepare")
+				}
 				route := "launch-installer"
 				if action == "create" {
 					route = "boot-media"
@@ -86,7 +89,12 @@ func (c console) addHostJobs(root *cobra.Command) {
 			},
 		}
 		required(command, "host", "Target host ID")
-		required(command, "installer", "Installer definition ID")
+		if action == "create" {
+			required(command, "installer", "Installer definition ID")
+		} else {
+			command.Flags().String("installer", "", "Installer ID (default: best compatible)")
+			command.Flags().String("prepare", "", "Prepare ID (default: best compatible)")
+		}
 		command.Flags().String("build-host", "", "Build host ID")
 		if action == "create" {
 			required(command, "device", "Selected drive path (will be overwritten)")

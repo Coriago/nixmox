@@ -106,12 +106,18 @@ See [implementation.md](implementation.md#http-api-and-client) for current route
 ## installation and boot media
 
 - `installer list`: `GET /installers`
-- `installer show ID`: `GET /installers/{id}`; show installer hardware requirements and build inputs
+- `installer show ID`: `GET /installers/{id}`; show installer profile and pinned build inputs
+- `installer register --file FILE`: `POST /installers`; register `kind` (`general` or `vm`), `system`, `targetRepo` (`id`, `ref`, full `sha`) and optional `flakeDir`
+- `installer checks --host ID [--installer ID] [--prepare ID]`: `POST /hosts/{id}/installer-checks`; ranked compatible pairs, selected pair and separate execution readiness
 - `install-prepare list`: `GET /install-prepare`; list installer-entry methods
 - `install-finalize list`: `GET /install-finalize`; list installation-finalization methods
-- `installer launch --host ID --installer INSTALLER_ID [--build-host ID]`: `POST /hosts/{id}/launch-installer`; build and boot an installer on a host
+- `installer launch --host ID [--installer ID] [--prepare ID] [--build-host ID]`: `POST /hosts/{id}/launch-installer`; defaults to the best compatible registered pair
+- `install-finalize checks --host ID --root PATH --system STORE_PATH [--finalize ID]`: `POST /hosts/{id}/install-finalize-checks`; general finalizer compatibility
+- `install-finalize run --host ID --root PATH --system STORE_PATH [--finalize ID]`: `POST /hosts/{id}/install-finalize`; submit finalization of a mounted installed root
 - `install --host ID --configuration CONFIG_ID --version N [--build-host ID]`: `POST /hosts/{id}/installations`; install an exact configuration version from the installer environment
 - `media create --host ID --device PATH --installer INSTALLER_ID [--build-host ID]`: `POST /hosts/{id}/boot-media`; build and write an installer to the selected drive
+
+Installer registration/checks are available for the connected daemon. Launch/finalize execution currently returns 503 until client-only startup, persistent-task recovery and demotion/state handoff are wired. Remote host/build dispatch is not implemented. Method IDs are `prepare-kexec` and `finalize-general`; omitting the flags selects them automatically.
 
 ## local networking
 

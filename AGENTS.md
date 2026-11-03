@@ -17,6 +17,7 @@ MOVE ON TO NEXT FEATURE UNTIL DESIRED USER GOAL REACHED OR HARD BLOCKER ENCOUNTE
 Before declaring a change complete, review the affected workflow end to end—not just
  edited lines. Check surrounding code, callers, ownership boundaries, naming, readability,
  duplication, tests, and documentation for consistency.
+MODIFICATION of requirments.md must be approved by ME. Changes should not change style.
 FAVOR CLEAN ABSTRACTIONS WITH GOOD REUSE.
 DO NOT SACRIFICE READABILITY TO REDUCE LINE COUNT.
 READ LIBRARY DOCS AND FOLLOW THEIR CONVENTIONS. NEVER HACK AROUND LIBRARY BEST PRACTICES WITHOUT CONSULTING FIRST.
