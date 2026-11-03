@@ -67,7 +67,10 @@ def main [
     do --capture-errors { ^nixmox --endpoint $endpoint host configuration $node --configuration $initial.id --version $initial.version }
     let deployment = (^nixmox --endpoint $endpoint --json deploy --host $node --configuration $initial.id --version $initial.version --approve | from json)
     record $run "07-baseline-submitted" $deployment
-    record $run "07-baseline-deployment" (wait-task $endpoint $deployment.id)
+    let baseline = (wait-task $endpoint $deployment.id)
+    record $run "07-baseline-deployment" $baseline
+    assert (($baseline.links.childTasks | length) == 1)
+    assert equal (guest $run "readlink -f /run/current-system") $baseline.result.storePath
     assert equal (guest $run "hostname") "vm1"
 
     print "Importing and deploying the testpkg recipe"
@@ -84,11 +87,18 @@ def main [
     do --capture-errors { ^nixmox --endpoint $endpoint host configuration $node --configuration $configured.id --version $configured.version }
     let changed = (^nixmox --endpoint $endpoint --json deploy --host $node --configuration $configured.id --version $configured.version --approve | from json)
     record $run "08-recipe-submitted" $changed
-    record $run "08-recipe-deployment" (wait-task $endpoint $changed.id)
-    assert equal (guest $run "nixmox-e2e-testpkg") "nixmox-e2e-testpkg-v1"
+    let installed = (wait-task $endpoint $changed.id)
+    record $run "08-recipe-deployment" $installed
+    assert ($installed.result.generation > $baseline.result.generation)
+    assert ($installed.result.storePath != $baseline.result.storePath)
+    assert equal (guest $run "readlink -f /run/current-system") $installed.result.storePath
+    let package = (guest $run "nixmox-e2e-testpkg")
+    assert equal $package "nixmox-e2e-testpkg-v1"
+    record $run "08-package" {output: $package}
     let final = (^nixmox --endpoint $endpoint --json host show $node | from json)
     assert equal $final.nodeId $node
     assert equal $final.status "full-stable"
+    assert equal $final.daemon.startedAt $member.daemon.startedAt
     assert equal $final.configurationId $configured.id
     record $run "09-final-member" $final
     print "PASS: phase 1"

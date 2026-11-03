@@ -6,7 +6,7 @@ Implementation ownership and code map for [requirements.md](requirements.md). Co
 - cluster creation, cold restart, recipe/configuration lifecycles and the local build/log pipeline have integration coverage
 - CLI command availability does not imply backend support
 - enrollment, networking and installation packages are not implemented
-- membership/quorum reconciliation, distributed dispatch, deployment, rollback, power operations, publication and credential-store reconciliation remain missing or incomplete
+- local installed full-stable deployment is implemented and phase-1 VM-tested; membership/quorum reconciliation, distributed dispatch, rollback, power operations, publication and credential-store reconciliation remain missing or incomplete
 - the code map covers non-UI application code with selected UI integration points; functions are grouped by responsibility, not an exhaustive helper inventory
 - terminal/browser interfaces share the HTTP client and build monitor; component tests do not establish a complete multi-host workflow
 
@@ -96,6 +96,7 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
   - `Run`, `each`, `reconcile`: consume watches, page tasks and mark interrupted running work unknown
   - `schedule`, `execute`, `finish`: dependencies, reviews, resources, runner lifetime and completion
 - [internal/task/execution.go](../internal/task/execution.go): `Execution.Task/Checkpoint/Review/save` expose task state and persist checkpoints, outputs and reviews
+- [internal/task/child.go](../internal/task/child.go): linked local child submission and bounded NATS watch delivery; review reentry reuses the child result
 - [internal/task/resources.go](../internal/task/resources.go): CAS-based `Resources` with no TTL; `Acquire`, `Release` and `change` manage task ownership
 - [internal/task/log.go](../internal/task/log.go): `Execution.LogWriter`, `Write` and `Close` frame bounded stderr into retained OTLP logs; redact secrets and report persistence failures
 - `Builder.Runner` attaches the log writer for replayable Nix activity; distributed dispatch and complete workflow recovery remain pending
@@ -109,8 +110,9 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
   - `Registry.names`: evaluate `configurations.nixos` without changing lock files
   - `Register`: deterministic records preserving existing pins
   - `Refresh`: validate the named configuration and append a version at the new revision
-- `Registry.Register` is called by tests only; repository add/refresh does not discover configurations, and `.nixmox/recipes` scanning is absent
-- repository records and pins have no `rootDir`; paths currently resolve from the Git worktree root
+- repository add invokes configuration registration and [recipe discovery](../internal/recipe/discovery.go) under `.nixmox/recipes`; existing versions are not silently upgraded
+- records and pins retain repository-relative `rootDir` (default `.`); reads/rendering/builds resolve inside that root, while cleanup removes the complete private checkout
+- repository refresh updates its tracked SHA; explicit recipe/configuration version operations still own upgrades
 - `source.Manager.Auth` exists but the daemon leaves it unset, so repositories with `credentialId` fail as unavailable
 - build/render code must reuse source ownership rather than clone independently
 
@@ -154,7 +156,17 @@ Location: `internal/configuration`
 - the source commit is pinned, but the build command does not disable flake lock updates
 - [internal/host/inspect.go](../internal/host/inspect.go): `Process.Disks` uses `lsblk`; `Process.Hardware` generates hardware configuration without filesystem declarations
 - local helpers do not dispatch remote work
-- planned runners own deployment build/diff/review/activation, previous-generation rollback, power/restart preflight and return validation; periodic host metrics remain pending
+- [internal/host/metrics.go](../internal/host/metrics.go) samples CPU, memory, disk and network counters every two seconds using gopsutil and OTLP protobufs
+- [internal/cluster/metrics.go](../internal/cluster/metrics.go) publishes replaceable core-NATS observations and bounded latest-value subscriptions for host SSE; low-frequency inventory and latency metrics remain pending
+
+## local deployment
+- [internal/deployment](../internal/deployment): assignment, linked configuration builds, review and profile activation for the local installed full-stable member; remote dispatch and pending-member promotion remain unavailable
+- [internal/configuration/worktree.go](../internal/configuration/worktree.go): fresh pinned materialization using retained recipe inputs; does not recollect or retarget
+- `service.go`: host/resource checks, assignment CAS, task submission and build runner
+- `activate.go`: reuses the child result, optionally waits for review, records activation intent, sets the system profile, activates and validates the selected system/generation
+- `review.go`: structured added/removed closure packages using Nix name parsing; version changes currently appear as removal/addition pairs
+- the daemon module disables deployment-triggered service restarts; reboot recovery, rollback and comprehensive failed-activation recovery are not implemented
+- phase 1 validates auto-approved deployment; manual review is not VM-validated
 
 ## binary cache
 - [internal/cache/local.go](../internal/cache/local.go): signed HTTP cache backed by the local Nix store and go-nix formats
@@ -166,14 +178,16 @@ Location: `internal/configuration`
   - `ReplacePeers`, `ServeHTTP`: validated endpoints and failover before streaming begins
   - `idleConn.Read`: read-idle deadline renewal
 - runtime seeds only its own advertised cache endpoint; membership-driven refresh/reconnect reconciliation is not implemented
-- `/cache` and `/store-cache` support GET/HEAD; the planned `/cache-info` endpoint is absent
+- `/cache` and `/store-cache` support GET/HEAD; `/cache-info` exposes signing public-key metadata and relative cache paths
 
 ## HTTP API and client
 - [internal/api/server.go](../internal/api/server.go): daemon-owned `Services`; `Server.Handler` wires middleware, health and domain routes
 - HTTP has no authentication/authorization middleware or TLS listener; NATS mTLS does not protect the API, so remote access requires host-level protection
 - API domain files stay in one package and register only their own routes:
   - [cluster.go](../internal/api/cluster.go): creation and identity
-  - [hosts.go](../internal/api/hosts.go): host reads and local builds
+  - [hosts.go](../internal/api/hosts.go): host reads, local builds and NATS-backed telemetry SSE
+  - [deployments.go](../internal/api/deployments.go): local assignment and deployment submission
+  - [credentials.go](../internal/api/credentials.go): public credential metadata only
   - [installers.go](../internal/api/installers.go): pinned installer registration, method catalogs, compatibility checks and gated launch/finalize submission
   - [repositories.go](../internal/api/repositories.go): repository reads, creation and refresh
   - [recipes.go](../internal/api/recipes.go): definitions, edits and sync
@@ -183,12 +197,12 @@ Location: `internal/configuration`
   - [cache.go](../internal/api/cache.go): forwarding
   - [http.go](../internal/api/http.go): bounded JSON, errors, paging, versions and SSE framing
 - credential list/show expose public metadata only; cache-info exposes the signing public key and cache route paths
-- cluster destroy/recover, repository update/remove, credential mutations/recipient APIs, host assignment/disks/metrics, enrollment, membership/power, deployment/install and publication routes are absent
+- cluster destroy/recover, repository update/remove, credential mutations/recipient APIs, host disks, enrollment, membership/power, fresh install and publication routes are absent
 - task lists implement cursor/limit only; CLI host/status/type filters are ignored
 - task events deliver the current KV snapshot and changes, not historical replay from `Last-Event-ID`; log streams do replay by sequence
 - host-log read routes exist, but the daemon has no host-log producer; build stderr is persisted under task logs
 - [internal/client/client.go](../internal/client/client.go): shared bounded JSON client
-  - `New`, `Close`, `request`, `Do`: traced HTTP lifetime and requests; never silently retry mutations
+  - `New`, `Close`, `request`, `Do`: traced HTTP lifetime and requests; never silently retry mutations; reads have a 45-second budget and synchronous mutations three minutes for cold Git/Nix discovery
   - `Page`, `Error`, `UnknownSubmission`: paging, API failure and uncertain mutation results
   - `incomplete`, `responseError`, error formatting and `Unwrap`: failure classification
 - [internal/client/stream.go](../internal/client/stream.go): `Client.Watch` reconnects with cursor/retry state; `readEvents` parses bounded SSE frames; callback/protocol errors stop delivery
@@ -284,7 +298,7 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - `test-configurations`: recipe/configuration/API usage and lifecycle checks
 - `test-installers`: installer examples and CLI/API/NATS wiring plus affected packages; no reboot, kexec or disk operations
 - `e2e-phase1`: Nushell CLI acceptance test with a bootloader-backed private VM disk; artifacts under `test/runs`, explicit interrupted-run cleanup via `nu test/scripts/stop.nu RUN_DIRECTORY`
-- phase-1 VM validation currently passes unjoined startup, cluster/full-stable/bootstrap and credential/cache readiness; fails at the missing host telemetry stream. GitHub registration and both deployments are written but not yet reached; fixture publication to the GitHub test branch is still pending
+- phase-1 VM validation passes unjoined startup, cluster/full-stable/bootstrap, credential/cache readiness, streamed telemetry, real GitHub rootDir/discovery, baseline deployment and recipe-backed testpkg activation; fixtures are published on `dev/e2e-phase1`
 - `test-ui`: shared UI examples and HTTP workflows
 - `test-build-monitor`: real Nix build, retained logs, SSE and shared monitor
 - `test-registry`: real Nix configuration discovery
@@ -307,7 +321,8 @@ Checked against the working tree on 2026-11-03, including uncommitted files.
 - reviewed non-UI source ownership, API/CLI mappings, daemon callers, test assertions and Nix/just configuration
 - passed `nix develop -c just test`, including daemon cold restart and the bootstrap PoC
 - passed `nix develop -c just test-registry test-cache test-build-monitor` with real Nix operations enabled
-- these checks do not validate multi-host enrollment, deployment/install, physical hardware, a booted NixOS module or interactive browser/terminal behavior
+- `e2e-phase1` additionally validates the booted NixOS module and two real local deployments on a private bootloader-backed disk, including executing the installed test package
+- these checks do not validate multi-host enrollment, fresh installation, physical hardware or interactive browser/terminal behavior
 
 ## maintenance
 - update the owning entry when files or responsibilities move

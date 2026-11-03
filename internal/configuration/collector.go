@@ -262,6 +262,9 @@ func (c Collector) repository(ctx context.Context, value any) (source.Repository
 		requested.Ref = repo.Ref
 	}
 	if requested.SHA == "" {
+		if requested.RootDir == "" {
+			requested.RootDir = repo.RootDir
+		}
 		resolve := repo
 		resolve.Ref = requested.Ref
 		refreshed, err := c.Sources.Refresh(ctx, resolve)
@@ -270,9 +273,7 @@ func (c Collector) repository(ctx context.Context, value any) (source.Repository
 		}
 		requested.SHA = refreshed.SHA
 	}
-	if requested.RootDir == "" {
-		requested.RootDir = repo.RootDir
-	}
+	// A complete pin with omitted rootDir retains the repository root (".").
 	pin = source.Pin{ID: repo.ID, Ref: requested.Ref, SHA: requested.SHA, RootDir: requested.RootDir}
 	return repo, pin, pin.Validate()
 }
