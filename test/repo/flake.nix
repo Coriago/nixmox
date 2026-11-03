@@ -6,7 +6,7 @@
     let
       vm1 = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
-        specialArgs = { inherit nixmox; };
+        specialArgs = { inherit nixmox; vmIndex = 1; nixmoxModule = nixmox.nixosModules.default; };
         modules = [ ./hosts/vm1/configuration.nix ];
       };
       vm2 = nixpkgs.lib.nixosSystem {

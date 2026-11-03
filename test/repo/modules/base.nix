@@ -1,4 +1,4 @@
-{ lib, modulesPath, pkgs, vmIndex ? 1, ... }:
+{ lib, modulesPath, pkgs, vmIndex, ... }:
 let
   mac = "52:54:00:77:00:0${toString vmIndex}";
 in

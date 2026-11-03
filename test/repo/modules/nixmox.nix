@@ -1,4 +1,4 @@
-{ nixmox, config, vmIndex ? 1, nixmoxModule ? nixmox.nixosModules.default, ... }:
+{ config, vmIndex, nixmoxModule, ... }:
 {
   imports = [ nixmoxModule ];
   services.nixmox = {
