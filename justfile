@@ -31,6 +31,10 @@ ui-assets:
 check-installers:
     nix eval --json "path:{{justfile_directory()}}#packages" --apply 'systems: builtins.mapAttrs (_: packages: builtins.mapAttrs (_: package: package.drvPath) (builtins.removeAttrs packages ["default"])) systems'
 
+# Discovery transport, unjoined/shared storage and HTTP reads; loopback-only test traffic.
+test-discovery:
+    go test ./internal/discovery -count=1 -v -timeout=30s
+
 # Installer components and CLI/API/NATS integration; no kexec, reboot or disk writes.
 test-installers:
     go test ./internal/installer/... ./internal/api ./internal/cli ./internal/task ./internal/daemon -count=1 -timeout=90s
@@ -39,7 +43,8 @@ test-installers:
 build-installer package="installer-vm":
     nix build "path:{{justfile_directory()}}#{{package}}" --out-link result
 
-# Independent phase 1 or phase 1 followed by phase 2. Add --keep-vms to retain guests.
+# Independent phase 1 or chained phases. Resume with --resume RUN --after CHECKPOINT.
+# Add --keep-vms to retain guests and collector on success or failure.
 [positional-arguments]
 e2e-phase1 *args:
     nu test/scripts/run.nu --through 1 "$@"
@@ -48,12 +53,13 @@ e2e-phase1 *args:
 e2e-phase2 *args:
     nu test/scripts/run.nu --through 2 "$@"
 
+# Phase 3 inherits phases 1/2; VM3/quorum/kexec operations remain unimplemented.
+[positional-arguments]
+e2e-phase3 *args:
+    nu test/scripts/run.nu --through 3 "$@"
+
 e2e-stop run:
     nu test/scripts/stop.nu {{quote(run)}}
-
-# Render the same host recipe with two configurations and evaluate both NixOS systems.
-test-host-recipe:
-    NIXMOX_TEST_NIX=1 go test ./test -run Example_hostRecipe -count=1 -v
 
 # These recipes do not start a cluster.
 build:

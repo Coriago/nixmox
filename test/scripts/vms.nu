@@ -1,9 +1,8 @@
 # Physical VM wiring only; no hostnames, guest addresses or installed configuration.
-export def start-vm [root: path, run: path, name: string, public: path] {
+export def start-vm [root: path, run: path, name: string, public: path, topology: path] {
     print --stderr "\n=== VM | Load machine wiring ===\n"
 
-    let topology = (open ($root | path join "test/vms.json"))
-    let machine = ($topology.machines | get $name)
+    let machine = ((open $topology).machines | get $name)
     mkdir $run
     mkdir ($run | path join "tmp")
 
@@ -70,12 +69,12 @@ export def wait-daemon [endpoint: string] {
         let probe = (
             ^nixmox --endpoint $endpoint --json health
             | complete
-            | inspect
         )
 
         if $probe.exit_code == 0 {
-            return ($probe.stdout | from json)
+            return ($probe.stdout | from json | tee { to json --indent 2 | print --stderr })
         }
+        if ($probe.stderr | is-not-empty) { print --stderr ($probe.stderr | str trim) }
         sleep 2sec
     }
     error make {msg: $"Daemon ($endpoint) did not become ready within four minutes"}

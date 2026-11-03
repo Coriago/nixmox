@@ -35,7 +35,8 @@ See [implementation.md](implementation.md#http-api-and-client) for current route
 
 ## discovery and enrollment
 
-- `discovery list`: `GET /discovery`
+- `discovery list`: `GET /discovery`; unjoined memory or clustered NATS records, with one-minute expiry; advertised identities remain untrusted until enrollment verifies them
+- `GET /discovery/{id}`: read the selected observation and key thumbprint
 - `enrollment request --discovery ID`: `POST /enrollment/request`; request to join a discovered cluster
 - `enrollment request --address URL`: `POST /enrollment/request`; request to join a cluster by endpoint
 - `enrollment add --discovery ID --contact HOST_ID`: `POST /enrollment/request`; enroll a discovered node through a contact host

@@ -2,12 +2,13 @@
 use std/assert
 use helpers.nu [record]
 
-def main [run: path, inputs: path, host: string, device: string] {
+def main [run: path, name: string, host: string, device: string] {
     print --stderr "\n=== Configuration | Load host inputs and pinned repository ===\n"
 
     let endpoint = (open ($run | path join "phase1.json")).endpoint
     let repo = (open ($run | path join "06-repository.json"))
-    let plan = (open $inputs)
+    let machine = ((open ($run | path join "vms.json")).machines | get $name)
+    let plan = ($machine.configuration | insert Name $name | insert MAC $machine.mac)
 
     print --stderr "\n=== Configuration | Find the reusable host recipe ===\n"
 
@@ -15,7 +16,7 @@ def main [run: path, inputs: path, host: string, device: string] {
     let recipes = (
         ^nixmox --endpoint $endpoint --json recipe list
         | from json
-        | inspect
+        | tee { to json --indent 2 | print --stderr }
     )
 
     let recipe = ($recipes.items | where name == "host" | first)
@@ -33,7 +34,7 @@ def main [run: path, inputs: path, host: string, device: string] {
     let created = (
         ^nixmox --endpoint $endpoint --json configuration create --data ($create | to json -r)
         | from json
-        | inspect
+        | tee { to json --indent 2 | print --stderr }
     )
 
     assert (not $created.canRender)
@@ -44,7 +45,7 @@ def main [run: path, inputs: path, host: string, device: string] {
     let choices = (
         ^nixmox --endpoint $endpoint --json configuration observe $created.id --version $created.version
         | from json
-        | inspect
+        | tee { to json --indent 2 | print --stderr }
     )
 
     print --stderr "\n=== Configuration | Select target host and modules ===\n"
@@ -54,7 +55,7 @@ def main [run: path, inputs: path, host: string, device: string] {
     let selected = (
         ^nixmox --endpoint $endpoint --json configuration update $choices.id --data ($select | to json -r)
         | from json
-        | inspect
+        | tee { to json --indent 2 | print --stderr }
     )
 
     print --stderr "\n=== Configuration | Collect target hardware and disks ===\n"
@@ -63,7 +64,7 @@ def main [run: path, inputs: path, host: string, device: string] {
     let observed = (
         ^nixmox --endpoint $endpoint --json configuration observe $selected.id --version $selected.version
         | from json
-        | inspect
+        | tee { to json --indent 2 | print --stderr }
     )
 
     assert equal $observed.collected.observations.disks.host $host
@@ -78,7 +79,7 @@ def main [run: path, inputs: path, host: string, device: string] {
     let configured = (
         ^nixmox --endpoint $endpoint --json configuration update $observed.id --data ($selection | to json -r)
         | from json
-        | inspect
+        | tee { to json --indent 2 | print --stderr }
     )
 
     assert $configured.canRender
@@ -90,7 +91,7 @@ def main [run: path, inputs: path, host: string, device: string] {
     let rendered = (
         ^nixmox --endpoint $endpoint --json configuration render $configured.id --version $configured.version
         | from json
-        | inspect
+        | tee { to json --indent 2 | print --stderr }
     )
 
     print --stderr "\n=== Configuration | Verify generated host files and retained hardware ===\n"

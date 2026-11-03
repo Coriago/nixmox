@@ -26,7 +26,7 @@ test/
         disk.nix - disk layout for vm1
 
 ## Test Steps
-### single host phase
+### Phase 1 Cluster Creation and Basic Operations
 1. start vm1 with nixmox
 2. validate unjoined state
 3. create a cluster
@@ -39,7 +39,7 @@ test/
 7. use the recipe to make a configuration for vm1 and deploy it 
 - validate the package now exists on vm1 changes are there
 
-### multi-host phase
+### Phase 2 Enrollment and Promotion
 8. launch another vm with nixmox installer, this will eventually become vm2
 9. Use enrollment and discovery to add vm2 using vm1 cluster
 - validate pending status and join to cluster
@@ -54,7 +54,9 @@ test/
 - validate is full full member
 - validate persistence of information
 13. promote vm2 to full-stable.
-14. start vm3 but not in an installer config, as an unjoined same as vm1
+
+### Phase 3 Quorum and Reinstallation
+14. start vm3 but not in an installer config, as an unjoined node same as vm1
 15. have vm3 join by request into the cluster
 16. accept the request via either cluster vm and check that join occurs.
 17. force promote vm3 to full then full-stable
@@ -67,3 +69,16 @@ test/
 - ensure bootstrap came back online
 20. assign vm3 configuration and do fresh installation
 - verify full-stable membership is re-established
+
+### Phase 4 Stress Testing and Destruction
+21. shutdown vm3
+- ensure cluster communication is still stable and quorum is ok
+22. shutdown vm2
+- cluster communication should be down and quorum lost
+23. start vm2 and vm3
+- check that cluster recovers
+TODO:
+- normal removal
+- force removal
+- cluster destruction
+- disaster recovery

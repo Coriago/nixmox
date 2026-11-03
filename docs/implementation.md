@@ -234,8 +234,11 @@ Location: `internal/configuration`
 - provider lifetime is separate from retained-log persistence in `cluster.Logs`; local/OTLP process logs are not automatically retained as host logs
 - `util.Start` supplies no literal-secret redaction list; sensitive structured attributes are masked, but task output cannot be assumed to scrub arbitrary secrets
 
-## planned enrollment and networking
-- `internal/enrollment`: observer-tagged discovery hints, approval, CSR exchange, issuance and rejection records
+## discovery and planned enrollment/networking
+- [discovery model](../internal/discovery/model.go), [storage](../internal/discovery/service.go) and [UDP transport](../internal/discovery/udp.go): bounded IPv4 LAN advertisements on UDP 47890, observer-tagged records, unjoined memory storage and one-minute NATS expiry after joining; disconnected members never fall back to local storage
+- [daemon discovery](../internal/daemon/discovery.go): process-owned listener, active-interface HTTP endpoints, node-key or cluster-CA thumbprints; [HTTP reads](../internal/api/discovery.go) work before and after joining
+- advertisements are untrusted hints, not authentication; enrollment must verify the selected key. `discovery-port = 0` disables discovery; host firewall policy must allow the configured UDP port
+- `internal/enrollment` remains planned: approval, CSR exchange, issuance and rejection records
 - `internal/network`: endpoint publication and preferred connection candidates; local installer Wi-Fi scanning/configuration
 - these packages are intended boundaries, not implemented services
 
@@ -297,7 +300,10 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - `test-runtime`: cluster creation and cold restart
 - `test-configurations`: recipe/configuration/API usage and lifecycle checks
 - `test-installers`: installer examples and CLI/API/NATS wiring plus affected packages; no reboot, kexec or disk operations
-- `e2e-phase1` runs independently; `e2e-phase2` runs phase 1 first and inherits its live VM1. Add `--keep-vms` to retain guests on success/failure; `e2e-stop RUN_DIRECTORY` explicitly stops the suite. A retained phase-1-only run can continue with `e2e-phase2 --resume RUN_DIRECTORY`.
+- `e2e-phase1` runs independently; `e2e-phase2` inherits its live VM1. Phase 3 is separated into `phase3.nu` and `e2e-phase3`, but VM3/quorum/kexec acceptance is still explicitly blocked. The additional stress/destruction work in `test/plan.md` remains planned.
+- `--keep-vms` retains guests and the sole suite collector on success/failure; `e2e-stop RUN_DIRECTORY` stops them. Resume is explicit: `e2e-phase1 --resume RUN_DIRECTORY --after baseline-submitted --keep-vms` or `e2e-phase2 --resume RUN_DIRECTORY --after vm2-discovered --keep-vms`. To enter phase 2 after completed phase 1, select `--after phase1-complete`.
+- Each phase uses named Nushell functions and an ordered checkpoint/artifact list. `checkpoint.json` records the last successfully completed step, atomically, after assertions. `--after` is selected by the operator, not inferred from that file; unknown names and missing prerequisite artifacts fail before infrastructure changes. Retained processes/daemon IDs are checked, but the operator must inspect partial mutations, active tasks and discovery freshness before choosing a checkpoint. There is no automatic recovery or reconciliation.
+- Resume reuses the saved CLI, topology, collector and VM processes; it does not rebuild or restart retained guests. Updating the CLI or daemon after code changes is a separate operator action. Deployment-submitted checkpoints preserve task IDs, so resumed waits follow existing tasks instead of resubmitting them.
 - phase-1 VM validation passes unjoined startup, cluster/full-stable/bootstrap, credential/cache readiness, streamed telemetry, real GitHub rootDir/discovery, baseline deployment and recipe-backed testpkg activation; current fixtures are published on `dev/e2e-phase2`
 - `test-ui`: shared UI examples and HTTP workflows
 - `test-build-monitor`: real Nix build, retained logs, SSE and shared monitor
@@ -322,9 +328,10 @@ Checked against the working tree on 2026-11-03, including uncommitted files.
 - passed `nix develop -c just test`, including daemon cold restart and the bootstrap PoC
 - passed `nix develop -c just test-registry test-cache test-build-monitor` with real Nix operations enabled
 - `e2e-phase1` additionally validates the booted NixOS module and two real local deployments on a private bootloader-backed disk, including executing the installed test package
-- `test-host-recipe` renders one reusable host recipe with two configuration input sets and evaluates both generated NixOS systems; its sample hardware observations are template-test data, not live collection evidence
-- phase-2 host differences live in `test/configurations`, are submitted through configuration create/update, and use daemon-collected host/disk choices and raw hardware output; the runner supplies only VM devices, private disks and network wiring
-- phase 2 remains incomplete: discovery/enrollment routes and remote disk/hardware collection are missing, so its acceptance script must fail rather than substitute SSH observations or manually enroll guests
+- `test/vms.json` centralizes static machine wiring and recipe configuration inputs; configuration creation reuses the machine key as its name and the wired NIC MAC, then uses daemon-collected host/disk choices and raw hardware output
+- the Nushell configuration workflow checks rendered files and retained hardware; VM3 currently has planned static settings but no boot package or launch workflow
+- phase 2 remains incomplete: enrollment routes and remote disk/hardware collection are missing, so its acceptance script must fail rather than substitute SSH observations or manually enroll guests
+- the shared guest LAN uses QEMU hub/socket links only; VM1's configuration supplies standard DHCP. Each guest retains separate user-mode NAT for management/internet, avoiding SLIRP processing guest-to-guest traffic
 - these checks do not validate multi-host enrollment, fresh installation, physical hardware or interactive browser/terminal behavior
 
 ## maintenance
