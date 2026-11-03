@@ -36,11 +36,9 @@ func Start(ctx context.Context, c Config) (shutdown func(context.Context) error,
 	if c.InstanceID != "" {
 		attributes = append(attributes, attribute.String("service.instance.id", c.InstanceID))
 	}
-	res, err := resource.New(ctx, resource.WithHost(), resource.WithHostID(), resource.WithFromEnv(), resource.WithAttributes(attributes...))
-	if err != nil && !errors.Is(err, resource.ErrPartialResource) {
-		return nil, err
-	}
-	err = nil
+	// Resource detection is best-effort (e.g. Nix build sandboxes have no host ID).
+	// Exporter initialization errors below remain fatal.
+	res, resourceErr := resource.New(ctx, resource.WithHost(), resource.WithHostID(), resource.WithFromEnv(), resource.WithAttributes(attributes...))
 	traceOptions := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
 	metricOptions := []sdkmetric.Option{sdkmetric.WithResource(res)}
 	logOptions := []sdklog.LoggerProviderOption{sdklog.WithResource(res)}
@@ -91,6 +89,9 @@ func Start(ctx context.Context, c Config) (shutdown func(context.Context) error,
 		c.Output = os.Stderr
 	}
 	local := Configure(c.Output, otelslog.NewHandler("nixmox", otelslog.WithLoggerProvider(logs)), nil)
+	if resourceErr != nil {
+		local.Debug("partial telemetry resource", "error", resourceErr)
+	}
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { local.Error("telemetry export failed", "error", err) }))
 	return shutdown, nil
 }
