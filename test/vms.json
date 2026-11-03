@@ -1,6 +1,4 @@
 {
-  "subnet": "192.168.77.0/24",
-  "dhcpStart": "192.168.77.100",
   "machines": {
     "vm1": {
       "package": "vm1",
