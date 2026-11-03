@@ -16,7 +16,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          vendorHash = "sha256-1Ya+vSHR1DJiTPZhUiEb3bIBnOctACtyaIzZqWAIkkI=";
+          vendorHash = "sha256-bL0fs4e7Lfx0bNcbh7BcT1UUqnf+xwWxCfllYO8IYXw=";
         in
         {
           installer = installers.${system}.general.iso.config.system.build.isoImage;
