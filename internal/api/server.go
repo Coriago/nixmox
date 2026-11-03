@@ -12,6 +12,7 @@ import (
 	"nixmox/internal/cluster"
 	"nixmox/internal/configuration"
 	"nixmox/internal/credentials"
+	"nixmox/internal/deployment"
 	"nixmox/internal/domain"
 	"nixmox/internal/installer"
 	"nixmox/internal/recipe"
@@ -20,6 +21,8 @@ import (
 )
 
 type Services struct {
+	Deployments    *deployment.Service
+	Metrics        cluster.Metrics
 	Credentials    cluster.Store[credentials.Record]
 	CachePublicKey string
 	Cluster        cluster.Store[domain.Cluster]
@@ -73,6 +76,7 @@ func (s Server) Handler() http.Handler {
 	})
 	s.registerClusterRoutes(router, clustered)
 	registerHostRoutes(clustered)
+	registerDeploymentRoutes(clustered)
 	registerInstallerRoutes(clustered)
 	registerRepositoryRoutes(clustered)
 	registerRecipeRoutes(clustered)

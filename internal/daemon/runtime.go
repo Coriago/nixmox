@@ -28,6 +28,7 @@ import (
 	"nixmox/internal/cluster"
 	"nixmox/internal/configuration"
 	"nixmox/internal/credentials"
+	"nixmox/internal/deployment"
 	"nixmox/internal/domain"
 	"nixmox/internal/host"
 	"nixmox/internal/identity"
@@ -570,7 +571,13 @@ func (r *Runtime) start(saved startup) (err error) {
 		Run:            (host.Process{}).Run,
 	}
 
+	deployments := &deployment.Service{HostID: member.NodeID, Configurations: configurationService, Members: members, Tasks: manager, Builder: builder}
+	manager.Runners["deployment"] = deployments.Runner
+	manager.Runners["configuration-build"] = deployments.Build
+	metrics := cluster.Metrics{Connection: nc}
 	svc := &api.Services{
+		Metrics:        metrics,
+		Deployments:    deployments,
 		Credentials:    credentialStore,
 		CachePublicKey: local.PublicKey(),
 		Cluster:        clusterStore,
@@ -606,6 +613,7 @@ func (r *Runtime) start(saved startup) (err error) {
 	r.status = "online"
 	r.mu.Unlock()
 	success = true
+	r.workers.Go(func() { host.Metrics(r.lifetime, member.NodeID, metrics) })
 	r.workers.Go(func() {
 		if err := manager.Run(r.lifetime); err != nil && r.lifetime.Err() == nil {
 			select {

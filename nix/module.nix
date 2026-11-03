@@ -111,6 +111,8 @@ in
     environment.systemPackages = [ cfg.package ];
     systemd.services.nixmox = {
       description = "Nixmox host-management daemon";
+      # Deployment must not kill its own task runner. Updates restart explicitly.
+      restartIfChanged = false;
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [

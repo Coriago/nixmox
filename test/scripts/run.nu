@@ -3,7 +3,7 @@
 use helpers.nu [guest]
 
 def main [
-    --ref: string = "dev/rewrite-foundation"
+    --ref: string = "dev/e2e-phase1"
     --repository: string = "https://github.com/Coriago/nixmox.git"
 ] {
     do --capture-errors { ^python3 -c 'import socket; sockets = [socket.socket(), socket.socket()]; [s.bind(("127.0.0.1", p)) for s, p in zip(sockets, [22221, 18081])]' }

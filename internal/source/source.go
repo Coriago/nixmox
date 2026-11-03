@@ -20,6 +20,7 @@ import (
 )
 
 type Repository struct {
+	RootDir      string `json:"rootDir"`
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	URL          string `json:"url"`
@@ -29,14 +30,18 @@ type Repository struct {
 }
 
 type Pin struct {
-	ID  string `json:"id"`
-	Ref string `json:"ref"`
-	SHA string `json:"sha"`
+	RootDir string `json:"rootDir,omitempty"`
+	ID      string `json:"id"`
+	Ref     string `json:"ref"`
+	SHA     string `json:"sha"`
 }
 
 var commitHash = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func (p Pin) Validate() error {
+	if p.RootDir != "" && !filepath.IsLocal(p.RootDir) {
+		return errors.New("repository root must be relative")
+	}
 	if p.ID == "" || p.Ref == "" || !commitHash.MatchString(p.SHA) {
 		return errors.New("repository ID, reference and full immutable commit SHA required")
 	}
@@ -50,13 +55,22 @@ type Manager struct {
 	Auth func(context.Context, Repository) ([]client.Option, error)
 }
 
+func (r Repository) Pin() Pin { return Pin{ID: r.ID, Ref: r.Ref, SHA: r.SHA, RootDir: r.RootDir} }
+
 type Worktree struct {
-	Path       string
-	Repository *git.Repository
-	Pin        Pin
+	checkoutPath string
+	Path         string
+	Repository   *git.Repository
+	Pin          Pin
 }
 
-func (w *Worktree) Close() error { return os.RemoveAll(w.Path) }
+func (w *Worktree) Close() error {
+	path := w.checkoutPath
+	if path == "" {
+		path = w.Path
+	}
+	return os.RemoveAll(path)
+}
 
 func (m Manager) clone(ctx context.Context, repo Repository) (*Worktree, error) {
 	if strings.TrimSpace(repo.URL) == "" || repo.Ref == "" {
@@ -116,10 +130,16 @@ func (m Manager) clone(ctx context.Context, repo Repository) (*Worktree, error) 
 		return nil, err
 	}
 	success = true
-	return &Worktree{Path: path, Repository: repository}, nil
+	return &Worktree{Path: path, checkoutPath: path, Repository: repository}, nil
 }
 
 func (m Manager) Refresh(ctx context.Context, repo Repository) (Repository, error) {
+	if repo.RootDir == "" {
+		repo.RootDir = "."
+	}
+	if !filepath.IsLocal(repo.RootDir) {
+		return repo, errors.New("repository root must be relative")
+	}
 	ctx, span := otel.Tracer("nixmox.source").Start(ctx, "source.refresh")
 	defer span.End()
 	work, err := m.clone(ctx, repo)
@@ -165,6 +185,13 @@ func (m Manager) Checkout(ctx context.Context, repo Repository, pin Pin) (*Workt
 	}
 	if err = tree.Checkout(&git.CheckoutOptions{Hash: hash}); err != nil {
 		return nil, err
+	}
+	if pin.RootDir != "" {
+		directory, err := work.Directory(pin.RootDir)
+		if err != nil {
+			return nil, err
+		}
+		work.Path = directory
 	}
 	work.Pin = pin
 	success = true

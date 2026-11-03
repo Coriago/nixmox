@@ -209,10 +209,11 @@ func listAll[T any](ctx context.Context, store cluster.Store[T]) ([]T, error) {
 
 func (c Collector) repository(ctx context.Context, value any) (source.Repository, source.Pin, error) {
 	var requested struct {
-		ID  string `json:"id"`
-		URL string `json:"url"`
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		RootDir string `json:"rootDir"`
+		ID      string `json:"id"`
+		URL     string `json:"url"`
+		Ref     string `json:"ref"`
+		SHA     string `json:"sha"`
 	}
 	var repo source.Repository
 	var pin source.Pin
@@ -269,6 +270,9 @@ func (c Collector) repository(ctx context.Context, value any) (source.Repository
 		}
 		requested.SHA = refreshed.SHA
 	}
-	pin = source.Pin{ID: repo.ID, Ref: requested.Ref, SHA: requested.SHA}
+	if requested.RootDir == "" {
+		requested.RootDir = repo.RootDir
+	}
+	pin = source.Pin{ID: repo.ID, Ref: requested.Ref, SHA: requested.SHA, RootDir: requested.RootDir}
 	return repo, pin, pin.Validate()
 }

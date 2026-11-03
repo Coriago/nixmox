@@ -1,6 +1,6 @@
 {
   description = "Nixmox CLI E2E GitOps fixture";
-  inputs.nixmox.url = "github:Coriago/nixmox/dev/rewrite-foundation";
+  inputs.nixmox.url = "github:Coriago/nixmox/dev/e2e-phase1";
   inputs.nixpkgs.follows = "nixmox/nixpkgs";
   outputs = { nixpkgs, nixmox, ... }:
     let

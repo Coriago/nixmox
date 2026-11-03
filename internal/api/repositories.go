@@ -30,6 +30,14 @@ func registerRepositoryRoutes(clustered *gin.RouterGroup) {
 			fail(c, err)
 			return
 		}
+		if _, err = services(c).Registry.Register(c.Request.Context(), repo, "."); err != nil {
+			fail(c, err)
+			return
+		}
+		if err = services(c).Recipes.Discover(c.Request.Context(), repo); err != nil {
+			fail(c, err)
+			return
+		}
 		c.JSON(201, repo)
 	})
 	clustered.POST("/repos/:id/refresh", func(c *gin.Context) {

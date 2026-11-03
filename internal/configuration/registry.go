@@ -58,7 +58,7 @@ func (r Registry) Register(ctx context.Context, repo source.Repository, flakeDir
 	if flakeDir == "" {
 		flakeDir = "."
 	}
-	pin := source.Pin{ID: repo.ID, Ref: repo.Ref, SHA: repo.SHA}
+	pin := repo.Pin()
 	names, err := r.names(ctx, repo, pin, flakeDir)
 	if err != nil {
 		return nil, err
@@ -103,7 +103,8 @@ func (r Registry) Refresh(ctx context.Context, id string) (Version, error) {
 	if err != nil {
 		return Version{}, err
 	}
-	pin := source.Pin{ID: repo.ID, Ref: repo.Ref, SHA: repo.SHA}
+	pin := current.TargetRepo
+	pin.SHA = repo.SHA
 	names, err := r.names(ctx, repo, pin, current.FlakeDir)
 	if err != nil {
 		return Version{}, err

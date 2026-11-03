@@ -10,6 +10,20 @@ import (
 )
 
 func registerHostRoutes(clustered *gin.RouterGroup) {
+	clustered.GET("/hosts/:id/metrics/stream", func(c *gin.Context) {
+		svc := services(c)
+		if svc.Metrics.Connection == nil {
+			c.Status(503)
+			return
+		}
+		if _, err := svc.Members.Get(c.Request.Context(), c.Param("id")); err != nil {
+			fail(c, err)
+			return
+		}
+		sse(c, func(send func(string, uint64, any) error) error {
+			return svc.Metrics.Follow(c.Request.Context(), c.Param("id"), func(data json.RawMessage) error { return send("metrics", 0, data) })
+		})
+	})
 	clustered.GET("/hosts", func(c *gin.Context) {
 		list(c, services(c).Members)
 	})

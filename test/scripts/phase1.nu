@@ -5,7 +5,7 @@ use helpers.nu [guest wait-task record]
 def main [
     run: path
     --repository: string = "https://github.com/Coriago/nixmox.git"
-    --ref: string = "dev/rewrite-foundation"
+    --ref: string = "dev/e2e-phase1"
 ] {
     let endpoint = "http://127.0.0.1:18081"
     let health = (^nixmox --endpoint $endpoint --json health | from json)
@@ -58,6 +58,8 @@ def main [
     let repo = (^nixmox --endpoint $endpoint --json repo add --file ($run | path join "repository.json") | from json)
     record $run "06-repository" $repo
     assert equal $repo.rootDir "test/repo"
+    let discovered = (^nixmox --endpoint $endpoint --json recipe list | from json)
+    assert ("testpkg" in $discovered.items.name)
     let configurations = (^nixmox --endpoint $endpoint --json configuration list | from json)
     let initial = ($configurations.items | where name == "vm1" | first)
     do --capture-errors { ^nixmox --endpoint $endpoint host configuration $node --configuration $initial.id --version $initial.version }
@@ -74,7 +76,8 @@ def main [
         targetRepo: {id: $repo.id, ref: $repo.ref, sha: $repo.sha, rootDir: "test/repo"}
         fields: {}
     }
-    let configured = (^nixmox --endpoint $endpoint --json configuration create --data ($inputs | to json -r) | from json)
+    let created = (^nixmox --endpoint $endpoint --json configuration create --data ($inputs | to json -r) | from json)
+    let configured = (^nixmox --endpoint $endpoint --json configuration observe $created.id --version $created.version | from json)
     do --capture-errors { ^nixmox --endpoint $endpoint host configuration $node --configuration $configured.id --version $configured.version }
     let changed = (^nixmox --endpoint $endpoint --json deploy --host $node --configuration $configured.id --version $configured.version --approve | from json)
     record $run "08-recipe-deployment" (wait-task $endpoint $changed.id)

@@ -61,6 +61,12 @@ func (b Builder) Run(ctx context.Context, input BuildInput) (BuildResult, error)
 	if err != nil {
 		return result, err
 	}
+	return b.BuildPath(ctx, resolved, input.Installable)
+}
+
+// BuildPath builds an explicitly prepared directory without another checkout.
+func (b Builder) BuildPath(ctx context.Context, directory, installable string) (BuildResult, error) {
+	var result BuildResult
 	args := []string{"build", "--json", "--no-link", "--print-build-logs", "--log-format", "internal-json"}
 	if b.CacheURL != "" {
 		if _, err := signature.ParsePublicKey(b.CachePublicKey); err != nil {
@@ -68,8 +74,8 @@ func (b Builder) Run(ctx context.Context, input BuildInput) (BuildResult, error)
 		}
 		args = append(args, "--extra-substituters", b.CacheURL, "--extra-trusted-public-keys", b.CachePublicKey)
 	}
-	args = append(args, "path:"+resolved+"#"+input.Installable)
-	data, err := b.Process.Run(ctx, work.Path, nil, "nix", args...)
+	args = append(args, "path:"+directory+"#"+installable)
+	data, err := b.Process.Run(ctx, directory, nil, "nix", args...)
 	if err != nil {
 		return result, fmt.Errorf("Nix build failed: %w", err)
 	}
