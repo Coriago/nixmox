@@ -6,6 +6,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
+	systemhost "github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	network "github.com/shirou/gopsutil/v4/net"
 	collect "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -46,9 +47,26 @@ func Metrics(ctx context.Context, id string, transport cluster.Metrics) {
 func sampleMetrics(ctx context.Context, id string) ([]byte, error) {
 	now := uint64(time.Now().UnixNano())
 	values := []*metrics.Metric{}
+	grouped := map[string]*metrics.Metric{}
+	boot, err := systemhost.BootTimeWithContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	add := func(name, unit string, value float64, counter bool, attrs ...*common.KeyValue) {
 		point := &metrics.NumberDataPoint{TimeUnixNano: now, Attributes: attrs, Value: &metrics.NumberDataPoint_AsDouble{AsDouble: value}}
+		if counter {
+			point.StartTimeUnixNano = boot * uint64(time.Second)
+		}
+		if metric, ok := grouped[name]; ok {
+			if counter {
+				metric.GetSum().DataPoints = append(metric.GetSum().DataPoints, point)
+			} else {
+				metric.GetGauge().DataPoints = append(metric.GetGauge().DataPoints, point)
+			}
+			return
+		}
 		metric := &metrics.Metric{Name: name, Unit: unit}
+		grouped[name] = metric
 		if counter {
 			metric.Data = &metrics.Metric_Sum{Sum: &metrics.Sum{AggregationTemporality: metrics.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, IsMonotonic: true, DataPoints: []*metrics.NumberDataPoint{point}}}
 		} else {

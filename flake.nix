@@ -16,7 +16,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          vendorHash = "sha256-bL0fs4e7Lfx0bNcbh7BcT1UUqnf+xwWxCfllYO8IYXw=";
+          vendorHash = "sha256-CRrp7dBC+fy37Y/0PAdQOism0DuKM2sns1SJGFFFRyA=";
         in
         {
           installer = installers.${system}.general.iso.config.system.build.isoImage;
@@ -26,7 +26,11 @@
           default = pkgs.buildGoModule {
             pname = "nixmox";
             version = "0.1.0-dev";
-            src = self;
+            # Fixture/docs changes must not rebuild the daemon deployed by tests.
+            src = nixpkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = nixpkgs.lib.fileset.unions [ ./go.mod ./go.sum ./cmd ./internal ./poc ];
+            };
             inherit vendorHash;
             nativeCheckInputs = [
               pkgs.sops
