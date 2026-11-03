@@ -7,5 +7,6 @@ def main [run: path] {
     if not ($processes.stdout | str contains $run) {
         error make {msg: "Refusing to stop a session that no longer belongs to this run"}
     }
-    ^kill --signal TERM -- $"-($session)"
+    # Avoid platform-dependent negative-PID parsing in external kill utilities.
+    ^python3 -c 'import os, signal, sys; os.killpg(int(sys.argv[1]), signal.SIGTERM)' ($session | into string)
 }

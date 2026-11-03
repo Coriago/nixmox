@@ -14,6 +14,7 @@ import (
 	"nixmox/internal/cluster"
 	"nixmox/internal/installer"
 	"nixmox/internal/recipe"
+	"nixmox/internal/util"
 )
 
 func requestLimit(c *gin.Context) (int, bool) {
@@ -68,6 +69,9 @@ func fail(c *gin.Context, err error) {
 	if errors.Is(err, jetstream.ErrKeyExists) {
 		status = 409
 		message = "record changed; refresh and retry"
+	}
+	if status >= 500 {
+		util.From(c.Request.Context()).Error("API operation failed", "error", util.Error(err))
 	}
 	c.JSON(status, gin.H{"error": message})
 }

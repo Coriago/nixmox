@@ -54,7 +54,7 @@ func New(endpoint string, httpClient *http.Client) (*Client, error) {
 		transport = httpClient.Transport
 	} else {
 		configured := http.DefaultTransport.(*http.Transport).Clone()
-		configured.ResponseHeaderTimeout = 10 * time.Second
+		configured.ResponseHeaderTimeout = 3 * time.Minute
 		transport = configured
 	}
 	copyClient.Transport = otelhttp.NewTransport(transport)
@@ -86,7 +86,11 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 }
 
 func (c *Client) Do(ctx context.Context, method, path string, input, output any) error {
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	timeout := 45 * time.Second
+	if method != http.MethodGet && method != http.MethodHead {
+		timeout = 3 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var data []byte
 	var err error
