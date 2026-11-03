@@ -1590,4 +1590,4 @@ bootstrap:
 - reinstall of the last full-stable host; another full-stable member must preserve the cluster.
 
 ## daemon components and flow
-See [implementation-components.md](implementation-components.md) for implementation responsibilities and [cli-api-reference.md](cli-api-reference.md) for commands and API routes.
+See [implementation.md](implementation.md) for implementation responsibilities and [cli-api-reference.md](cli-api-reference.md) for commands and API routes.
