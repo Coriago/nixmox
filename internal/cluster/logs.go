@@ -19,6 +19,7 @@ const LogRetention = 5 * 24 * time.Hour
 var subjectID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 type Logs struct{ JS jetstream.JetStream }
+
 type LogEntry struct {
 	Sequence uint64          `json:"sequence"`
 	Time     time.Time       `json:"time"`
@@ -34,7 +35,13 @@ func LogSubject(kind, id string) (string, error) {
 
 // Provision is called by the cluster coordinator, not by individual log writers.
 func (l Logs) Provision(ctx context.Context, replicas int) error {
-	_, err := l.JS.CreateStream(ctx, jetstream.StreamConfig{Name: "LOGS", Subjects: []string{"logs.host.*", "logs.task.*"}, Storage: jetstream.FileStorage, Replicas: replicas, MaxAge: LogRetention})
+	_, err := l.JS.CreateStream(ctx, jetstream.StreamConfig{
+		Name:     "LOGS",
+		Subjects: []string{"logs.host.*", "logs.task.*"},
+		Storage:  jetstream.FileStorage,
+		Replicas: replicas,
+		MaxAge:   LogRetention,
+	})
 	return err
 }
 
@@ -75,7 +82,12 @@ func (l Logs) Follow(ctx context.Context, kind, id string, after uint64, handle 
 	if err != nil {
 		return err
 	}
-	consumer, err := stream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{FilterSubjects: []string{subject}, DeliverPolicy: jetstream.DeliverByStartSequencePolicy, OptStartSeq: after + 1, InactiveThreshold: time.Minute})
+	consumer, err := stream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
+		FilterSubjects:    []string{subject},
+		DeliverPolicy:     jetstream.DeliverByStartSequencePolicy,
+		OptStartSeq:       after + 1,
+		InactiveThreshold: time.Minute,
+	})
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	builds "nixmox/internal/ui/components/build/terminal"
 	"nixmox/internal/ui/components/button"
 	buttons "nixmox/internal/ui/components/button/terminal"
 	confirmation "nixmox/internal/ui/components/confirmation/terminal"
@@ -86,6 +87,8 @@ func (m *Model) contentPage() page {
 	controls(v.Toolbar, false)
 	for _, block := range v.Blocks {
 		switch block.Kind {
+		case views.Build:
+			add(builds.Render(v.Theme, *block.Build, w))
 		case views.Forms:
 			add(p.Text("accent", block.Form.Title))
 			add(p.Text("muted", ansi.Wrap(block.Form.Note, w, "")))
@@ -98,7 +101,7 @@ func (m *Model) contentPage() page {
 				if field.Kind == "password" {
 					value = "hidden input"
 				}
-				controls([]button.Model{{Label: field.Label + ": " + value, Action: views.Action{Kind: "form-field", ID: field.ID}}}, false)
+				controls([]button.Model{{Label: field.Label + ": " + value, Disabled: block.Form.Disabled, Action: views.Action{Kind: "form-field", ID: field.ID}}}, false)
 			}
 		case views.Heading:
 			add(p.Text("muted", style.Fit(v.Breadcrumb, w)))

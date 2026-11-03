@@ -1,4 +1,4 @@
-package source_test
+package configuration_test
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/nats-io/nats.go/jetstream"
 	"nixmox/internal/cluster"
+	"nixmox/internal/configuration"
 	"nixmox/internal/host"
 	"nixmox/internal/source"
 	"nixmox/internal/testutil"
@@ -31,7 +32,7 @@ func TestConfigurationRegistry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	configurations, err := cluster.OpenStore[source.Configuration](ctx, js, "CONFIGURATIONS")
+	configurations, err := cluster.OpenStore[configuration.Version](ctx, js, "CONFIGURATIONS")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,14 @@ func TestConfigurationRegistry(t *testing.T) {
 	if _, err = repos.Create(ctx, repo.ID, repo); err != nil {
 		t.Fatal(err)
 	}
-	registry := source.Registry{Sources: source.Manager{Root: filepath.Join(root, "worktrees")}, Repositories: repos, Configurations: configurations, Run: (host.Process{}).Run}
+	registry := configuration.Registry{
+		Sources:      source.Manager{Root: filepath.Join(root, "worktrees")},
+		Repositories: repos,
+		Configurations: &configuration.Service{
+			Repository: configuration.Repository{Records: configurations},
+		},
+		Run: (host.Process{}).Run,
+	}
 
 	// --- Usage ---
 	// -------------
@@ -83,7 +91,7 @@ func TestConfigurationRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err := configurations.Get(ctx, initial[0].ID)
+	unchanged, err := registry.Configurations.Get(ctx, initial[0].ID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +105,10 @@ func TestConfigurationRegistry(t *testing.T) {
 	if len(initial) != 1 || len(discovered) != 2 {
 		t.Fatal("configuration discovery failed")
 	}
-	if unchanged.Value.TargetRepo.SHA != first || refreshed.TargetRepo.SHA != latest {
+	if initial[0].Schema != unchanged.Schema {
+		t.Fatal("registration returned a different schema from the stored version")
+	}
+	if unchanged.TargetRepo.SHA != first || refreshed.TargetRepo.SHA != latest {
 		t.Fatal("repository discovery moved an existing deployment pin without explicit refresh")
 	}
 }

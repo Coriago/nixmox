@@ -34,8 +34,8 @@ func Cycle(index, step, count int) int {
 }
 
 func Active(state string) bool {
-	switch domain.TaskState(state) {
-	case domain.Running, domain.Cancelling:
+	switch domain.TaskStatus(state) {
+	case domain.Queued, domain.Running:
 		return true
 	}
 	return false

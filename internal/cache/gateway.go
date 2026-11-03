@@ -38,8 +38,18 @@ func NewGateway() *Gateway {
 		}
 		return &idleConn{Conn: conn, timeout: 30 * time.Second}, nil
 	}
-	return &Gateway{transport: transport, client: &http.Client{Transport: transport, Timeout: 30 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	return &Gateway{
+		transport: transport,
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   30 * time.Minute,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+	}
 }
+
 func (g *Gateway) Close() { g.transport.CloseIdleConnections() }
 
 func (g *Gateway) ReplacePeers(peers []Peer) error {

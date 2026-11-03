@@ -3,6 +3,7 @@
 package browser
 
 import (
+	build "nixmox/internal/ui/components/build/browser"
 	button "nixmox/internal/ui/components/button/browser"
 	confirmation "nixmox/internal/ui/components/confirmation/browser"
 	logs "nixmox/internal/ui/components/log/browser"
@@ -15,4 +16,4 @@ import (
 )
 
 // Component styles travel with their adapters; shell rules only place views.
-var styles = theme.CSS + button.CSS + section.CSS + table.CSS + progress.CSS + telemetry.CSS + confirmation.CSS + logs.CSS + search.CSS + stylesheet
+var styles = build.CSS + theme.CSS + button.CSS + section.CSS + table.CSS + progress.CSS + telemetry.CSS + confirmation.CSS + logs.CSS + search.CSS + stylesheet

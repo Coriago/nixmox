@@ -3,6 +3,7 @@ package browser
 import (
 	"github.com/maxence-charriere/go-app/v11/pkg/app"
 
+	builds "nixmox/internal/ui/components/build/browser"
 	buttons "nixmox/internal/ui/components/button/browser"
 	confirmation "nixmox/internal/ui/components/confirmation/browser"
 	forms "nixmox/internal/ui/components/form/browser"
@@ -68,6 +69,8 @@ func (c *Component) page(v views.View) app.UI {
 }
 func (c *Component) block(v views.View, b views.Block) app.UI {
 	switch b.Kind {
+	case views.Build:
+		return builds.Render(*b.Build)
 	case views.Forms:
 		return forms.Render(*b.Form, c.core.SetFormValue, c.core.SetFormSecret, func(message string) { c.core.Notice = message })
 	case views.Heading:

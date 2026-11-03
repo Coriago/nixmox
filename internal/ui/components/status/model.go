@@ -1,42 +1,37 @@
+// Package status maps observed states to presentation, without inventing health.
 package status
 
-import (
-	"nixmox/internal/domain"
-	"nixmox/internal/ui"
-)
-
-func MembershipTone(state string) string {
-	switch domain.Membership(state) {
-	case domain.Pending:
-		return "warning"
-	case domain.Full:
-		return "success"
-	case domain.Removed:
-		return "danger"
-	}
-	return "muted"
-}
+import "nixmox/internal/ui"
 
 func Marker(state string, frame uint64, reduced bool) (string, string) {
 	if ui.Active(state) {
 		if reduced {
-			return "●", "running"
+			return "◐", "accent"
 		}
-		return []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}[(frame/3)%10], "running"
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		return frames[(frame/4)%uint64(len(frames))], "accent"
 	}
 	switch state {
-	case string(domain.Online):
+	case "succeeded", "online", "healthy":
 		return "●", "success"
-	case "succeeded":
-		return "✓", "success"
-	case "offline", "unknown":
-		return "○", "muted"
-	case "blocked", "stale":
-		return "◌", "warning"
-	case "failed":
+	case "failed", "unhealthy":
 		return "×", "danger"
-	case "cancelled":
-		return "−", "muted"
+	case "manual-review", "unknown", "disconnected", "stale":
+		return "!", "warning"
+	case "cancelled", "removed":
+		return "–", "muted"
+	default:
+		return "○", "muted"
 	}
-	return "·", "muted"
+}
+
+func MembershipTone(state string) string {
+	switch state {
+	case "full-stable", "full":
+		return "success"
+	case "pending":
+		return "warning"
+	default:
+		return "muted"
+	}
 }

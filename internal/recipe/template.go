@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 	"text/template"
 	"text/template/parse"
@@ -30,6 +32,7 @@ func (b *boundedText) Write(data []byte) (int, error) {
 func parseTemplate(text string) (*template.Template, error) {
 	return template.New("recipe").Option("missingkey=error").Parse(text)
 }
+
 func singleAction(t *template.Template) *parse.ActionNode {
 	var action *parse.ActionNode
 	for _, node := range t.Tree.Root.Nodes {
@@ -103,7 +106,7 @@ func Evaluate(ctx context.Context, value, data any) (any, error) {
 		return result, nil
 	case map[string]any:
 		result := make(map[string]any, len(value))
-		for _, key := range keys(value) {
+		for _, key := range slices.Sorted(maps.Keys(value)) {
 			resolved, err := Evaluate(ctx, value[key], data)
 			if err != nil {
 				return nil, err

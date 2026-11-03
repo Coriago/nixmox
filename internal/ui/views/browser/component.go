@@ -3,6 +3,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/maxence-charriere/go-app/v11/pkg/app"
@@ -20,6 +21,7 @@ type Component struct {
 	core         *views.Model
 	cancel       context.CancelFunc
 	connection   *views.Connection
+	api          *client.Client
 	selection    views.Selection
 	logView      logs.View
 	confirmation confirmation.Controller
@@ -42,6 +44,7 @@ func (c *Component) OnMount(ctx app.Context) {
 		c.core.Apply(views.Update{Err: err})
 		return
 	}
+	c.api = api
 	c.connection = views.NewConnection(api)
 	ctx.Async(func() {
 		c.connection.Run(life, func(update views.Update) {
@@ -82,6 +85,9 @@ func (c *Component) OnMount(ctx app.Context) {
 	})
 }
 func (c *Component) OnDismount() {
+	if c.api != nil {
+		c.api.Close()
+	}
 	if c.core != nil {
 		c.core.Close()
 	}
@@ -125,11 +131,10 @@ func (c *Component) exchange() {
 		c.selection = selection
 		c.connection.Select(selection)
 	}
-	if input := c.core.TakeCredentialSubmission(); input != nil {
-		c.connection.Import(*input)
-	}
 	if command := c.core.TakeCommand(); command != nil {
-		c.connection.Submit(*command)
+		if !c.connection.Submit(*command) {
+			c.core.Apply(views.Update{Submitted: true, Err: fmt.Errorf("request queue is full")})
+		}
 	}
 }
 

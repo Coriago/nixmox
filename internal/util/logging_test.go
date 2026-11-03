@@ -32,7 +32,7 @@ func ExampleConfigure() {
 
 	// Attach operation identity once; subsequent logs inherit it.
 	ctx := With(context.Background(), "operation", "install", "node", "worker-1")
-	From(ctx).Info("starting installation!!")
+	From(ctx).Info("starting installation")
 	From(ctx).Warn("rejected demo-key", "token", "demo-key")
 
 	// --- Assertions: go test checks the exact output below ---

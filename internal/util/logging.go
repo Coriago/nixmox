@@ -45,6 +45,7 @@ func Configure(output io.Writer, export slog.Handler, redact []string) *slog.Log
 	slog.SetDefault(slog.New(&safeHandler{Handler: slog.NewMultiHandler(slog.NewJSONHandler(output, nil), export)}))
 	return slog.New(local)
 }
+
 func clean(value string) string {
 	if rules := secrets.Load(); rules != nil {
 		for _, secret := range *rules {
@@ -66,6 +67,7 @@ func Error(err error) error {
 	}
 	return errors.New(clean(err.Error()))
 }
+
 func cleanAttr(a slog.Attr) slog.Attr {
 	key := strings.ToLower(a.Key)
 	for _, sensitive := range []string{"password", "secret", "token", "private_key", "authorization", "cookie", "payload"} {
@@ -99,12 +101,17 @@ type safeHandler struct{ slog.Handler }
 func (h *safeHandler) Handle(ctx context.Context, r slog.Record) error {
 	record := slog.NewRecord(r.Time, r.Level, clean(r.Message), r.PC)
 	count := 0
-	r.Attrs(func(a slog.Attr) bool { record.AddAttrs(cleanAttr(a)); count++; return count < 64 })
+	r.Attrs(func(attribute slog.Attr) bool {
+		record.AddAttrs(cleanAttr(attribute))
+		count++
+		return count < 64
+	})
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		record.AddAttrs(slog.String("trace_id", sc.TraceID().String()), slog.String("span_id", sc.SpanID().String()))
 	}
 	return h.Handler.Handle(ctx, record)
 }
+
 func (h *safeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	cleaned := make([]slog.Attr, 0, min(len(attrs), 64))
 	for _, a := range attrs[:min(len(attrs), 64)] {
@@ -112,6 +119,7 @@ func (h *safeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 	return &safeHandler{Handler: h.Handler.WithAttrs(cleaned)}
 }
+
 func (h *safeHandler) WithGroup(group string) slog.Handler {
 	return &safeHandler{Handler: h.Handler.WithGroup(group)}
 }
@@ -124,12 +132,15 @@ type contextHandler struct {
 func (h contextHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return h.Handler.Enabled(h.ctx, level)
 }
+
 func (h contextHandler) Handle(_ context.Context, r slog.Record) error {
 	return h.Handler.Handle(h.ctx, r)
 }
+
 func (h contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return contextHandler{h.Handler.WithAttrs(attrs), h.ctx}
 }
+
 func (h contextHandler) WithGroup(group string) slog.Handler {
 	return contextHandler{h.Handler.WithGroup(group), h.ctx}
 }

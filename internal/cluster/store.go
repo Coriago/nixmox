@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
+
 	"nixmox/internal/util"
 )
 

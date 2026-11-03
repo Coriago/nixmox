@@ -22,9 +22,11 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
+
 	"nixmox/internal/api"
 	"nixmox/internal/cache"
 	"nixmox/internal/cluster"
+	"nixmox/internal/configuration"
 	"nixmox/internal/credentials"
 	"nixmox/internal/domain"
 	"nixmox/internal/host"
@@ -32,11 +34,13 @@ import (
 	"nixmox/internal/recipe"
 	"nixmox/internal/source"
 	"nixmox/internal/task"
+	browser "nixmox/internal/ui/views/browser"
 )
 
 const Version = "0.1.0-dev"
 
 type Config struct {
+	UIAssets           string
 	StateDir           string
 	Name               string
 	Listen             string
@@ -64,6 +68,7 @@ type Runtime struct {
 	mu         sync.RWMutex
 	transition sync.Mutex
 	services   *api.Services
+	ui         http.Handler
 	client     *nats.Conn
 	servers    []*server.Server
 	gateway    *cache.Gateway
@@ -85,6 +90,22 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	}
 	lifetime, cancel := context.WithCancel(ctx)
 	r := &Runtime{config: config, node: node, lifetime: lifetime, cancel: cancel, failures: make(chan error, 1), status: "online", started: time.Now().UTC()}
+	assets := config.UIAssets
+	if assets == "" {
+		if executable, exeErr := os.Executable(); exeErr == nil {
+			candidate := filepath.Join(filepath.Dir(executable), "../share/nixmox-ui")
+			if _, statErr := os.Stat(filepath.Join(candidate, "app.wasm")); statErr == nil {
+				assets = candidate
+			}
+		}
+	}
+	if assets != "" {
+		r.ui, err = browser.Handler(assets)
+		if err != nil {
+			r.Close()
+			return nil, err
+		}
+	}
 	data, err := os.ReadFile(filepath.Join(config.StateDir, "cluster.json"))
 	if err == nil {
 		var saved startup
@@ -100,8 +121,9 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 }
 
 func (r *Runtime) Handler() http.Handler {
-	return (api.Server{Health: r.Health, CreateCluster: r.CreateCluster, Services: r.Services}).Handler()
+	return (api.Server{Health: r.Health, CreateCluster: r.CreateCluster, Services: r.Services, UI: r.ui}).Handler()
 }
+
 func (r *Runtime) Services() (*api.Services, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -110,6 +132,7 @@ func (r *Runtime) Services() (*api.Services, error) {
 	}
 	return r.services, nil
 }
+
 func (r *Runtime) Health(context.Context) domain.Health {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -283,7 +306,24 @@ func (r *Runtime) start(saved startup) (err error) {
 	if err != nil {
 		return err
 	}
-	options := server.Options{ServerName: r.node.State.NodeID, Host: r.config.NATSHost, Port: r.config.NATSPort, JetStream: true, StoreDir: filepath.Join(r.config.StateDir, "nats", "main"), TLSConfig: tlsConfig, TLSVerify: true, TLSMap: true, Users: []*server.User{{Username: "CN=" + r.node.State.NodeID}}, Routes: []*url.URL{bootstrapRoute}, Cluster: server.ClusterOpts{Name: saved.Cluster.ID, Host: r.config.NATSHost, Port: ports[0], TLSConfig: tlsConfig.Clone()}}
+	options := server.Options{
+		ServerName: r.node.State.NodeID,
+		Host:       r.config.NATSHost,
+		Port:       r.config.NATSPort,
+		JetStream:  true,
+		StoreDir:   filepath.Join(r.config.StateDir, "nats", "main"),
+		TLSConfig:  tlsConfig,
+		TLSVerify:  true,
+		TLSMap:     true,
+		Users:      []*server.User{{Username: "CN=" + r.node.State.NodeID}},
+		Routes:     []*url.URL{bootstrapRoute},
+		Cluster: server.ClusterOpts{
+			Name:      saved.Cluster.ID,
+			Host:      r.config.NATSHost,
+			Port:      ports[0],
+			TLSConfig: tlsConfig.Clone(),
+		},
+	}
 	if err = configureAccounts(&options, r.node.State.NodeID); err != nil {
 		return err
 	}
@@ -420,11 +460,11 @@ func (r *Runtime) start(saved startup) (err error) {
 	if err != nil {
 		return fmt.Errorf("open repos: %w", err)
 	}
-	configurations, err := cluster.OpenStore[source.Configuration](ctx, js, "CONFIGURATIONS")
+	configurations, err := cluster.OpenStore[configuration.Version](ctx, js, "CONFIGURATIONS")
 	if err != nil {
 		return fmt.Errorf("open configurations: %w", err)
 	}
-	recipes, err := cluster.OpenStore[recipe.Record](ctx, js, "RECIPES")
+	recipes, err := cluster.OpenStore[recipe.Version](ctx, js, "RECIPES")
 	if err != nil {
 		return fmt.Errorf("open recipes: %w", err)
 	}
@@ -452,13 +492,31 @@ func (r *Runtime) start(saved startup) (err error) {
 		}
 	}
 	sources := source.Manager{Root: filepath.Join(r.config.StateDir, "worktrees")}
-	builder := host.Builder{Sources: sources, Repository: func(ctx context.Context, id string) (source.Repository, error) {
-		record, err := repos.Get(ctx, id)
-		return record.Value, err
-	}}
-	manager := &task.Manager{HostID: member.NodeID, Tasks: tasks, Outputs: outputs, Resources: task.Resources{Store: locks}, Runners: map[string]task.Runner{"build": builder.Runner}}
-	registry := &source.Registry{Sources: sources, Repositories: repos, Configurations: configurations, Run: (host.Process{}).Run}
-	collector := &recipe.Collector{Members: members, Repositories: repos, Sources: sources,
+	builder := host.Builder{
+		Sources: sources,
+		Repository: func(ctx context.Context, id string) (source.Repository, error) {
+			record, err := repos.Get(ctx, id)
+			return record.Value, err
+		},
+	}
+	manager := &task.Manager{
+		HostID:    member.NodeID,
+		Tasks:     tasks,
+		Outputs:   outputs,
+		Logs:      logs,
+		Resources: task.Resources{Store: locks},
+		Runners:   map[string]task.Runner{"build": builder.Runner},
+	}
+
+	recipeService := &recipe.Service{
+		Repository:   recipe.Repository{Records: recipes},
+		Sources:      sources,
+		Repositories: repos,
+	}
+	collector := &configuration.Collector{
+		Members:      members,
+		Repositories: repos,
+		Sources:      sources,
 		CredentialIDs: func(ctx context.Context) ([]string, error) {
 			return credentialStore.KV.Keys(ctx)
 		},
@@ -467,7 +525,33 @@ func (r *Runtime) start(saved startup) (err error) {
 			return record.Value.AgePublicKey, err
 		},
 	}
-	svc := &api.Services{Cluster: clusterStore, Members: members, Repositories: repos, Sources: sources, Configurations: configurations, Registry: registry, Recipes: &recipe.Versions{Records: recipes}, Collector: collector, Tasks: manager, Logs: logs, Cache: gateway, StoreCache: local}
+	configurationService := &configuration.Service{
+		Repository:   configuration.Repository{Records: configurations},
+		Recipes:      recipeService.Repository,
+		Observer:     collector,
+		Sources:      sources,
+		Repositories: repos,
+	}
+	registry := &configuration.Registry{
+		Sources:        sources,
+		Repositories:   repos,
+		Configurations: configurationService,
+		Run:            (host.Process{}).Run,
+	}
+
+	svc := &api.Services{
+		Cluster:        clusterStore,
+		Members:        members,
+		Repositories:   repos,
+		Sources:        sources,
+		Configurations: configurationService,
+		Registry:       registry,
+		Recipes:        recipeService,
+		Tasks:          manager,
+		Logs:           logs,
+		Cache:          gateway,
+		StoreCache:     local,
+	}
 	r.mu.Lock()
 	r.node.State.ClusterID = saved.Cluster.ID
 	r.node.State.Status = "full-stable"

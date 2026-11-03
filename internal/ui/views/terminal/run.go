@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"context"
+	"fmt"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -52,10 +53,9 @@ func (m *Model) exchange() {
 		m.selection = selection
 		m.connection.Select(selection)
 	}
-	if input := m.Core.TakeCredentialSubmission(); input != nil {
-		m.connection.Import(*input)
-	}
 	if command := m.Core.TakeCommand(); command != nil {
-		m.connection.Submit(*command)
+		if !m.connection.Submit(*command) {
+			m.Core.Apply(views.Update{Submitted: true, Err: fmt.Errorf("request queue is full")})
+		}
 	}
 }

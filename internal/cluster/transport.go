@@ -27,7 +27,13 @@ func TLSConfig(certificate, key, ca []byte) (*tls.Config, error) {
 	if !roots.AppendCertsFromPEM(ca) {
 		return nil, errors.New("invalid cluster CA")
 	}
-	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair}, RootCAs: roots, ClientCAs: roots, ClientAuth: tls.RequireAndVerifyClientCert}, nil
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{pair},
+		RootCAs:      roots,
+		ClientCAs:    roots,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+	}, nil
 }
 
 func Connect(endpoints []string, config *tls.Config, nodeID string) (*nats.Conn, error) {
@@ -76,6 +82,7 @@ func StartServer(options server.Options) (*server.Server, error) {
 type headerCarrier struct{ nats.Header }
 
 func (h headerCarrier) Get(key string) string { return h.Header.Get(key) }
+
 func (h headerCarrier) Set(key, value string) { h.Header.Set(key, value) }
 func (h headerCarrier) Keys() []string {
 	keys := make([]string, 0, len(h.Header))

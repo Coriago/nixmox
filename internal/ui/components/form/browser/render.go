@@ -2,7 +2,7 @@ package browser
 
 import (
 	"github.com/maxence-charriere/go-app/v11/pkg/app"
-	"nixmox/internal/domain"
+
 	"nixmox/internal/ui/components/form"
 )
 
@@ -14,7 +14,7 @@ func Render(model form.Model, set func(string, string, string), secret func(stri
 			var input app.UI
 			switch field.Kind {
 			case "select":
-				input = app.Select().Class("query-input").Aria("label", field.Label).OnChange(func(ctx app.Context, e app.Event) { set(model.ID, field.ID, e.Get("target").Get("value").String()) }, app.EventScope(model.ID, field.ID)).Body(
+				input = app.Select().Disabled(model.Disabled).Class("query-input").Aria("label", field.Label).OnChange(func(ctx app.Context, e app.Event) { set(model.ID, field.ID, e.Get("target").Get("value").String()) }, app.EventScope(model.ID, field.ID)).Body(
 					app.Option().Value("").Selected(field.Value == "").Text("Select…"),
 					app.Range(field.Choices).Slice(func(j int) app.UI {
 						choice := field.Choices[j]
@@ -22,14 +22,14 @@ func Render(model form.Model, set func(string, string, string), secret func(stri
 					}),
 				)
 			case "file":
-				input = app.Input().Type("file").Aria("label", field.Label).OnChange(func(ctx app.Context, e app.Event) {
+				input = app.Input().Disabled(model.Disabled).Type("file").Aria("label", field.Label).OnChange(func(ctx app.Context, e app.Event) {
 					secret(model.ID, nil)
 					files := e.Get("target").Get("files")
 					if files.Length() == 0 {
 						return
 					}
 					file := files.Index(0)
-					if file.Get("size").Int() > domain.CommandPayloadLimit {
+					if file.Get("size").Int() > form.InputLimit {
 						notice("Credential file exceeds the size limit")
 						return
 					}
@@ -42,14 +42,18 @@ func Render(model form.Model, set func(string, string, string), secret func(stri
 						})
 					})
 				}, app.EventScope(model.ID, field.ID))
+			case "json":
+				input = app.Textarea().Disabled(model.Disabled).Class("query-input").Rows(14).Aria("label", field.Label).Text(field.Value).OnInput(func(ctx app.Context, e app.Event) {
+					set(model.ID, field.ID, e.Get("target").Get("value").String())
+				}, app.EventScope(model.ID, field.ID))
 			case "password":
-				input = app.Input().Type("password").AutoComplete(false).Class("query-input").Aria("label", field.Label).OnInput(func(ctx app.Context, e app.Event) {
+				input = app.Input().Disabled(model.Disabled).Type("password").AutoComplete(false).Class("query-input").Aria("label", field.Label).OnInput(func(ctx app.Context, e app.Event) {
 					data := []byte(e.Get("target").Get("value").String())
 					defer clear(data)
 					secret(model.ID, data)
 				}, app.EventScope(model.ID, field.ID))
 			default:
-				input = app.Input().Type("text").Class("query-input").Aria("label", field.Label).Value(field.Value).OnInput(func(ctx app.Context, e app.Event) { set(model.ID, field.ID, e.Get("target").Get("value").String()) }, app.EventScope(model.ID, field.ID))
+				input = app.Input().Disabled(model.Disabled).Type("text").Class("query-input").Aria("label", field.Label).Value(field.Value).OnInput(func(ctx app.Context, e app.Event) { set(model.ID, field.ID, e.Get("target").Get("value").String()) }, app.EventScope(model.ID, field.ID))
 			}
 			return app.Div().Body(app.Label().Text(field.Label), input)
 		}),

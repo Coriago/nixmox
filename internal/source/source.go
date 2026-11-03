@@ -33,13 +33,6 @@ type Pin struct {
 	Ref string `json:"ref"`
 	SHA string `json:"sha"`
 }
-type Configuration struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	TargetRepo         Pin    `json:"targetRepo"`
-	FlakeDir           string `json:"flakeDir"`
-	FlakeConfiguration string `json:"flakeConfiguration"`
-}
 
 var commitHash = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
@@ -113,7 +106,12 @@ func (m Manager) clone(ctx context.Context, repo Repository) (*Worktree, error) 
 	if !strings.HasPrefix(repo.Ref, "refs/") {
 		reference = plumbing.NewBranchReferenceName(repo.Ref)
 	}
-	repository, err := git.PlainCloneContext(ctx, path, &git.CloneOptions{URL: repo.URL, ReferenceName: reference, ClientOptions: options, NoCheckout: true})
+	repository, err := git.PlainCloneContext(ctx, path, &git.CloneOptions{
+		URL:           repo.URL,
+		ReferenceName: reference,
+		ClientOptions: options,
+		NoCheckout:    true,
+	})
 	if err != nil {
 		return nil, err
 	}

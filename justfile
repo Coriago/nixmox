@@ -4,11 +4,28 @@ test:
 
 # Backend foundation checks while the remaining runtime/UI integration is built.
 test-backend:
-    go test ./internal/identity ./internal/cluster ./internal/task ./internal/source ./internal/host ./internal/cache ./internal/credentials ./internal/client ./internal/cli ./internal/recipe ./internal/api -count=1 -timeout=120s
+    go test ./internal/identity ./internal/cluster ./internal/task ./internal/source ./internal/host ./internal/cache ./internal/credentials ./internal/client ./internal/cli ./internal/recipe ./internal/configuration ./internal/api ./internal/util -count=1 -timeout=120s
+
+# Race checks include runtime ownership and backend integrations, not legacy UI.
+test-backend-race:
+    CGO_ENABLED=1 go test -race ./internal/identity ./internal/cluster ./internal/task ./internal/source ./internal/host ./internal/cache ./internal/credentials ./internal/client ./internal/cli ./internal/recipe ./internal/configuration ./internal/api ./internal/util ./internal/daemon -count=1 -timeout=120s
 
 # Local mTLS cluster creation, recipe API/observations, and cold-restart integration.
 test-runtime:
     go test ./internal/daemon -run TestClusterLifecycle -count=1 -v -timeout=90s
+
+# Shared UI/component and HTTP workflow tests.
+test-ui:
+    go test ./internal/ui/... -count=1 -timeout=90s
+
+# Real Nix build -> retained logs -> shared monitor projection.
+test-build-monitor:
+    NIXMOX_TEST_NIX=1 NIXMOX_TEST_NIXPKGS="$(nix eval --raw --impure --expr '(builtins.getFlake (toString ./.)).inputs.nixpkgs.outPath')" go test ./internal/host -run TestBuildMonitorPipeline -count=1 -v -timeout=90s
+
+ui-assets:
+    mkdir -p ui-assets
+    GOOS=js GOARCH=wasm go build -trimpath -o ui-assets/app.wasm ./cmd/nixmox
+    install -m644 "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui-assets/wasm_exec.js
 
 # These recipes do not start a cluster.
 build:
@@ -17,25 +34,12 @@ build:
 run *args:
     go run ./cmd/nixmox {{args}}
 
-smoke-unjoined: build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    state=$(mktemp -d)
-    port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-    endpoint="http://127.0.0.1:$port"
-    bin/nixmox daemon --state-dir "$state" --listen "127.0.0.1:$port" --advertise "$endpoint" >"$state/daemon.log" 2>&1 &
-    pid=$!
-    trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$state"' EXIT
-    for attempt in {1..50}; do
-        kill -0 "$pid"
-        if bin/nixmox --endpoint "$endpoint" --json health >"$state/health.json" 2>/dev/null; then break; fi
-        sleep 0.1
-    done
-    jq -e '.status == "online" and .checks.natsServer.status == "not-applicable"' "$state/health.json" >/dev/null
-    echo "Unjoined daemon and CLI health check passed (no NATS server started)."
+# Recipe import/sync/fork and independent configuration collect/upgrade/render.
+test-configurations:
+    go test ./internal/recipe ./internal/configuration ./internal/api -count=1 -timeout=60s
 
 test-registry:
-    NIXMOX_TEST_NIX=1 go test ./internal/source -run TestConfigurationRegistry -count=1 -v -timeout=60s
+    NIXMOX_TEST_NIX=1 go test ./internal/configuration -run TestConfigurationRegistry -count=1 -v -timeout=60s
 
 test-cache:
     NIXMOX_TEST_STORE_PATH="$(nix eval --raw --expr 'builtins.toFile "nixmox-cache-test" "nixmox cache integration\n"')" go test ./internal/cache -run TestSignedCache -count=1 -v -timeout=60s

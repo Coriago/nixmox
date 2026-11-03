@@ -1,11 +1,12 @@
 package views
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -13,318 +14,195 @@ import (
 	"nixmox/internal/domain"
 )
 
-// Connection owns HTTP lifetimes, not presentation state. Both adapters deliver
-// its updates on their UI loop and cancel it when the interface closes.
+type Selection struct{ Host, Task string }
+type Request struct {
+	Method, Path, Target string
+	Body                 json.RawMessage
+}
+type Snapshot struct {
+	Health                                domain.Health
+	Cluster                               domain.Cluster
+	Hosts                                 []domain.Member
+	Tasks                                 []domain.Task
+	Repositories, Recipes, Configurations []Document
+	Warnings                              []string
+}
+type Update struct {
+	Snapshot                  *Snapshot
+	Task                      *domain.Task
+	Resource, EventID, Target string
+	Log, Response             json.RawMessage
+	Err                       error
+	Submitted                 bool
+}
+
+// Connection owns bounded HTTP work and selected-resource streams. It never
+// touches presentation state; adapters deliver updates on their UI event loop.
 type Connection struct {
 	API       *client.Client
 	selection chan Selection
-	commands  chan domain.Command
-	imports   chan CredentialSubmission
-}
-type Selection struct{ Host, Task domain.ID }
-type Snapshot struct {
-	Identity     domain.Identity
-	Cluster      domain.ClusterStatus
-	Hosts        []domain.Host
-	Tasks        []domain.Task
-	Discoveries  []domain.Discovery
-	Requests     []domain.JoinRequest
-	Credentials  []domain.Credential
-	Repositories []domain.Repository
-	Warnings     []string
-}
-type Update struct {
-	Snapshot  *Snapshot
-	Tasks     []domain.Task
-	Task      *domain.Task
-	Telemetry *domain.HostTelemetry
-	Log       *domain.LogChunk
-	Resource  domain.ID
-	Receipt   *domain.Receipt
-	CommandID domain.ID
-	Reconcile bool
-	Err       error
+	commands  chan Request
 }
 
 func NewConnection(api *client.Client) *Connection {
-	return &Connection{API: api, selection: make(chan Selection, 1), commands: make(chan domain.Command, 1), imports: make(chan CredentialSubmission, 1)}
+	return &Connection{API: api, selection: make(chan Selection, 1), commands: make(chan Request, 1)}
 }
-func (c *Connection) Select(s Selection) {
+func (c *Connection) Select(selection Selection) {
 	select {
 	case <-c.selection:
 	default:
 	}
-	c.selection <- s
+	c.selection <- selection
 }
-func (c *Connection) Submit(command domain.Command)     { c.commands <- command }
-func (c *Connection) Import(value CredentialSubmission) { c.imports <- value }
+func (c *Connection) Submit(request Request) bool {
+	select {
+	case c.commands <- request:
+		return true
+	default:
+		return false
+	}
+}
 
-func allPages[T any](ctx context.Context, read func(context.Context, domain.PageRequest) (domain.Page[T], error)) ([]T, error) {
+func readCollection[T any](ctx context.Context, api *client.Client, path string) ([]T, error) {
 	items := []T{}
-	page := domain.PageRequest{Limit: domain.PageLimit}
+	cursor := ""
 	for {
-		result, err := read(ctx, page)
-		if err != nil {
+		var page client.Page[T]
+		if err := api.Do(ctx, http.MethodGet, path+"?limit=100&cursor="+url.QueryEscape(cursor), nil, &page); err != nil {
 			return nil, err
 		}
-		items = append(items, result.Items...)
-		if result.NextCursor == nil {
+		items = append(items, page.Items...)
+		if len(items) > 10000 {
+			return nil, errors.New("console collection exceeds 10000 records")
+		}
+		if page.NextCursor == "" {
 			return items, nil
 		}
-		if len(items) >= 10000 || *result.NextCursor == page.Cursor {
-			return nil, errors.New("console collection exceeds its read bound")
+		if page.NextCursor == cursor {
+			return nil, errors.New("repeated page cursor")
 		}
-		page.Cursor = *result.NextCursor
+		cursor = page.NextCursor
 	}
 }
 func (c *Connection) snapshot(ctx context.Context) Update {
-	s := &Snapshot{}
-	var err error
-	s.Identity, err = c.API.Identity(ctx)
-	if err != nil {
+	snapshot := &Snapshot{}
+	if err := c.API.Do(ctx, http.MethodGet, "/health", nil, &snapshot.Health); err != nil {
 		return Update{Err: err}
 	}
-	var wg sync.WaitGroup
-	failures := make([]error, 7)
-	wg.Go(func() { s.Cluster, failures[0] = c.API.Cluster(ctx) })
-	wg.Go(func() {
-		s.Hosts, failures[1] = allPages(ctx, func(ctx context.Context, p domain.PageRequest) (domain.Page[domain.Host], error) {
-			return c.API.Hosts(ctx, p)
-		})
-	})
-	wg.Go(func() { s.Tasks, failures[2] = allPages(ctx, c.API.Tasks) })
-	wg.Go(func() {
-		s.Discoveries, failures[3] = allPages(ctx, func(ctx context.Context, p domain.PageRequest) (domain.Page[domain.Discovery], error) {
-			return c.API.Discoveries(ctx, p)
-		})
-	})
-	if s.Identity.ClusterID != nil {
-		wg.Go(func() {
-			s.Credentials, failures[5] = allPages(ctx, func(ctx context.Context, p domain.PageRequest) (domain.Page[domain.Credential], error) {
-				return c.API.Credentials(ctx, p)
-			})
-		})
-		wg.Go(func() {
-			s.Repositories, failures[6] = allPages(ctx, func(ctx context.Context, p domain.PageRequest) (domain.Page[domain.Repository], error) {
-				return c.API.Repositories(ctx, p)
-			})
-		})
-		wg.Go(func() {
-			s.Requests, failures[4] = allPages(ctx, func(ctx context.Context, p domain.PageRequest) (domain.Page[domain.JoinRequest], error) {
-				p.Filters = map[string]string{"state": "awaiting_approval"}
-				return c.API.Requests(ctx, p)
-			})
-		})
+	if err := c.API.Do(ctx, http.MethodGet, "/cluster", nil, &snapshot.Cluster); err != nil {
+		var failure *client.Error
+		if errors.As(err, &failure) && failure.Status == http.StatusServiceUnavailable && snapshot.Health.Checks["cluster"].Status == "not-applicable" {
+			return Update{Snapshot: snapshot}
+		}
+		return Update{Err: err}
 	}
-	wg.Wait()
+	var workers sync.WaitGroup
+	failures := make([]error, 5)
+	workers.Go(func() { snapshot.Hosts, failures[0] = readCollection[domain.Member](ctx, c.API, "/hosts") })
+	workers.Go(func() { snapshot.Tasks, failures[1] = readCollection[domain.Task](ctx, c.API, "/tasks") })
+	workers.Go(func() { snapshot.Repositories, failures[2] = readCollection[Document](ctx, c.API, "/repos") })
+	workers.Go(func() { snapshot.Recipes, failures[3] = readCollection[Document](ctx, c.API, "/recipes") })
+	workers.Go(func() { snapshot.Configurations, failures[4] = readCollection[Document](ctx, c.API, "/configurations") })
+	workers.Wait()
 	for i, err := range failures {
 		if err != nil {
-			s.Warnings = append(s.Warnings, fmt.Sprintf("%s: %v", []string{"Cluster", "Hosts", "Tasks", "Discovery", "Join requests", "Credentials", "Repositories"}[i], err))
+			snapshot.Warnings = append(snapshot.Warnings, fmt.Sprintf("%s: %v", []string{"Hosts", "Tasks", "Repositories", "Recipes", "Configurations"}[i], err))
 		}
 	}
-	return Update{Snapshot: s}
+	return Update{Snapshot: snapshot}
 }
 
-// watchTask retains log offsets when an owner disappears or admission has not
-// reached the read projection yet. Reconnection never resubmits commands.
-func (c *Connection) watchTask(ctx context.Context, id domain.ID, logs bool, emit func(Update)) {
-	offset := int64(0)
-	initialized := !logs
-	for ctx.Err() == nil {
-		var err error
-		if !initialized {
-			var task domain.Task
-			task, err = c.API.Task(ctx, id)
-			if err == nil {
+func (c *Connection) watch(ctx context.Context, selection Selection, emit func(Update)) {
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	if selection.Task != "" {
+		workers.Go(func() {
+			err := c.API.Watch(ctx, "/tasks/"+url.PathEscape(selection.Task)+"/events", "", func(event client.Event) error {
+				var task domain.Task
+				if err := json.Unmarshal(event.Data, &task); err != nil {
+					return err
+				}
 				emit(Update{Task: &task})
-				offset = max(0, task.Log.NextOffset-domain.LogReadDefault)
-				initialized = true
-			}
-		}
-		if err == nil {
-			err = c.API.WatchTask(ctx, id, logs, offset, func(data json.RawMessage) error {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				if logs {
-					var chunk domain.LogChunk
-					if err := json.Unmarshal(data, &chunk); err != nil {
-						return err
-					}
-					emit(Update{Resource: id, Log: &chunk})
-					offset = chunk.NextOffset
-				} else {
-					var task domain.Task
-					if err := json.Unmarshal(data, &task); err != nil {
-						return err
-					}
-					emit(Update{Task: &task})
-				}
 				return nil
 			})
-		}
-		if ctx.Err() != nil || err == nil {
-			return
-		}
-		emit(Update{Resource: id, Err: err})
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-		}
+			if err != nil && ctx.Err() == nil {
+				emit(Update{Err: err, Resource: "tasks/" + selection.Task})
+			}
+		})
+	}
+	kind, id := "hosts", selection.Host
+	if selection.Task != "" {
+		kind, id = "tasks", selection.Task
+	}
+	if id == "" {
+		return
+	}
+	err := c.API.Watch(ctx, "/"+kind+"/"+url.PathEscape(id)+"/logs/stream", "", func(event client.Event) error {
+		emit(Update{Resource: kind + "/" + id, EventID: event.ID, Log: event.Data})
+		return nil
+	})
+	if err != nil && ctx.Err() == nil {
+		emit(Update{Err: err, Resource: kind + "/" + id})
 	}
 }
 
 func (c *Connection) Run(ctx context.Context, emit func(Update)) {
 	ctx, cancel := context.WithCancel(ctx)
 	var workers sync.WaitGroup
-	defer func() {
-		cancel()
-		workers.Wait()
-		for {
-			select {
-			case input := <-c.imports:
-				clear(input.Value)
-			default:
-				return
-			}
-		}
-	}()
-	send := func(u Update) {
+	defer func() { cancel(); workers.Wait() }()
+	refresh := make(chan struct{}, 1)
+	send := func(update Update) {
 		if ctx.Err() == nil {
-			emit(u)
+			emit(update)
 		}
 	}
-	refresh := make(chan struct{}, 1)
-	inventory := make(chan []domain.Host, 1)
 	workers.Go(func() {
-		full := time.Time{}
-		timer := time.NewTicker(2 * time.Second)
+		timer := time.NewTicker(5 * time.Second)
 		defer timer.Stop()
 		for {
-			if time.Since(full) >= domain.InventoryInterval {
-				update := c.snapshot(ctx)
-				send(update)
-				if update.Snapshot != nil && update.Snapshot.Hosts != nil {
-					select {
-					case <-inventory:
-					default:
-					}
-					select {
-					case inventory <- update.Snapshot.Hosts:
-					case <-ctx.Done():
-						return
-					}
-				}
-				if update.Snapshot != nil {
-					full = time.Now()
-				}
-			} else {
-				tasks, err := allPages(ctx, c.API.Tasks)
-				send(Update{Tasks: tasks, Err: err})
-			}
+			send(c.snapshot(ctx))
 			select {
 			case <-ctx.Done():
 				return
 			case <-refresh:
-				full = time.Time{}
 			case <-timer.C:
 			}
 		}
 	})
 	var stopSelection context.CancelFunc
-	hostStreams := map[domain.ID]context.CancelFunc{}
-	// Bound concurrent subscriptions. Larger inventories remain browsable and
-	// selecting a host gives its telemetry priority over background tiles.
-	var hosts []domain.Host
-	var selectedHost domain.ID
-	watchHosts := func() {
-		wanted := map[domain.ID]bool{}
-		for _, h := range hosts {
-			if h.ID == selectedHost && h.Reachability == domain.Online {
-				wanted[h.ID] = true
-			}
-		}
-		for _, h := range hosts {
-			if h.Reachability == domain.Online && len(wanted) < 64 {
-				wanted[h.ID] = true
-			}
-		}
-		for id, stop := range hostStreams {
-			if !wanted[id] {
-				stop()
-				delete(hostStreams, id)
-			}
-		}
-		for id := range wanted {
-			if hostStreams[id] != nil {
-				continue
-			}
-			life, stop := context.WithCancel(ctx)
-			hostStreams[id] = stop
-			workers.Go(func() {
-				for {
-					err := c.API.WatchTelemetry(life, id, func(sample domain.HostTelemetry) error {
-						if life.Err() == nil {
-							send(Update{Telemetry: &sample})
-						}
-						return nil
-					})
-					if life.Err() != nil {
-						return
-					}
-					if err != nil {
-						send(Update{Resource: id, Err: err})
-					}
-					select {
-					case <-life.Done():
-						return
-					case <-time.After(5 * time.Second):
-					}
-				}
-			})
-		}
-	}
 	for {
 		select {
 		case <-ctx.Done():
-			if stopSelection != nil {
-				stopSelection()
-			}
 			return
-		case next := <-inventory:
-			hosts = next
-			watchHosts()
-		case s := <-c.selection:
-			selectedHost = s.Host
-			watchHosts()
+		case selection := <-c.selection:
 			if stopSelection != nil {
 				stopSelection()
 			}
-			selected, stop := context.WithCancel(ctx)
+			life, stop := context.WithCancel(ctx)
 			stopSelection = stop
-			if s.Task != "" {
-				for _, logs := range []bool{false, true} {
-					workers.Go(func() { c.watchTask(selected, s.Task, logs, send) })
+			workers.Go(func() {
+				c.watch(life, selection, func(update Update) {
+					if life.Err() == nil {
+						send(update)
+					}
+				})
+			})
+		case request := <-c.commands:
+			if request.Target == "refresh" {
+				select {
+				case refresh <- struct{}{}:
+				default:
 				}
+				send(Update{Submitted: true})
+				continue
 			}
-		case input := <-c.imports:
-			receipt, err := c.API.ImportCredential(ctx, input.Ingress, bytes.NewReader(input.Value))
-			clear(input.Value)
-			send(Update{Receipt: &receipt, CommandID: input.Ingress.CommandID, Err: err})
-			select {
-			case refresh <- struct{}{}:
-			default:
+			var response json.RawMessage
+			var body any
+			if len(request.Body) > 0 {
+				body = request.Body
 			}
-		case command := <-c.commands:
-			var receipt domain.Receipt
-			var err error
-			if command.Type == "" {
-				receipt, err = c.API.Receipt(ctx, command.ID)
-			} else {
-				receipt, err = c.API.Submit(ctx, command)
-			}
-			send(Update{Receipt: &receipt, CommandID: command.ID, Reconcile: command.Type == "", Err: err})
+			err := c.API.Do(ctx, request.Method, request.Path, body, &response)
+			send(Update{Target: request.Target, Response: response, Err: err, Submitted: true})
 			select {
 			case refresh <- struct{}{}:
 			default:

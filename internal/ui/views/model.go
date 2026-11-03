@@ -1,7 +1,9 @@
-// Package views owns shared page definitions, state and actions, never DOM or terminal IO.
+// Package views owns presentation state shared by the browser and terminal.
+// HTTP lifetimes belong to Connection; durable state always comes from the API.
 package views
 
 import (
+	"encoding/json"
 	"slices"
 	"time"
 
@@ -10,58 +12,45 @@ import (
 	"nixmox/internal/ui/components/confirmation"
 	"nixmox/internal/ui/components/form"
 	logs "nixmox/internal/ui/components/log"
-	"nixmox/internal/ui/components/progress"
 	"nixmox/internal/ui/components/theme"
 )
 
 type Action = ui.Action
+
 type Model struct {
-	Page, HostID, TaskID, Tab, Filter, Query string
-	ThemeIndex, AccentIndex                  int
-	Reduced                                  bool
-	Modal                                    *confirmation.Model
-	Form                                     *form.Model
-	formKind                                 string
-	formSecret                               []byte
-	formRepository                           domain.Repository
-	formCredentialID                         domain.ID
-	secretSubmission                         *CredentialSubmission
-	Cluster                                  Cluster
-	Notice                                   string
-	Hosts                                    []Host
-	Discoveries                              []Discovery
-	Tasks                                    []Task
-	Credentials                              []domain.Credential
-	Repositories                             []domain.Repository
-	LogFollow                                logs.FollowState
-	accumulator                              time.Duration
-	frame                                    uint64
-	bars                                     map[string]*progress.Spring
-	identity                                 domain.Identity
-	connected                                bool
-	connectionError                          string
-	warnings                                 string
-	telemetry                                map[string]domain.HostTelemetry
-	histories                                map[string][]float64
-	logOffsets                               map[string]int64
-	logPartial                               map[string]string
-	review                                   *domain.Command
-	command                                  *domain.Command
-	busy                                     bool
-	uncertain                                domain.ID
+	Page, HostID, TaskID, DocumentID, Tab, Filter, Query string
+	ThemeIndex, AccentIndex                              int
+	Reduced                                              bool
+	Modal                                                *confirmation.Model
+	Form                                                 *form.Model
+	Health                                               domain.Health
+	Cluster                                              domain.Cluster
+	Hosts                                                []Host
+	Tasks                                                []Task
+	Repositories, Recipes, Configurations                []Document
+	Document                                             *Document
+	Preview                                              json.RawMessage
+	Notice                                               string
+	LogFollow                                            logs.FollowState
+	HostLog                                              logs.Model
+	lastHostLog                                          map[string]uint64
+	formRequest                                          *Request
+	pending, review                                      *Request
+	busy, connected                                      bool
+	connectionError, warnings                            string
+	frame                                                uint64
 }
 
 func New() *Model {
-	m := &Model{Page: Pages[0].Name, Tab: "Summary", Filter: "All", bars: map[string]*progress.Spring{}, telemetry: map[string]domain.HostTelemetry{}, histories: map[string][]float64{}, logOffsets: map[string]int64{}, logPartial: map[string]string{}}
-	m.LogFollow.Follow = true
-	return m
+	return &Model{Page: "Cluster", Tab: "Overview", Filter: "All", LogFollow: logs.FollowState{Follow: true}, lastHostLog: map[string]uint64{}}
 }
+func (m *Model) Close() { m.Form = nil; m.pending = nil; m.review = nil }
 func (m *Model) Theme() theme.Theme {
-	t := theme.Themes[m.ThemeIndex]
+	palette := theme.Themes[m.ThemeIndex]
 	if m.AccentIndex > 0 {
-		t.Accent = []string{"", "#f18a24", "#d96a00", "#efa345"}[m.AccentIndex]
+		palette.Accent = []string{"", "#f18a24", "#d96a00", "#efa345"}[m.AccentIndex]
 	}
-	return t
+	return palette
 }
 func (m *Model) Host(id string) *Host {
 	return ui.Find(m.Hosts, func(h Host) bool { return h.ID == id })
@@ -69,142 +58,102 @@ func (m *Model) Host(id string) *Host {
 func (m *Model) Task(id string) *Task {
 	return ui.Find(m.Tasks, func(t Task) bool { return t.ID == id })
 }
-func (m *Model) discovery(id string) *Discovery {
-	return ui.Find(m.Discoveries, func(d Discovery) bool { return d.ID == id || string(d.NodeID) == id })
+func (m *Model) Route() [4]string {
+	return [4]string{m.Page, m.HostID, m.TaskID, m.DocumentID + "/" + m.Tab}
 }
-func (m *Model) Route() [4]string { return [4]string{m.Page, m.HostID, m.TaskID, m.Tab} }
-func (m *Model) Dispatch(a Action) {
-	old := m.Route()
-	defer func() {
-		if old != m.Route() {
-			m.LogFollow.Follow = true
-		}
-	}()
+func (m *Model) Selection() Selection { return Selection{Host: m.HostID, Task: m.TaskID} }
+func (m *Model) Advance(dt time.Duration) {
+	if !m.Reduced && dt > 0 {
+		m.frame++
+	}
+}
+func (m *Model) TakeCommand() *Request {
+	request := m.pending
+	m.pending = nil
+	return request
+}
+
+func (m *Model) Dispatch(action Action) {
 	if m.Modal != nil {
-		switch a.Kind {
+		switch action.Kind {
 		case "dismiss":
-			m.Modal, m.review = nil, nil
-		case "confirm":
-			m.command, m.review = m.review, nil
-			m.busy = m.command != nil
 			m.Modal = nil
+			m.review = nil
+		case "confirm":
+			m.pending = m.review
+			m.review = nil
+			m.Modal = nil
+			m.busy = m.pending != nil
 		}
 		return
 	}
-	switch a.Kind {
-	case "credential-import", "repository-import", "repository-bind":
-		m.openSourceForm(a.Kind, a.ID)
-	case "source-form-close":
-		m.closeSourceForm()
-	case "source-form-save":
-		m.submitSourceForm()
+	switch action.Kind {
 	case "page":
-		m.closeSourceForm()
-		if slices.ContainsFunc(Pages, func(p Page) bool { return p.Name == a.ID }) {
-			m.Page = a.ID
-			m.Query = ""
-			m.HostID = ""
-			m.TaskID = ""
-			m.Tab = "Summary"
+		if !slices.ContainsFunc(Pages, func(p Page) bool { return p.Name == action.ID }) {
+			return
 		}
+		m.Page = action.ID
+		m.HostID = ""
+		m.TaskID = ""
+		m.DocumentID = ""
+		m.Document = nil
+		m.Preview = nil
+		m.Query = ""
+		m.Form = nil
 	case "host":
-		if m.Host(a.ID) != nil {
-			if m.HostID == "" {
-				m.Tab = "Summary"
-			}
-			m.Page = "Hosts"
-			m.HostID = a.ID
-			m.TaskID = ""
-		}
+		m.Page = "Hosts"
+		m.HostID = action.ID
+		m.TaskID = ""
+		m.HostLog = logs.Model{}
+		delete(m.lastHostLog, "hosts/"+action.ID)
 	case "task":
-		if m.Task(a.ID) != nil {
-			m.Page = "Tasks"
-			m.TaskID = a.ID
-			m.HostID = ""
-			m.Tab = "Overview"
-		}
+		m.Preview = nil
+		m.Page = "Tasks"
+		m.TaskID = action.ID
+		m.HostID = ""
+		m.Tab = "Overview"
+	case "document":
+		m.selectDocument(action.ID)
 	case "back":
 		m.HostID = ""
 		m.TaskID = ""
-		m.Tab = "Summary"
+		m.DocumentID = ""
+		m.Document = nil
+		m.Form = nil
+		m.Preview = nil
 	case "tab":
-		if tabs := m.View().Find(Tabs); tabs != nil {
-			for _, tab := range tabs.Buttons {
-				if tab.Action.Kind == "tab" && tab.Action.ID == a.ID {
-					m.Tab = a.ID
-					break
-				}
-			}
-		}
+		m.Tab = action.ID
 	case "follow":
-		if m.View().Find(Logs) != nil {
-			m.LogFollow.Follow = true
-		}
+		m.LogFollow.Follow = true
 	case "search":
-		if len(a.ID) <= 128 {
-			m.Query = ui.Text(a.ID, 128, -1)
-		}
+		m.Query = ui.Text(action.ID, 128, -1)
 	case "filter":
-		if slices.Contains([]string{"All", "Active", "Needs attention"}, a.ID) {
-			m.Filter = a.ID
-		}
+		m.Filter = action.ID
 	case "theme":
 		m.ThemeIndex = (m.ThemeIndex + 1) % len(theme.Themes)
 	case "accent":
 		m.AccentIndex = (m.AccentIndex + 1) % 4
 	case "motion":
 		m.Reduced = !m.Reduced
-	case "refresh", "network-check", "shutdown", "cancel", "approve", "reject", "credential-check", "credential-remove", "repository-fetch":
-		m.prepare(a)
-	case "reconcile":
-		if m.uncertain != "" && !m.busy {
-			m.command = &domain.Command{ID: m.uncertain}
-			m.busy = true
-		}
 	case "help":
-		m.Modal = &confirmation.Model{Title: "Keyboard and mouse", Body: "Tab / Shift-Tab focus · Enter activate · Esc back · ↑ ↓ scroll · 1–9 pages · / filter · t theme · m motion · q quit TUI.", Confirm: "Got it"}
+		m.Modal = &confirmation.Model{Title: "Keyboard and mouse", Body: "Tab / Shift-Tab focus · Enter activate · Esc back · 1–9 pages · / filter · t theme · m motion · q quit TUI. JSON forms use Ctrl+S to apply multiline terminal input.", Confirm: "Got it"}
+	case "source-form-close":
+		m.Form = nil
+		m.formRequest = nil
+	case "source-form-save":
+		m.submitForm()
+	default:
+		m.prepare(action)
 	}
+	m.LogFollow.Follow = true
 }
-
-// Shortcut returns the same presentation action in the DOM and terminal.
 func Shortcut(key string) (Action, bool) {
 	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
-		i := int(key[0] - '1')
-		if i < len(Pages) {
-			return Action{Kind: "page", ID: Pages[i].Name}, true
+		index := int(key[0] - '1')
+		if index < len(Pages) {
+			return Action{Kind: "page", ID: Pages[index].Name}, true
 		}
 	}
-	bindings := map[string]string{"/": "search-focus", "t": "theme", "m": "motion", "?": "help", "Escape": "back", "esc": "back"}
-	kind, ok := bindings[key]
+	kind, ok := map[string]string{"/": "search-focus", "t": "theme", "m": "motion", "?": "help", "Escape": "back", "esc": "back"}[key]
 	return Action{Kind: kind}, ok
-}
-
-func (m *Model) Advance(dt time.Duration) {
-	for _, sample := range m.telemetry {
-		if !liveSample(sample) {
-			m.projectTelemetry(sample, false)
-		}
-	}
-	// Fixed timestep bounds background-tab catch-up; never replay an unbounded backlog.
-	dt = min(max(dt, 0), 250*time.Millisecond)
-	m.accumulator += dt
-	for m.accumulator >= progress.FrameInterval {
-		m.accumulator -= progress.FrameInterval
-		if !m.Reduced {
-			m.frame++
-		}
-		for i := range m.Tasks {
-			t := &m.Tasks[i]
-			s := m.bars[t.ID]
-			if s == nil {
-				s = &progress.Spring{}
-				m.bars[t.ID] = s
-			}
-			target := 0.0
-			if t.Total > 0 {
-				target = float64(t.Done) / float64(t.Total)
-			}
-			s.Step(target, m.Reduced)
-		}
-	}
 }

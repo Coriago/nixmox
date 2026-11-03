@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/viper"
 	"go.opentelemetry.io/otel"
 	"go.yaml.in/yaml/v3"
+
 	"nixmox/internal/client"
 	"nixmox/internal/daemon"
 	"nixmox/internal/util"
@@ -54,7 +55,12 @@ func NewCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	config.SetEnvPrefix("NIXMOX")
 	config.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	config.AutomaticEnv()
-	root := &cobra.Command{Use: "nixmox", Short: "Manage NixOS hosts through the Nixmox API", SilenceUsage: true, SilenceErrors: true}
+	root := &cobra.Command{
+		Use:           "nixmox",
+		Short:         "Manage NixOS hosts through the Nixmox API",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
 	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
@@ -73,15 +79,34 @@ func NewCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(c.daemonCommand(), c.get("health", "Show daemon and cluster health", "/health", 0))
 	c.addReads(root)
 	c.addMutations(root)
+	root.AddCommand(c.uiCommand())
 	return root
 }
 
 func (c console) daemonCommand() *cobra.Command {
-	command := &cobra.Command{Use: "daemon", Short: "Start the daemon", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		v := c.config
-		return daemon.Run(cmd.Context(), daemon.Config{StateDir: v.GetString("state-dir"), Name: v.GetString("name"), Listen: v.GetString("listen"), AdvertiseURL: v.GetString("advertise"), NATSHost: v.GetString("nats-host"), NATSPort: v.GetInt("nats-port"), RoutePort: v.GetInt("route-port"), BootstrapPort: v.GetInt("bootstrap-port"), BootstrapRoutePort: v.GetInt("bootstrap-route-port"), SSHHostKey: v.GetString("ssh-host-key")})
-	}}
+	command := &cobra.Command{
+		Use:   "daemon",
+		Short: "Start the daemon",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			config := daemon.Config{
+				UIAssets:           c.config.GetString("ui-assets"),
+				StateDir:           c.config.GetString("state-dir"),
+				Name:               c.config.GetString("name"),
+				Listen:             c.config.GetString("listen"),
+				AdvertiseURL:       c.config.GetString("advertise"),
+				NATSHost:           c.config.GetString("nats-host"),
+				NATSPort:           c.config.GetInt("nats-port"),
+				RoutePort:          c.config.GetInt("route-port"),
+				BootstrapPort:      c.config.GetInt("bootstrap-port"),
+				BootstrapRoutePort: c.config.GetInt("bootstrap-route-port"),
+				SSHHostKey:         c.config.GetString("ssh-host-key"),
+			}
+			return daemon.Run(cmd.Context(), config)
+		},
+	}
 	f := command.Flags()
+	f.String("ui-assets", "", "Browser assets directory (default: installed package assets)")
 	f.String("state-dir", "/var/lib/nixmox", "Private persistent state directory")
 	f.String("name", "", "Node name (defaults to hostname on first startup)")
 	f.String("listen", "127.0.0.1:8080", "HTTP listen address")
@@ -153,14 +178,17 @@ func definition(cmd *cobra.Command) (json.RawMessage, error) {
 	}
 	return json.Marshal(object)
 }
+
 func required(command *cobra.Command, name, description string) {
 	command.Flags().String(name, "", description)
 	_ = command.MarkFlagRequired(name)
 }
+
 func flag(command *cobra.Command, name string) string {
 	value, _ := command.Flags().GetString(name)
 	return value
 }
+
 func boolean(command *cobra.Command, name string) bool {
 	value, _ := command.Flags().GetBool(name)
 	return value

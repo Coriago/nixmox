@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/nats-io/nats.go/jetstream"
+
 	"nixmox/internal/cluster"
 )
 

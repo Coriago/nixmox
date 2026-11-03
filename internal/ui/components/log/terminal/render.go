@@ -28,7 +28,7 @@ func Render(t theme.Theme, data logs.Model, width int) string {
 }
 func Preview(t theme.Theme, lines []string, width int) string {
 	p := style.Styles{Theme: t}
-	out := []string{p.Text("accent", "LATEST OUTPUT")}
+	out := []string{p.Text("accent", "PREVIEW")}
 	for _, line := range lines {
 		out = append(out, p.Text("muted", style.Fit(line, width)))
 	}

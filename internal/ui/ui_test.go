@@ -37,12 +37,12 @@ func TestFindReturnsSliceElement(t *testing.T) {
 	}
 }
 func TestActive(t *testing.T) {
-	for _, state := range []string{"running", "cancelling"} {
+	for _, state := range []string{"running", "queued"} {
 		if !Active(state) {
 			t.Fatal("inactive", state)
 		}
 	}
-	for _, state := range []string{"queued", "blocked", "failed", "succeeded", "cancelled", "online", "reconciling"} {
+	for _, state := range []string{"manual-review", "unknown", "failed", "succeeded", "cancelled", "online"} {
 		if Active(state) {
 			t.Fatal("active", state)
 		}

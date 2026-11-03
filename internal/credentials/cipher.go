@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
+
 	"nixmox/internal/host"
 	"nixmox/internal/identity"
 )
@@ -22,10 +23,12 @@ type Recipient struct {
 	NodeID       string `json:"nodeId"`
 	AgePublicKey string `json:"agePublicKey"`
 }
+
 type Recipients struct {
 	ClusterID  string      `json:"clusterId"`
 	Recipients []Recipient `json:"recipients"`
 }
+
 type Record struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -92,7 +95,14 @@ func (c Cipher) run(ctx context.Context, input []byte, args ...string) ([]byte, 
 		return nil, err
 	}
 	defer os.RemoveAll(home)
-	process := host.Process{Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_CONFIG_HOME=" + home, "SOPS_AGE_KEY_FILE=" + keyPath}}
+	process := host.Process{
+		Env: []string{
+			"PATH=" + os.Getenv("PATH"),
+			"HOME=" + home,
+			"XDG_CONFIG_HOME=" + home,
+			"SOPS_AGE_KEY_FILE=" + keyPath,
+		},
+	}
 	output, err := process.Run(ctx, home, bytes.NewReader(input), "sops", args...)
 	if err != nil {
 		clear(output)

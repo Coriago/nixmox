@@ -17,6 +17,7 @@ type Event struct {
 	Type string          `json:"event"`
 	Data json.RawMessage `json:"data"`
 }
+
 type callbackError struct{ error }
 type protocolError struct{ error }
 

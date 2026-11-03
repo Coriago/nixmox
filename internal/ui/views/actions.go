@@ -3,196 +3,104 @@ package views
 import (
 	"encoding/json"
 	"fmt"
-	"time"
+	"net/http"
+	"net/url"
 
-	"github.com/google/uuid"
-
-	"nixmox/internal/domain"
 	"nixmox/internal/ui/components/button"
 	"nixmox/internal/ui/components/confirmation"
 )
 
-func (m *Model) actionHint(a Action) string {
+func (m *Model) action(label, kind, id string) button.Model {
+	control := control(label, kind, id, false)
 	if !m.connected {
-		return "Backend is not connected"
+		control.Disabled = true
+		control.Hint = "Backend is not connected"
 	}
 	if m.busy {
-		return "A command is being submitted"
+		control.Disabled = true
+		control.Hint = "A request is in progress"
 	}
-	if m.uncertain != "" {
-		return "Reconcile the previous command receipt first"
-	}
-	switch a.Kind {
-	case "credential-check", "credential-remove":
-		credential := m.credential(a.ID)
-		if credential == nil || m.identity.ClusterID == nil {
-			return "Credential metadata unavailable"
-		}
-		if a.Kind == "credential-check" && (credential.Kind == "git-http-token" || credential.Kind == "git-ssh-key") && len(m.Repositories) == 0 {
-			return "Import a repository before checking Git access"
-		}
-		if a.Kind == "credential-remove" {
-			if len(credential.Scope.RepositoryIDs) != 0 {
-				return "Remove repository bindings first"
-			}
-			for _, replica := range credential.Replicas {
-				if replica.Source == "runtime_file" {
-					return "Owned by Nix configuration"
-				}
-			}
-		}
-	case "repository-fetch":
-		if m.repository(a.ID) == nil || m.identity.ClusterID == nil {
-			return "Repository metadata unavailable"
-		}
-	case "refresh", "network-check", "shutdown":
-		h := m.Host(a.ID)
-		if h == nil || h.Reachability != "online" {
-			return "Host is not reachable"
-		}
-		if a.Kind == "network-check" {
-			if a.ID != string(m.identity.NodeID) {
-				return "Network check is local to the connected daemon"
-			}
-			return ""
-		}
-		if m.identity.ClusterID == nil {
-			return "Requires cluster membership"
-		}
-		if a.Kind == "shutdown" && (!h.Source.Capabilities.Power || h.Source.MembershipEpoch == nil) {
-			return "Power capability or membership epoch unavailable"
-		}
-	case "cancel":
-		t := m.Task(a.ID)
-		if t == nil || !t.Source.Cancellation.Allowed {
-			return "Task cannot be cancelled in its current state"
-		}
-		if t.Source.Scope == domain.NodeLocal && t.Source.OwnerNodeID != m.identity.NodeID {
-			return "Connect to the task owner to cancel node-local work"
-		}
-	case "approve", "reject":
-		d := m.discovery(a.ID)
-		if d == nil || time.Now().After(d.ExpiresAt) {
-			return "Discovery expired; refresh the observation"
-		}
-		if m.identity.ClusterID == nil {
-			return "Requires cluster membership"
-		}
-		if !d.Requested {
-			return "Join-request state changed"
-		}
-		if d.NodeID == "" || d.Fingerprint == "" {
-			return "Exact node identity is unavailable"
-		}
-	default:
-		return "Action unavailable"
-	}
-	return ""
+	return control
 }
-func (m *Model) resourceControl(label, kind, id string) button.Model {
-	a := Action{Kind: kind, ID: id}
-	hint := m.actionHint(a)
-	tone := "primary"
-	switch kind {
-	case "shutdown", "cancel", "reject", "credential-remove":
-		tone = "danger"
-	case "approve":
-		tone = "success"
-	}
-	return button.Model{Label: label, Action: a, Disabled: hint != "", Hint: hint, Tone: tone}
+func unavailable(label string) button.Model {
+	return button.Model{Label: label, Disabled: true, Hint: "Not implemented by this backend"}
 }
-func (m *Model) prepare(a Action) {
-	if a.ID == "" {
-		if a.Kind == "cancel" {
-			a.ID = m.TaskID
-		} else {
-			a.ID = m.HostID
+func (m *Model) queue(method, path, target string, body any) {
+	var data json.RawMessage
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			m.Notice = err.Error()
+			return
 		}
+		data = encoded
 	}
-	if hint := m.actionHint(a); hint != "" {
-		m.Notice = hint
+	m.pending = &Request{Method: method, Path: path, Target: target, Body: data}
+	m.busy = true
+}
+func (m *Model) prepare(action Action) {
+	if !m.connected || m.busy {
 		return
 	}
-	if a.Kind == "credential-check" {
-		if credential := m.credential(a.ID); credential != nil && (credential.Kind == "git-http-token" || credential.Kind == "git-ssh-key") {
-			m.openSourceForm("credential-check", a.ID)
+	switch action.Kind {
+	case "refresh":
+		m.queue("", "", "refresh", nil)
+	case "cluster-create":
+		m.openClusterForm()
+	case "repo-create":
+		m.openJSON("Register repository", http.MethodPost, "/repos", "repository", map[string]any{"name": "", "url": "", "ref": "main"})
+	case "repo-refresh":
+		m.queue(http.MethodPost, "/repos/"+url.PathEscape(action.ID)+"/refresh", "repository", nil)
+	case "recipe-create", "recipe-edit", "recipe-sync", "configuration-create", "configuration-inputs", "configuration-upgrade", "configuration-target", "configuration-observe", "configuration-render", "show-version":
+		m.prepareVersion(action.Kind)
+	case "configuration-refresh":
+		if m.Document != nil {
+			m.queue(http.MethodPost, "/configurations/"+url.PathEscape(m.Document.ID)+"/refresh", "configuration", nil)
+		}
+	case "build":
+		m.openBuildForm(action.ID)
+	case "cancel":
+		m.review = &Request{Method: http.MethodPost, Path: "/tasks/" + url.PathEscape(action.ID) + "/cancel"}
+		m.Modal = &confirmation.Model{Title: "Cancel task?", Body: "The owning host will stop this task. Completed external effects are not rolled back.", Confirm: "Cancel task"}
+	case "retry":
+		m.queue(http.MethodPost, "/tasks/"+url.PathEscape(action.ID)+"/retry", "task", nil)
+	case "approve":
+		task := m.Task(action.ID)
+		if task != nil && task.Source.Review != nil {
+			m.queue(http.MethodPost, "/tasks/"+url.PathEscape(action.ID)+"/approve", "", map[string]string{"outputId": task.Source.Review.OutputID})
+		}
+	case "task-output":
+		m.queue(http.MethodGet, "/tasks/"+url.PathEscape(m.TaskID)+"/outputs/"+url.PathEscape(action.ID), "output", nil)
+	}
+}
+func (m *Model) documents() []Document {
+	switch m.Page {
+	case "Recipes":
+		return m.Recipes
+	case "Configurations":
+		return m.Configurations
+	case "Repositories":
+		return m.Repositories
+	}
+	return nil
+}
+func (m *Model) selectDocument(id string) {
+	for _, document := range m.documents() {
+		if document.ID == id {
+			m.Document = &document
+			m.DocumentID = id
+			m.Preview = nil
 			return
 		}
 	}
-	command := domain.Command{ID: domain.ID("cmd_" + uuid.NewString()), TargetID: m.identity.NodeID}
-	dialog := confirmation.Model{Confirm: "Confirm", Accent: m.resourceControl("", a.Kind, a.ID).Tone}
-	var payload any
-	switch a.Kind {
-	case "repository-fetch":
-		command.Type = "repository.fetch"
-		payload = domain.RepositoryTarget{RepositoryID: domain.ID(a.ID)}
-	case "credential-check":
-		credential := m.credential(a.ID)
-		command.Type = "credential.check"
-		p := domain.CredentialCheckPayload{CredentialID: credential.ID}
-		if credential.Kind == "git-http-token" || credential.Kind == "git-ssh-key" {
-			p.RepositoryID = &credential.Scope.RepositoryIDs[0]
-		}
-		payload = p
-	case "credential-remove":
-		credential := m.credential(a.ID)
-		command.Type = "credential.remove"
-		command.ExpectedVersions = domain.Versions{"credential:" + a.ID: credential.Version}
-		payload = domain.CredentialTarget{CredentialID: credential.ID}
-		dialog.Title, dialog.Target, dialog.Confirm = "Remove credential?", credential.Name+" · "+a.ID, "Remove"
-		dialog.Body = "Delete managed copies from all holders. Unreachable holders block completion. This does not revoke the credential at its provider."
-	case "network-check":
-		command.Type = "network.check"
-		payload = domain.Empty{}
-	case "refresh":
-		command.Type, command.TargetID = "host.refresh", domain.ID(a.ID)
-		payload = domain.HostTarget{HostID: command.TargetID}
-	case "shutdown":
-		h := m.Host(a.ID)
-		command.Type, command.TargetID = "host.shutdown", h.Source.ID
-		command.ExpectedVersions = domain.Versions{"host:" + a.ID: h.Source.Version}
-		payload = domain.HostPower{HostID: h.Source.ID, MembershipEpoch: *h.Source.MembershipEpoch, ConfirmHost: string(h.Source.ID)}
-		dialog.Title, dialog.Target, dialog.Confirm = "Shut down this host?", h.Name+" · "+h.ID, "Shut down"
-		dialog.Body = "Schedule shutdown on this exact host. Connectivity will be lost. Task completion requires observed evidence, not merely command acceptance."
-	case "cancel":
-		t := m.Task(a.ID)
-		command.Type, command.TargetID = "task.cancel", t.Source.ID
-		command.ExpectedVersions = domain.Versions{"task:" + a.ID: t.Source.Version}
-		payload = domain.TaskTarget{TaskID: t.Source.ID}
-		dialog.Title, dialog.Target, dialog.Confirm = "Cancel this task?", t.Name+" · "+t.ID, "Cancel task"
-		dialog.Body = "Request cancellation of this task at the reviewed lifecycle version. Completed effects are not undone."
-	case "approve", "reject":
-		d := m.discovery(a.ID)
-		dialog.Target = d.Name + " · " + string(d.NodeID)
-		dialog.Body = fmt.Sprintf("Address: %s · key: %s. ", unknown(d.Address), d.Fingerprint)
-		command.Type = "cluster.request." + a.Kind
-		payload = domain.JoinDecisionPayload{RequestID: d.RequestID}
-		command.ExpectedVersions = domain.Versions{"join_request:" + string(d.RequestID): d.Version}
-		dialog.Title, dialog.Confirm = "Approve join request?", "Approve"
-		if a.Kind == "reject" {
-			dialog.Title, dialog.Confirm = "Reject join request?", "Reject"
-			dialog.Body += "Reject without granting membership."
-		} else {
-			dialog.Body += "Grant pending membership only, never full membership or voting rights."
-		}
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		m.Notice = err.Error()
-		return
-	}
-	command.Payload = data
-	if a.Kind == "refresh" || a.Kind == "network-check" || a.Kind == "credential-check" || a.Kind == "repository-fetch" {
-		m.command = &command
-		m.busy = true
-		return
-	}
-	m.review = &command
-	m.Modal = &dialog
 }
-
-// TakeCommand transfers one immutable, reviewed command to the HTTP worker.
-func (m *Model) TakeCommand() *domain.Command { command := m.command; m.command = nil; return command }
-func (m *Model) Selection() Selection {
-	return Selection{Host: domain.ID(m.HostID), Task: domain.ID(m.TaskID)}
+func (m *Model) versionPath() string {
+	if m.Document == nil {
+		return ""
+	}
+	kind := "recipes"
+	if m.Page == "Configurations" {
+		kind = "configurations"
+	}
+	return fmt.Sprintf("/%s/%s/versions/%d", kind, url.PathEscape(m.Document.ID), m.Document.Version)
 }

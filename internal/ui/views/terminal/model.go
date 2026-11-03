@@ -3,8 +3,6 @@ package terminal
 import (
 	"context"
 	"io"
-	"nixmox/internal/domain"
-	"nixmox/internal/ui"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,7 +11,9 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
+	"nixmox/internal/ui"
 	confirmation "nixmox/internal/ui/components/confirmation/terminal"
+	"nixmox/internal/ui/components/form"
 	forms "nixmox/internal/ui/components/form/terminal"
 	logs "nixmox/internal/ui/components/log/terminal"
 	"nixmox/internal/ui/components/progress"
@@ -62,6 +62,10 @@ func (m *Model) resize() {
 func (m *Model) sync() {
 	if m.formInput.Active && (m.Core.Form == nil || m.Core.Form.ID != m.formInput.FormID) {
 		m.formInput.Reset()
+	}
+	if m.formInput.Active && m.formInput.Field.Kind == "json" {
+		m.formInput.Text.SetWidth(max(10, m.content.Width()-4))
+		m.formInput.Text.SetHeight(min(12, max(3, m.content.Height()-5)))
 	}
 	m.view = m.Core.View()
 	m.search.Style(m.view.Theme, m.content.Width(), m.Core.Reduced)
@@ -119,8 +123,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.formInput.Reset()
 					m.sync()
 					return m, nil
-				case "enter":
-					field, id, value := m.formInput.Field, m.formInput.FormID, m.formInput.Input.Value()
+				case "enter", "ctrl+s":
+					if key.String() == "enter" && m.formInput.Field.Kind == "json" {
+						cmd := m.formInput.Update(msg)
+						m.sync()
+						return m, cmd
+					}
+					field, id, value := m.formInput.Field, m.formInput.FormID, m.formInput.Value()
 					switch field.Kind {
 					case "password":
 						data := []byte(value)
@@ -130,9 +139,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.Core.SetFormSecret(id, nil)
 						file, err := os.Open(value)
 						if err == nil {
-							data, readErr := io.ReadAll(io.LimitReader(file, domain.CommandPayloadLimit+1))
+							data, readErr := io.ReadAll(io.LimitReader(file, form.InputLimit+1))
 							file.Close()
-							if readErr == nil && len(data) <= domain.CommandPayloadLimit {
+							if readErr == nil && len(data) <= form.InputLimit {
 								m.Core.SetFormSecret(id, data)
 								m.Core.SetFormValue(id, field.ID, filepath.Base(value))
 							} else {

@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	apiclient "nixmox/internal/client"
+	"nixmox/internal/configuration"
 	"nixmox/internal/daemon"
 	"nixmox/internal/domain"
 	"nixmox/internal/recipe"
@@ -77,12 +78,17 @@ func TestClusterLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer api.Close()
-	var draft, observed recipe.Record
-	input := json.RawMessage(`{"targetRepo":{"id":"target","ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"sourceDefinition":{"flakeDir":".","flakeConfiguration":"cedar","observations":{"hosts":{"type":"clusterHosts"}}}}`)
-	if err = api.Do(ctx, "POST", "/recipes", input, &draft); err != nil {
+	var definition recipe.Version
+	var draft, observed configuration.Version
+	input := json.RawMessage(`{"sourceDefinition":{"flakeDir":".","flakeConfiguration":"cedar","observations":{"hosts":{"type":"clusterHosts"}}}}`)
+	if err = api.Do(ctx, "POST", "/recipes", input, &definition); err != nil {
 		t.Fatal(err)
 	}
-	if err = api.Do(ctx, "POST", "/recipes/"+draft.ID+"/versions/1/observe", map[string]string{"name": "hosts"}, &observed); err != nil {
+	configurationInput := map[string]any{"recipe": recipe.Reference{ID: definition.ID, Version: definition.Version}, "targetRepo": map[string]string{"id": "target", "ref": "main", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	if err = api.Do(ctx, "POST", "/configurations", configurationInput, &draft); err != nil {
+		t.Fatal(err)
+	}
+	if err = api.Do(ctx, "POST", "/configurations/"+draft.ID+"/versions/1/observe", map[string]string{"name": "hosts"}, &observed); err != nil {
 		t.Fatal(err)
 	}
 	if err = api.Do(ctx, "GET", "/configurations", nil, nil); err != nil {
@@ -113,8 +119,8 @@ func TestClusterLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restoredAPI.Close()
-	var persisted recipe.Record
-	if err = restoredAPI.Do(ctx, "GET", "/recipes/"+draft.ID+"/versions/2", nil, &persisted); err != nil {
+	var persisted configuration.Version
+	if err = restoredAPI.Do(ctx, "GET", "/configurations/"+draft.ID+"/versions/2", nil, &persisted); err != nil {
 		t.Fatal(err)
 	}
 	if err = restoredAPI.Do(ctx, "GET", "/configurations", nil, nil); err != nil {
@@ -124,9 +130,9 @@ func TestClusterLifecycle(t *testing.T) {
 	// --- Assertions ---
 	// ------------------
 	if !observed.CanRender || persisted.ID != draft.ID || persisted.Version != 2 || len(persisted.Collected.Observations) != 1 {
-		t.Fatal("recipe observation/version did not survive restart")
+		t.Fatal("configuration observation/version did not survive restart")
 	}
-	if restored.Registry == nil || restored.Collector == nil {
+	if restored.Registry == nil || restored.Configurations.Observer == nil {
 		t.Fatal("source services were not restored")
 	}
 	if unjoined.Checks["natsServer"].Status != "not-applicable" {

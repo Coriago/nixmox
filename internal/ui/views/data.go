@@ -1,41 +1,52 @@
 package views
 
 import (
-	"time"
+	"encoding/json"
 
 	"nixmox/internal/domain"
+	"nixmox/internal/ui/components/build"
 	logs "nixmox/internal/ui/components/log"
-	"nixmox/internal/ui/components/telemetry"
 )
 
-// Observations are supplied by the backend adapter, never synthesized by views.
-type Cluster struct{ ID, Name, Gateway string }
+// Document is a read-only UI projection. Raw retains versioned API fields for
+// inspection/editing without importing server services into the WASM binary.
+type Document struct {
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Version uint64          `json:"version"`
+	Raw     json.RawMessage `json:"-"`
+}
+
+func (d *Document) UnmarshalJSON(data []byte) error {
+	type metadata Document
+	var value metadata
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*d = Document(value)
+	d.Raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+func (d Document) Property(name string) json.RawMessage {
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(d.Raw, &fields)
+	return fields[name]
+}
+
+func (d Document) Has(name string) bool {
+	value := d.Property(name)
+	return len(value) > 0 && string(value) != "null"
+}
 
 type Host struct {
-	Source                                            domain.Host
-	ID, Name, Address, Reachability, Membership, Role string
-	CPU                                               *float64
-	Memory                                            string
-	Architecture, Processor, OS, Uptime               string
-	APIEndpoint, NATSLeaf, DiskIO, ObservedAt         string
-	Metrics                                           []telemetry.Model
+	Source                        domain.Member
+	ID, Name, Address, Membership string
 }
 
 type Task struct {
-	Source                                          domain.Task
-	ID, Name, HostID, State, Phase, Result, Started string
-	OwnerID, CommandID, Scope, ProgressUnit         string
-	Done, Total                                     int
-	Age                                             time.Duration
-	Log                                             logs.Model
-}
-
-// Discovery is an observation, distinct from enrollment and membership.
-type Discovery struct {
-	NodeID                                   domain.ID
-	RequestID                                domain.ID
-	Version                                  domain.Version
-	ExpiresAt                                time.Time
-	ID, Name, Address, Fingerprint, Decision string
-	Requested                                bool
+	Source                  domain.Task
+	ID, Name, HostID, State string
+	Log                     logs.Model
+	Build                   build.Model
+	LastLog                 uint64
 }

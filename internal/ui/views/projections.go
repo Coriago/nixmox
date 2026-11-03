@@ -1,149 +1,57 @@
 package views
 
 import (
-	"cmp"
-	"fmt"
+	"maps"
 	"slices"
-	"time"
+	"strings"
 
 	"nixmox/internal/ui"
-	"nixmox/internal/ui/components/button"
-	"nixmox/internal/ui/components/progress"
 	"nixmox/internal/ui/components/status"
 	"nixmox/internal/ui/components/table"
-	"nixmox/internal/ui/components/telemetry"
 )
 
-func (m *Model) hostLink(h Host) HostLink {
-	link := HostLink{ID: h.ID, Title: h.Name, State: h.Reachability, Action: Action{Kind: "host", ID: h.ID}}
-	for _, t := range m.Tasks {
-		if t.HostID == h.ID && ui.Active(t.State) {
-			link.Tasks++
-		}
+func clean(value string) string                      { return ui.Text(value, 500, ' ') }
+func sortedKeys[T any](values map[string]T) []string { return slices.Sorted(maps.Keys(values)) }
+func safeLines(value string) []string {
+	lines := strings.Split(value, "\n")
+	if len(lines) > 4000 {
+		lines = append(lines[:4000], "Preview truncated")
 	}
-	state := h.Reachability
-	if !m.connected && state == "online" {
-		state = "stale"
-		link.State = "stale"
+	for i := range lines {
+		lines[i] = ui.Text(lines[i], 2000, ' ')
 	}
-	if link.Tasks > 0 && state == "online" {
-		state = "running"
-	}
-	if link.Tasks > 0 {
-		link.State += fmt.Sprintf(" · %d active", link.Tasks)
-	}
-	link.Marker, link.Tone = status.Marker(state, m.frame, m.Reduced)
-	return link
+	return lines
 }
-func (m *Model) taskRecord(t Task) table.Record {
-	marker, tone := status.Marker(t.State, m.frame, m.Reduced)
-	label, value := "", 0.0
-	if ui.Active(t.State) {
-		if !m.connected {
-			marker, tone = status.Marker("stale", m.frame, true)
-		}
-		label = "Indeterminate"
-	}
-	if t.Total > 0 {
-		value = float64(t.Done) / float64(t.Total)
-		label = fmt.Sprintf("%d / %d %s · %.0f%%", t.Done, t.Total, t.ProgressUnit, value*100)
-	}
-	s := m.bars[t.ID]
-	if s == nil {
-		s = &progress.Spring{}
-	}
-	bar := s.Bar(value, t.Total > 0, label)
-	return table.Record{ID: t.ID, Marker: marker, Tone: tone, Action: Action{Kind: "task", ID: t.ID}, Cells: []table.Cell{
-		{Text: t.Name, Detail: t.HostID}, {Text: t.State, Tone: tone}, {Text: t.Phase, Detail: label, Bar: bar}, {Text: t.Started}, {Text: fmt.Sprintf("%ds", int(t.Age.Seconds()))},
-	}}
-}
-func taskList(title string, records ...table.Record) table.Model {
-	return table.Model{Title: title, Empty: "No tasks match this view.", Columns: []string{"Task / target", "Status", "Phase / progress", "Started", "Duration"}, Records: records}
-}
-
-func (m *Model) taskTable(title, host, filter, query string) table.Model {
-	tasks := []Task{}
-	for _, t := range m.Tasks {
-		if host != "" && t.HostID != host || filter == "Active" && !ui.Active(t.State) || filter == "Needs attention" && t.State != "blocked" && t.State != "failed" {
-			continue
-		}
-		if !matches(query, t.ID, t.Name, t.HostID, t.State, t.Phase) {
-			continue
-		}
-		tasks = append(tasks, t)
-	}
-	slices.SortStableFunc(tasks, func(a, b Task) int { return cmp.Compare(b.Started, a.Started) })
-	list := taskList(title)
-	for _, t := range tasks {
-		list.Records = append(list.Records, m.taskRecord(t))
-	}
-	return list
+func (m *Model) hostLink(host Host) HostLink {
+	return HostLink{ID: host.ID, Title: host.Name, State: host.Membership, Marker: "○", Tone: status.MembershipTone(host.Membership), Action: Action{Kind: "host", ID: host.ID}}
 }
 func (m *Model) hostTable(title, query string) table.Model {
-	list := table.Model{Title: title, Empty: "No host observations available.", Columns: []string{"Host / address", "Reachability", "Membership", "CPU", "Memory", "Active tasks"}}
-	for _, h := range m.Hosts {
-		if !matches(query, h.ID, h.Name, h.Address, h.Reachability, h.Membership) {
+	result := table.Model{Title: title, Columns: []string{"Host", "Membership", "Endpoint"}, Empty: "No hosts"}
+	for _, host := range m.Hosts {
+		if !matches(query, host.Name, host.ID, host.Address) {
 			continue
 		}
-		r := m.hostLink(h)
-		cpu, memory := "—", "—"
-		if h.Reachability == "online" {
-			if h.CPU != nil {
-				cpu = fmt.Sprintf("%.0f%%", *h.CPU*100)
-			}
-			if h.Memory != "" {
-				memory = h.Memory
-			}
-		}
-		list.Records = append(list.Records, table.Record{ID: h.ID, Marker: r.Marker, Tone: r.Tone, Action: r.Action, Cells: []table.Cell{
-			{Text: h.Name, Detail: h.Address}, {Text: h.Reachability, Tone: reachabilityTone(h.Reachability)}, {Text: h.Membership, Tone: status.MembershipTone(h.Membership), Badge: true}, {Text: cpu}, {Text: memory}, {Text: fmt.Sprint(r.Tasks)},
-		}})
+		result.Records = append(result.Records, table.Record{ID: host.ID, Action: Action{Kind: "host", ID: host.ID}, Marker: "○", Cells: []table.Cell{{Text: host.Name, Detail: host.ID}, {Text: host.Membership}, {Text: host.Address}}})
 	}
-	return list
+	return result
 }
-func hostMetrics(h Host) []telemetry.Model {
-	if h.Reachability == "online" && len(h.Metrics) > 0 {
-		return slices.Clone(h.Metrics)
-	}
-	var metrics []telemetry.Model
-	for _, label := range []string{"CPU", "Memory", "Root filesystem", "Network"} {
-		metrics = append(metrics, telemetry.Model{Label: label, Value: "—", Detail: "No live sample", Tone: "muted"})
-	}
-	return metrics
-}
-
-func reachabilityTone(state string) string {
-	_, tone := status.Marker(state, 0, true)
-	return tone
-}
-
-func (m *Model) discoveryTable() table.Model {
-	t := table.Model{Title: "Discovery", Empty: "No discovered hosts awaiting enrollment.", Columns: []string{"Host / address", "Membership", "Status", "Public fingerprint", "Actions"}}
-	discovered := slices.Clone(m.Discoveries)
-	slices.SortStableFunc(discovered, func(a, b Discovery) int {
-		if a.Requested != b.Requested {
-			if a.Requested {
-				return -1
-			}
-			return 1
-		}
-		return cmp.Compare(a.Name, b.Name)
-	})
-	for _, d := range discovered {
-		if m.Host(string(d.NodeID)) != nil || time.Now().After(d.ExpiresAt) {
+func (m *Model) taskTable(title, hostID, filter, query string) table.Model {
+	result := table.Model{Title: title, Columns: []string{"Task", "Status", "Host"}, Empty: "No matching tasks"}
+	for _, task := range m.Tasks {
+		if hostID != "" && task.HostID != hostID {
 			continue
 		}
-		label, tone := "Discovered", "muted"
-		var controls []button.Model
-		if d.Requested {
-			label, tone = "Awaiting approval", "warning"
-			controls = []button.Model{m.resourceControl("Approve", "approve", d.ID), m.resourceControl("Reject", "reject", d.ID)}
-		} else if d.Decision != "" {
-			label = d.Decision
+		if filter == "Active" && !ui.Active(task.State) {
+			continue
 		}
-		t.Records = append(t.Records, table.Record{ID: d.ID, Marker: "○", Tone: "muted", Controls: controls, Cells: []table.Cell{
-			{Text: d.Name, Detail: d.Address}, {Text: "unjoined", Tone: status.MembershipTone("unjoined"), Badge: true}, {Text: label, Tone: tone, Badge: d.Requested}, {Text: d.Fingerprint}, {},
-		}})
+		if filter == "Needs attention" && task.State != "failed" && task.State != "unknown" && task.State != "manual-review" {
+			continue
+		}
+		if !matches(query, task.ID, task.Name, task.HostID, task.State) {
+			continue
+		}
+		marker, tone := status.Marker(task.State, m.frame, m.Reduced)
+		result.Records = append(result.Records, table.Record{ID: task.ID, Action: Action{Kind: "task", ID: task.ID}, Marker: marker, Tone: tone, Cells: []table.Cell{{Text: task.Name, Detail: task.ID}, {Text: task.State, Tone: tone}, {Text: task.HostID}}})
 	}
-	return t
+	return result
 }

@@ -38,7 +38,7 @@ func (v *View) ScrollToTail(ctx app.Context) {
 	})
 }
 func Preview(lines []string) app.UI {
-	return app.Section().Class("data-panel", "live-preview").Body(app.H2().Class("panel-title").Text("Latest output"), app.Pre().Text(strings.Join(lines, "\n")))
+	return app.Section().Class("data-panel", "live-preview").Body(app.H2().Class("panel-title").Text("Preview"), app.Pre().Text(strings.Join(lines, "\n")))
 }
 
 //go:embed style.css

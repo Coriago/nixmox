@@ -3,33 +3,33 @@ package recipe
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"text/template"
 	"text/template/parse"
 )
 
-type input struct {
-	name        string
-	observation bool
+// Input is a field or observation and the inputs it requires.
+type Input struct {
+	Name        string
+	Observation bool
+	Depends     []Input
 }
 
-func (i input) key() string {
-	if i.observation {
-		return "observation:" + i.name
+func (i Input) key() string {
+	if i.Observation {
+		return "observation:" + i.Name
 	}
-	return "field:" + i.name
-}
-
-type dependencyNode struct {
-	input
-	depends []input
+	return "field:" + i.Name
 }
 
 var identifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-func (d Definition) order() ([]dependencyNode, error) {
-	graph := map[string]dependencyNode{}
+func (d Definition) Order() ([]Input, error) {
+	graph := map[string]Input{}
 	for name, field := range d.Fields {
 		if !identifier.MatchString(name) || name == "observations" || name == "targetRepo" || name == "recipeSource" {
 			return nil, fmt.Errorf("invalid or reserved field name %q", name)
@@ -43,19 +43,21 @@ func (d Definition) order() ([]dependencyNode, error) {
 		if err != nil {
 			return nil, err
 		}
-		node := dependencyNode{input: input{name: name}, depends: dependencies}
+		node := Input{Name: name, Depends: dependencies}
 		graph[node.key()] = node
 	}
 	for name, spec := range d.Observations {
 		if !identifier.MatchString(name) {
 			return nil, fmt.Errorf("invalid observation name %q", name)
 		}
-		switch spec.Type {
-		case "clusterHosts", "clusterRepos", "clusterCreds", "hostDisks", "hostHardware", "hostSSHtoAgeKey", "repoCommand", "repoFile":
-		default:
+		if !slices.Contains([]ObservationType{
+			ClusterHosts, ClusterRepos, ClusterCreds,
+			HostDisks, HostHardware, HostSSHtoAgeKey,
+			RepoCommand, RepoFile,
+		}, spec.Type) {
 			return nil, fmt.Errorf("unknown observation type %q", spec.Type)
 		}
-		value, err := object(spec)
+		value, err := Object(spec)
 		if err != nil {
 			return nil, err
 		}
@@ -63,34 +65,40 @@ func (d Definition) order() ([]dependencyNode, error) {
 		if err != nil {
 			return nil, err
 		}
-		node := dependencyNode{input: input{name: name, observation: true}, depends: dependencies}
+		node := Input{Name: name, Observation: true, Depends: dependencies}
 		graph[node.key()] = node
 	}
+
+	// A visiting node encountered again forms a cycle; visited nodes are complete.
+	const (
+		visiting = 1
+		visited  = 2
+	)
 	marks := map[string]int{}
-	var result []dependencyNode
+	var result []Input
 	var visit func(string) error
 	visit = func(key string) error {
-		if marks[key] == 1 {
+		if marks[key] == visiting {
 			return fmt.Errorf("recipe dependency cycle at %s", key)
 		}
-		if marks[key] == 2 {
+		if marks[key] == visited {
 			return nil
 		}
 		node, ok := graph[key]
 		if !ok {
 			return fmt.Errorf("undefined recipe dependency %s", key)
 		}
-		marks[key] = 1
-		for _, dependency := range node.depends {
+		marks[key] = visiting
+		for _, dependency := range node.Depends {
 			if err := visit(dependency.key()); err != nil {
 				return err
 			}
 		}
-		marks[key] = 2
+		marks[key] = visited
 		result = append(result, node)
 		return nil
 	}
-	for _, key := range keys(graph) {
+	for _, key := range slices.Sorted(maps.Keys(graph)) {
 		if err := visit(key); err != nil {
 			return nil, err
 		}
@@ -116,29 +124,29 @@ func (d Definition) order() ([]dependencyNode, error) {
 	return result, nil
 }
 
-func (d Definition) dependencies(value any) ([]input, error) {
-	found := map[string]input{}
-	add := func(value input) { found[value.key()] = value }
+func (d Definition) dependencies(value any) ([]Input, error) {
+	found := map[string]Input{}
+	add := func(value Input) { found[value.key()] = value }
 	reference := func(path []string) {
 		if len(path) == 0 {
 			for name := range d.Fields {
-				add(input{name: name})
+				add(Input{Name: name})
 			}
 			for name := range d.Observations {
-				add(input{name: name, observation: true})
+				add(Input{Name: name, Observation: true})
 			}
 			return
 		}
 		if path[0] == "observations" {
 			if len(path) > 1 {
-				add(input{name: path[1], observation: true})
+				add(Input{Name: path[1], Observation: true})
 			} else {
 				for name := range d.Observations {
-					add(input{name: name, observation: true})
+					add(Input{Name: name, Observation: true})
 				}
 			}
 		} else if _, ok := d.Fields[path[0]]; ok {
-			add(input{name: path[0]})
+			add(Input{Name: path[0]})
 		}
 	}
 	var walk func(parse.Node)
@@ -165,7 +173,9 @@ func (d Definition) dependencies(value any) ([]input, error) {
 				field, isField := node.Args[1].(*parse.FieldNode)
 				name, isName := node.Args[2].(*parse.StringNode)
 				if ok && function.Ident == "index" && isField && isName {
-					reference(append(append([]string(nil), field.Ident...), name.Text))
+					path := append([]string(nil), field.Ident...)
+					path = append(path, name.Text)
+					reference(path)
 					for _, arg := range node.Args[3:] {
 						walk(arg)
 					}
@@ -208,7 +218,7 @@ func (d Definition) dependencies(value any) ([]input, error) {
 			if !strings.Contains(value, "{{") {
 				return nil
 			}
-			t, err := parseTemplate(value)
+			t, err := template.New("dependency").Option("missingkey=error").Parse(value)
 			if err != nil {
 				return err
 			}
@@ -216,7 +226,7 @@ func (d Definition) dependencies(value any) ([]input, error) {
 				walk(associated.Tree.Root)
 			}
 		case map[string]any:
-			for _, key := range keys(value) {
+			for _, key := range slices.Sorted(maps.Keys(value)) {
 				if err := inspect(value[key]); err != nil {
 					return err
 				}
@@ -233,23 +243,10 @@ func (d Definition) dependencies(value any) ([]input, error) {
 	if err := inspect(value); err != nil {
 		return nil, err
 	}
-	result := make([]input, 0, len(found))
+	result := make([]Input, 0, len(found))
 	for _, dependency := range found {
 		result = append(result, dependency)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].key() < result[j].key() })
 	return result, nil
-}
-
-func (r Record) ready(node dependencyNode) bool {
-	for _, dependency := range node.depends {
-		if dependency.observation {
-			if _, ok := r.Collected.Observations[dependency.name]; !ok {
-				return false
-			}
-		} else if _, ok := r.Collected.Fields[dependency.name]; !ok {
-			return false
-		}
-	}
-	return true
 }

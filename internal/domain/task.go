@@ -47,24 +47,30 @@ type TaskLinks struct {
 	ChildTasks            []ChildTask `json:"childTasks"`
 	Outputs               []OutputRef `json:"outputs"`
 }
+
 type ChildTask struct {
 	TaskID string `json:"taskId"`
 	Role   string `json:"role"`
 }
+
 type OutputRef struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 }
+
 type TaskConcurrency struct {
 	ExclusiveResources []string `json:"exclusiveResources"`
 }
+
 type Review struct {
 	OutputID   string     `json:"outputId"`
 	ApprovedAt *time.Time `json:"approvedAt"`
 }
+
 type TaskError struct {
 	Message string `json:"message"`
 }
+
 type TaskOutput struct {
 	ID      string          `json:"id"`
 	TaskID  string          `json:"taskId"`

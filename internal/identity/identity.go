@@ -213,7 +213,15 @@ func NewAuthority(clusterID string, now time.Time) (*Authority, error) {
 	if err != nil {
 		return nil, err
 	}
-	template := &x509.Certificate{SerialNumber: number, Subject: pkix.Name{CommonName: clusterID}, NotBefore: now.Add(-time.Minute), NotAfter: now.AddDate(10, 0, 0), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
+	template := &x509.Certificate{
+		SerialNumber:          number,
+		Subject:               pkix.Name{CommonName: clusterID},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.AddDate(10, 0, 0),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, public, key)
 	if err != nil {
 		return nil, err
@@ -260,7 +268,14 @@ func (a *Authority) Issue(csrPEM []byte, nodeID, expectedThumbprint string, name
 	if !expiry.After(now) {
 		return nil, errors.New("cluster CA expired")
 	}
-	template := &x509.Certificate{SerialNumber: number, Subject: pkix.Name{CommonName: nodeID}, NotBefore: now.Add(-time.Minute), NotAfter: expiry, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}}
+	template := &x509.Certificate{
+		SerialNumber: number,
+		Subject:      pkix.Name{CommonName: nodeID},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     expiry,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+	}
 	for _, name := range names {
 		if ip := net.ParseIP(name); ip != nil {
 			template.IPAddresses = append(template.IPAddresses, ip)

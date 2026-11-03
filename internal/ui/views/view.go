@@ -33,22 +33,29 @@ func control(label, kind, id string, active bool) button.Model {
 	return button.Model{Label: label, Action: Action{Kind: kind, ID: id}, Active: active}
 }
 
-func field(label, value string) section.Field { return section.Field{Label: label, Value: value} }
+func field(label, value string) section.Field {
+	return section.Field{Label: label, Value: clean(value)}
+}
 
 func (m *Model) View() View {
-	workspace := m.Cluster.Name
+	workspace := clean(m.Cluster.Name)
 	if workspace == "" {
 		workspace = "No cluster"
 	}
-	v := View{Page: m.Page, Title: m.Page, Subtitle: workspace, Workspace: workspace, Connection: ui.Text(m.connectionLabel(), 2048, ' '), Breadcrumb: strings.ToUpper(workspace + " / " + m.Page), Tab: m.Tab, Theme: m.Theme(), Reduced: m.Reduced, Notice: ui.Text(m.Notice, 2048, ' '), Modal: m.Modal, HostID: m.HostID, Query: m.Query}
+	v := View{
+		Page: m.Page, Title: m.Page, Subtitle: workspace, Workspace: workspace,
+		Connection: ui.Text(m.connectionLabel(), 2048, ' '),
+		Breadcrumb: strings.ToUpper(workspace + " / " + m.Page),
+		Tab:        m.Tab, Theme: m.Theme(), Reduced: m.Reduced,
+		Notice: ui.Text(m.Notice, 2048, ' '),
+		Modal:  m.Modal, HostID: m.HostID, Query: m.Query,
+	}
 	v.Toolbar = []button.Model{
 		control("Theme", "theme", "", false),
 		control("Reduced motion", "motion", "", m.Reduced),
 		control("Help", "help", "", false),
 	}
-	if m.uncertain != "" {
-		v.Toolbar = append(v.Toolbar, control("Check command receipt", "reconcile", "", false))
-	}
+	v.Toolbar = append(v.Toolbar, m.action("Refresh", "refresh", ""))
 	for _, p := range Pages {
 		v.Nav = append(v.Nav, control(p.Name, "page", p.Name, m.Page == p.Name))
 		if p.Name == m.Page {
@@ -62,6 +69,8 @@ func (m *Model) View() View {
 	if v.Notice != "" {
 		v.Add(Block{Kind: Notice})
 	}
+	v.Title = clean(v.Title)
+	v.Subtitle = clean(v.Subtitle)
 	return v
 }
 func (m *Model) connectionLabel() string {
@@ -85,16 +94,4 @@ func unknown(s string) string {
 		return "Unknown"
 	}
 	return s
-}
-func liveValue(h Host, s string) string {
-	if h.Reachability != "online" {
-		return "Unavailable · no live observation"
-	}
-	return unknown(s)
-}
-func taskResult(t Task) string {
-	if t.Result != "" {
-		return t.Result
-	}
-	return "No final result yet. Execution is " + t.State + ". Closing this view does not cancel work."
 }

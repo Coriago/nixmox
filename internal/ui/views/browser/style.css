@@ -37,6 +37,7 @@ h1{font-size:25px;font-weight:600;letter-spacing:-.5px;margin:0 0 4px;line-heigh
 .subtitle{color:var(--muted);font-size:12px;margin:0}
 .header-actions{display:flex;flex-wrap:wrap;gap:7px;flex-shrink:0;padding-top:20px}
 .identity-panel{margin-bottom:20px;border-top:2px solid var(--accent)}
+textarea.query-input{width:100%;font-family:ui-monospace,monospace;line-height:1.5;resize:vertical}
 .section-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin:16px 0}
 .tables{display:flex;flex-direction:column;gap:16px;margin:16px 0}
 .page-actions,.detail-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:16px 0}

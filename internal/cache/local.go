@@ -19,6 +19,7 @@ import (
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/nixhash"
 	"github.com/nix-community/go-nix/pkg/storepath"
+
 	"nixmox/internal/host"
 )
 
@@ -34,6 +35,7 @@ func NewLocal(secret string, process host.Process) (*Local, error) {
 	}
 	return &Local{key: key, process: process}, nil
 }
+
 func (l *Local) PublicKey() string { return l.key.ToPublicKey().String() }
 
 // Metadata queries registered store information, never infers closure references
@@ -71,7 +73,16 @@ func (l *Local) Metadata(ctx context.Context, path string) (*narinfo.NarInfo, er
 		refs = append(refs, filepath.Base(ref))
 	}
 	sort.Strings(refs)
-	result := &narinfo.NarInfo{StorePath: path, URL: "nar/" + filepath.Base(path) + ".nar", Compression: "none", FileHash: hash, FileSize: info.NarSize, NarHash: hash, NarSize: info.NarSize, References: refs}
+	result := &narinfo.NarInfo{
+		StorePath:   path,
+		URL:         "nar/" + filepath.Base(path) + ".nar",
+		Compression: "none",
+		FileHash:    hash,
+		FileSize:    info.NarSize,
+		NarHash:     hash,
+		NarSize:     info.NarSize,
+		References:  refs,
+	}
 	if info.Deriver != "" && info.Deriver != "unknown-deriver" {
 		if !storepath.PathRe.MatchString(info.Deriver) {
 			return nil, errors.New("invalid deriver path")

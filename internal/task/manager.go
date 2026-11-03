@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/sync/errgroup"
+
 	"nixmox/internal/cluster"
 	"nixmox/internal/domain"
 	"nixmox/internal/util"
@@ -25,6 +25,7 @@ type Manager struct {
 	HostID    string
 	Tasks     cluster.Store[domain.Task]
 	Outputs   cluster.Store[domain.TaskOutput]
+	Logs      cluster.Logs
 	Resources Resources
 	Runners   map[string]Runner // Immutable after Run begins.
 	mu        sync.Mutex
@@ -117,7 +118,10 @@ func (m *Manager) Approve(ctx context.Context, id, outputID string) error {
 // runner. A caller must hold the process identity lock for this HostID.
 func (m *Manager) Run(ctx context.Context) error {
 	lifetime, cancel := context.WithCancel(ctx)
-	defer func() { cancel(); m.wg.Wait() }()
+	defer func() {
+		cancel()
+		m.wg.Wait()
+	}()
 	m.mu.Lock()
 	m.active = map[string]context.CancelFunc{}
 	m.mu.Unlock()
@@ -126,10 +130,14 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 	group, watchCtx := errgroup.WithContext(lifetime)
 	group.Go(func() error {
-		return m.Tasks.Watch(watchCtx, ">", func(_ *cluster.Record[domain.Task], _ bool) error { return m.schedule(watchCtx) })
+		return m.Tasks.Watch(watchCtx, ">", func(_ *cluster.Record[domain.Task], _ bool) error {
+			return m.schedule(watchCtx)
+		})
 	})
 	group.Go(func() error {
-		return m.Resources.Store.Watch(watchCtx, "resources", func(_ *cluster.Record[map[string]string], _ bool) error { return m.schedule(watchCtx) })
+		return m.Resources.Store.Watch(watchCtx, "resources", func(_ *cluster.Record[map[string]string], _ bool) error {
+			return m.schedule(watchCtx)
+		})
 	})
 	return group.Wait()
 }
@@ -298,56 +306,4 @@ func (m *Manager) finish(ctx context.Context, record cluster.Record[domain.Task]
 		return err
 	}
 	return m.Resources.Release(ctx, record.Key)
-}
-
-type Execution struct {
-	manager *Manager
-	record  cluster.Record[domain.Task]
-}
-
-func (e *Execution) Task() domain.Task { return e.record.Value }
-func (e *Execution) Checkpoint(ctx context.Context, key string, value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	task := e.record.Value
-	task.Context[key] = data
-	return e.save(ctx, task)
-}
-func (e *Execution) save(ctx context.Context, task domain.Task) error {
-	revision, err := e.manager.Tasks.Update(ctx, e.record.Key, task, e.record.Revision)
-	if err == nil {
-		e.record.Value = task
-		e.record.Revision = revision
-	}
-	return err
-}
-
-// Review commits an immutable structured output before entering the review
-// state. On resumed execution, runners reuse checkpointed build results.
-func (e *Execution) Review(ctx context.Context, kind string, content any) error {
-	if e.record.Value.Review != nil {
-		if e.record.Value.Review.ApprovedAt != nil {
-			return nil
-		}
-		return ErrReview
-	}
-	data, err := json.Marshal(content)
-	if err != nil {
-		return err
-	}
-	output := domain.TaskOutput{ID: uuid.NewString(), TaskID: e.record.Key, Kind: kind, Content: data}
-	if _, err = e.manager.Outputs.Create(ctx, output.ID, output); err != nil {
-		return err
-	}
-	task := e.record.Value
-	// The manager publishes manual-review only after the runner has returned.
-	// Approval and cancellation therefore cannot race a still-active runner.
-	task.Review = &domain.Review{OutputID: output.ID}
-	task.Links.Outputs = append(task.Links.Outputs, domain.OutputRef{ID: output.ID, Kind: kind})
-	if err = e.save(ctx, task); err != nil {
-		return fmt.Errorf("persist review: %w", err)
-	}
-	return ErrReview
 }

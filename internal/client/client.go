@@ -22,6 +22,7 @@ type Client struct {
 	endpoint *url.URL
 	http     *http.Client
 }
+
 type Error struct {
 	Status  int
 	Message string
@@ -38,6 +39,7 @@ type UnknownSubmission struct{ Cause error }
 func (e *UnknownSubmission) Error() string {
 	return "request outcome is unknown; inspect daemon state before retrying"
 }
+
 func (e *UnknownSubmission) Unwrap() error { return e.Cause }
 
 func New(endpoint string, httpClient *http.Client) (*Client, error) {
@@ -60,6 +62,7 @@ func New(endpoint string, httpClient *http.Client) (*Client, error) {
 	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{endpoint: base, http: &copyClient}, nil
 }
+
 func (c *Client) Close() { c.http.CloseIdleConnections() }
 
 func (c *Client) request(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
@@ -136,6 +139,7 @@ func incomplete(method string, err error) error {
 	}
 	return err
 }
+
 func responseError(response *http.Response) error {
 	var payload struct {
 		Error string `json:"error"`

@@ -3,7 +3,7 @@
 package browser
 
 import (
-	_ "embed"
+	"embed"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +14,9 @@ import (
 
 //go:embed style.css
 var stylesheet string
+
+//go:embed icon.png icon-large.png icon.svg
+var icons embed.FS
 
 // Handler serves bundled assets on the daemon HTTP listener; APIs are mounted by app.
 func Handler(assets string) (http.Handler, error) {
@@ -32,6 +35,7 @@ func Handler(assets string) (http.Handler, error) {
 	}
 	Register()
 	mux := http.NewServeMux()
+	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServerFS(icons)))
 	for route, name := range map[string]string{"/web/app.wasm": "app.wasm", "/wasm_exec.js": "wasm_exec.js"} {
 		mux.HandleFunc("GET "+route, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-cache")
@@ -45,7 +49,11 @@ func Handler(assets string) (http.Handler, error) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		fmt.Fprint(w, styles)
 	})
-	mux.Handle("/", &app.Handler{Name: "Nixmox console", Title: "Nixmox · Workspace", Description: "Cluster console", Styles: []string{"/web/console.css"}, BackgroundColor: "#181818", ThemeColor: "#e57000"})
+	mux.Handle("/", &app.Handler{
+		Name: "Nixmox console", Title: "Nixmox · Workspace", Description: "Cluster console",
+		Styles: []string{"/web/console.css"}, BackgroundColor: "#181818", ThemeColor: "#e57000",
+		Icon: app.Icon{Default: "/web/icon.png", Large: "/web/icon-large.png", SVG: "/web/icon.svg"},
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")

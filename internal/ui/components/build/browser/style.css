@@ -1,0 +1,6 @@
+.build-monitor { background: var(--surface); border: 1px solid var(--border); padding: 1rem; border-radius: .5rem; }
+.build-activities { display: grid; gap: .5rem; max-height: 28rem; overflow: auto; }
+.build-activity { display: grid; grid-template-columns: 6rem minmax(12rem,1fr) 8rem 10rem; gap: .5rem; padding: .6rem; border-bottom: 1px solid var(--border); }
+.build-activity code { overflow-wrap: anywhere; white-space: normal; }
+.build-activity progress { grid-column: 2 / -1; width: 100%; accent-color: var(--accent); }
+@media(max-width:800px) { .build-activity { grid-template-columns: 1fr; } .build-activity progress { grid-column: 1; } }

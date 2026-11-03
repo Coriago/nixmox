@@ -136,6 +136,7 @@ func UpdateSOPS(data []byte, change SOPSUpdate) ([]byte, error) {
 func scalar(value string) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
 }
+
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
@@ -144,6 +145,7 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 	}
 	return nil
 }
+
 func setMapping(node *yaml.Node, key string, value *yaml.Node) {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
@@ -153,6 +155,7 @@ func setMapping(node *yaml.Node, key string, value *yaml.Node) {
 	}
 	node.Content = append(node.Content, scalar(key), value)
 }
+
 func findAnchor(node *yaml.Node, name string) *yaml.Node {
 	if node.Anchor == name {
 		return node
@@ -164,6 +167,7 @@ func findAnchor(node *yaml.Node, name string) *yaml.Node {
 	}
 	return nil
 }
+
 func addAge(group, anchor *yaml.Node) error {
 	values := mappingValue(group, "age")
 	if values == nil {

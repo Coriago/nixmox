@@ -21,6 +21,7 @@ type BuildInput struct {
 	FlakeDir    string     `json:"flakeDir"`
 	Installable string     `json:"installable"`
 }
+
 type BuildResult struct {
 	StorePaths []string `json:"storePaths"`
 }
@@ -109,21 +110,8 @@ func (b Builder) Runner(ctx context.Context, execution *task.Execution) (any, er
 	if err := json.Unmarshal(execution.Task().Inputs, &input); err != nil {
 		return nil, err
 	}
-	return b.Run(ctx, input)
-}
-
-func (p Process) Disks(ctx context.Context) (json.RawMessage, error) {
-	data, err := p.Run(ctx, "", nil, "lsblk", "--json", "--bytes", "--output", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL,RM,RO")
-	if err != nil {
-		return nil, err
-	}
-	if !json.Valid(data) {
-		return nil, errors.New("invalid lsblk JSON")
-	}
-	return data, nil
-}
-
-func (p Process) Hardware(ctx context.Context) (string, error) {
-	data, err := p.Run(ctx, "", nil, "nixos-generate-config", "--show-hardware-config", "--no-filesystems")
-	return string(data), err
+	log := execution.LogWriter(ctx)
+	b.Process.Log = log
+	result, err := b.Run(ctx, input)
+	return result, errors.Join(err, log.Close())
 }

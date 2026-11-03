@@ -27,6 +27,7 @@ status: full-stable
 environment: installed # installed or installer; independent of membership status.
 agePublicKey: "<SSH-derived host age public key>"
 configurationId: cedar-uuid
+configurationVersion: 1
 daemon:
   version: "0.1.0"
   startedAt: "2026-10-29T18:00:00Z"
@@ -277,7 +278,7 @@ sha: "567856785678"
 - members demoted to pending or removed from the cluster are removed from the recipient list; full-stable to full does not revoke access
 - credential sops is initialized on cluster creation and stores the cluster CA and default nix signing key
 - actions that require credentials will be performed on hosts that have access to the credentials
-- EX: publishing a recipe, updating sops in for a configuration or enrolling another host
+- EX: publishing a configuration, updating its SOPS rules or enrolling another host
 
 **Credential store record**<br>
 Location: NATS
@@ -506,56 +507,40 @@ advertisement: # Received cluster or unjoined node broadcast.
 ```
 
 ## configurations
-- configurations is a registry of nixos configurations
-- they can be from git repos or recipes rendered inside of a repo
-- remote configurations are automatically registered from tracked repos
-- they do not have to be commited to the remote repo when using a recipe
-- hosts must select a configuration from the registry to become full members.
+- configurations are versioned NixOS configurations, automatically registered from tracked repos or realized from an exact recipe version.
+- recipe-backed configurations own collected inputs and observations; the recipe owns the reusable definition.
+- configurations can be completed incrementally and rendered in a pinned target-repo worktree without publishing.
+- hosts select a configuration version; successful deployment is required to become full members.
+- updating the target pin renders into a new worktree, never pulls into an existing render.
 
-**Configuration Record**<br>
+**Configuration Record (existing Git configuration)**<br>
 Location: NATS
 ```yaml
 id: cedar-uuid
+version: 1
 name: cedar
-targetRepo:
-    id: repo1
-    ref: main
-    sha: "123412341234"
-flakeDir: .
-flakeConfiguration: cedar
-
-```
-
-##  configuration recipes
-- configuration can be generated on the fly using a recipe to make it easier to setup new hosts.
-- configuration recipes are designed to be rendered into a their git source when the host selects the recipe.
-- recipes are versioned and any new modification means a new version is produced. Therefore updating a recipe does not 
-affect a host consuming that recipe. Hosts must update to the new recipe version to consume.
-- updating the git source to newer versions means the recipe is generated again over that source on new worktree dir, not pulled in the existing recipe render.
-- recipes that are renderable store all of their inputs, templates, forms and observations.
-- recipes are designed to be partial so they can be completed incrementally as observations are resolved or user inputs given.
-- a recipe using a soure recipe can have its definition edited but it will create a new recipe and version that is no longer attached to the source and will not be updated from it. the original recipe will still exist and can be updated with new versions.
-- a repo recipe can set definition fields: fields, observations, outputs, flakeDir, flakeConfiguration
-
-**Recipe Record**<br>
-Location: NATS
-```yaml
-id: "recipe1-uuid"
-version: 6
-canRender: true
 targetRepo:
   id: repo1
   ref: main
   sha: "123412341234"
-recipeSource:
+flakeDir: .
+flakeConfiguration: cedar
+```
+
+**Configuration Record (recipe realization)**<br>
+Location: NATS
+```yaml
+id: mycoolhost-uuid
+version: 6
+name: mycoolhost
+recipe:
+  id: recipe1-uuid
+  version: 3
+targetRepo:
   id: repo1
   ref: main
-  sha: "hakevm12"
-  path: .nixmox/recipes/myrecipe.yaml
-sourceDefinition:
-    flakeDir: .
-    flakeConfiguration: "{{ .Name }}"
-#... the rest from the source recipe below
+  sha: "123412341234"
+canRender: true # Computed from valid inputs and observations, not deployment safety.
 collected:
   fields:
       Name: mycoolhost
@@ -569,6 +554,7 @@ collected:
   observations:
     hosts:
         collectedAt: dtm
+        inputHash: <hash of observation definition and resolved inputs>
         output:
         - id: node1_id
           name: node1
@@ -576,6 +562,7 @@ collected:
           name: node2
     flakeModules:
         collectedAt: dtm
+        inputHash: <hash of observation definition and resolved inputs>
         repo:
           id: repo1
           ref: main
@@ -583,6 +570,7 @@ collected:
         output: [ "base", "development", "gaming", "workstation", "tailscale" ]
     ext4Disk:
         collectedAt: dtm
+        inputHash: <hash of observation definition and resolved inputs>
         repo:
           id: repotemplateId
           ref: main
@@ -590,6 +578,7 @@ collected:
         output: <raw output of file here>
     disks:
         collectedAt: dtm
+        inputHash: <hash of observation definition and resolved inputs>
         host: node1_id
         output: 
         - device: "/dev/nvme0n1"
@@ -598,13 +587,17 @@ collected:
           size: "1023GB"
     hardwareConfig:
         collectedAt: dtm
+        inputHash: <hash of observation definition and resolved inputs>
         host: node1_id
         output: <output of nixos-generate-config --no-filesystems>
     sopskey:
         collectedAt: dtm
+        inputHash: <hash of observation definition and resolved inputs>
         host: node1_id
         output: "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
     configurationTemplate:
+        collectedAt: dtm
+        inputHash: <hash of observation definition and resolved inputs>
         repo:
           id: repo1
           ref: main
@@ -612,6 +605,8 @@ collected:
         path: .nixmox/recipes/configuration.gotmpl
         output: <raw text of file>
     hardwareTemplate:
+        collectedAt: dtm
+        inputHash: <hash of observation definition and resolved inputs>
         repo:
           id: repo1
           ref: main
@@ -619,6 +614,38 @@ collected:
         path: .nixmox/recipes/hardware.gotmpl
         output: <raw text of file>
 ```
+
+## configuration recipes
+- recipes define reusable fields, observations, outputs, flakeDir and flakeConfiguration; they contain no collected values or target-repo selection.
+- a configuration references an immutable recipe version and supplies the values used to render it.
+- recipeSource optionally tracks a repository location and records the exact commit supplying that version; it is independent of a configuration's targetRepo.
+
+**Recipe Record**<br>
+Location: NATS
+```yaml
+id: recipe1-uuid
+version: 3
+name: Host recipe
+recipeSource: # Omitted for manually created or detached recipes.
+  id: repo1
+  ref: main
+  sha: "hakevm12"
+  path: .nixmox/recipes/myrecipe.yaml
+sourceDefinition:
+  flakeDir: .
+  flakeConfiguration: "{{ .Name }}"
+  # fields, observations and outputs from the repository definition below.
+# Detached recipes may record ancestry, not active repository tracking:
+# derivedFrom: {id: recipe1-uuid, version: 3}
+```
+
+### versioning and upgrades
+- recipe and configuration versions are immutable; retained versions remain available to configurations and tasks.
+- syncing a changed repository definition creates the next version of the same recipe and retains tracking; unchanged definitions or failed syncs leave it unchanged.
+- modifying a tracked recipe creates a new recipe ID at version 1 without recipeSource; the original remains tracked. Further edits to the detached recipe create versions under its new ID.
+- on detachment, replace recipeSource-dependent references with explicit pinned repository references so dependencies remain usable without tracking.
+- changing configuration inputs, observations, target pin or recipe reference creates a new configuration version, never edits the recipe.
+- adopting a newer recipe version is explicit: preserve compatible fields, remove obsolete values, require new inputs, invalidate changed observations and revalidate dependent selections. Existing configurations never follow recipe updates automatically.
 
 Here is the configuration recipe in repo1
 **Repository Recipe Definition**<br>
@@ -782,12 +809,12 @@ creation_rules:
 Important Notes:
 - go style interpolation can is used throughout the recipe to resolve values
 - some top level fields cannot use interpolation but other fields can typically use them.
-  - version, id, targetRepo, recipeSource, collected, canRender
+  - version, id, recipe, targetRepo, recipeSource, collected, canRender
 - fields are for requesting user input
-- observations is for bringing in external information to complete the recipe
+- observation definitions belong to the recipe; their collected results belong to the configuration
 - outputs defines how the files/modifications are rendered.
-- collected contains all of the information realized by performing the observations and taking user input
-- once all fields and obersvations have values, the recipe can be rendered
+- configuration.collected holds inputs and observation results with collection time, provenance and inputHash; recipeSource in templates resolves from the referenced recipe version
+- once all required values are valid, the configuration renders the referenced recipe without recollecting observations
 - observations can be refreshed, which would invalidate other inputs if the value would have changed.
 - for example, refreshing hostDisks could output a list that no longer contains the chosen drive.
 - Changing TargetHost invalidates its hardware, disks, and public-key
@@ -816,22 +843,23 @@ template: a go template that can use field values or templates
 raw: the raw content to set the file to
 updateSops: runs a process that updates the sops file with the key
 
-## recipe publication
-- a recipe can be finalized and pushed to the remote repo
-- it is first rendered into the latest version of the target repo's ref and a commit is created
+## configuration publication
+- a recipe-backed configuration version can be rendered and pushed to its target repo
+- render against that version's pinned targetRepo SHA and create a commit; using a newer base requires a new configuration version
+- publication records the resulting commit in the task without mutating the configuration version
 - publish can be commited directly to the target ref or a pull request can be opened into the target ref
 - credentials for the remote repo must be set in order to publish
 
-**Recipe publication task (base task specialization)**<br>
+**Configuration publication task (base task specialization)**<br>
 Location: NATS
 ```yaml
 id: publish1
-tasktype: recipe-publication
+tasktype: configuration-publication
 hostId: node1
 status: succeeded
 inputs:
-  recipeId: recipe1-uuid
-  recipeVersion: 6
+  configurationId: mycoolhost-uuid
+  configurationVersion: 6
   targetRepo:
     id: repo1
     ref: main
@@ -1094,9 +1122,9 @@ result:
 ## deployment tasks
 - a deployment consists of a build, a review and finally activation
 - a deployment targets
-  - configuration or recipe at a specific pin on the targetRepo.
+  - an exact configuration version at a specific targetRepo pin (and recipe version when recipe-backed).
   - targetHost
-- deploying the latest changes means getting the lastest sha from the targetRepo ref and updating the sha on the configuration
+- deploying the latest changes requires a new configuration version pinned to the latest targetRepo SHA; existing versions and reviews remain unchanged
 - optionally another host can be chosen to prebuild the configuration for the target machine
 - when the build and deploy runs on the target machine it stops before activation and awaits approval
 - diff review is presented showing package version changes, added and removed packages
@@ -1117,6 +1145,7 @@ concurrency:
   exclusiveResources: ["host:node1:system"]
 inputs:
   configurationId: cedar-uuid
+  configurationVersion: 1
   targetRepo:
     id: repo1
     ref: main
@@ -1184,7 +1213,7 @@ result:
 
 ### fresh deployments
 - requires an installer environment; entering it is a separate task
-- select a configuration or recipe, then run install-finalize compatibility checks against the intended installed layout and use the best compatible result before formatting
+- select a configuration version, then run install-finalize compatibility checks against the intended installed layout and use the best compatible result before formatting
 - build the system, format the selected disks with disko, and install without a review step
 - run install-finalize
 - complete after validating cluster connectivity, the expected generation, and preserved identity; promote the host to full
@@ -1199,8 +1228,8 @@ status: succeeded
 concurrency:
   exclusiveResources: ["host:node2:system"]
 inputs:
-  recipeId: recipe1-uuid
-  recipeVersion: 6
+  configurationId: mycoolhost-uuid
+  configurationVersion: 6
   targetRepo:
     id: repo1
     ref: main
