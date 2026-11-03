@@ -2,23 +2,40 @@
   description = "Nixmox CLI E2E GitOps fixture";
   inputs.nixmox.url = "github:Coriago/nixmox/dev/e2e-phase2";
   inputs.nixpkgs.follows = "nixmox/nixpkgs";
-  outputs = { nixpkgs, nixmox, ... }:
+  inputs.disko.url = "github:nix-community/disko";
+  inputs.disko.inputs.nixpkgs.follows = "nixpkgs";
+  outputs =
+    {
+      nixpkgs,
+      nixmox,
+      disko,
+      ...
+    }:
     let
-      vm1 = nixpkgs.lib.nixosSystem {
+      # Recipe-generated hosts become configurations without editing the flake.
+      directories = nixpkgs.lib.filterAttrs (
+        name: type: type == "directory" && builtins.pathExists (./hosts + "/${name}/configuration.nix")
+      ) (builtins.readDir ./hosts);
+      hosts = builtins.mapAttrs (
+        name: _:
+        nixpkgs.lib.nixosSystem {
+          specialArgs = { inherit nixmox disko; };
+          modules = [ (./hosts + "/${name}/configuration.nix") ];
+        }
+      ) directories;
+      installer = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
-        specialArgs = { inherit nixmox; vmIndex = 1; nixmoxModule = nixmox.nixosModules.default; };
-        modules = [ ./hosts/vm1/configuration.nix ];
-      };
-      vm2 = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        specialArgs = { inherit nixmox; vmIndex = 2; nixmoxModule = nixmox.nixosModules.installer-vm; };
+        specialArgs = { inherit nixmox; };
         modules = [ ./modules/installer.nix ];
       };
-    in {
-      nixosConfigurations.vm1 = vm1;
-      nixosConfigurations.vm2-installer = vm2;
-      configurations.nixos.vm1 = vm1;
-      packages.x86_64-linux.vm1 = vm1.config.system.build.vm;
-      packages.x86_64-linux.vm2-installer = vm2.config.system.build.vm;
+    in
+    {
+      nixosConfigurations = hosts;
+      configurations.nixos = hosts;
+      modules.nixos.testpkg = import ./modules/testpkg.nix;
+      packages.x86_64-linux = {
+        vm1 = hosts.vm1.config.system.build.vm;
+        installer = installer.config.system.build.vm;
+      };
     };
 }

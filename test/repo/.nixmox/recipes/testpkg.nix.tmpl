@@ -1,8 +1,7 @@
 { ... }:
 {
   imports = [
-    ../../modules/base.nix
-    ../../modules/nixmox.nix
+    (import ../../modules/host.nix (builtins.fromJSON (builtins.readFile ./settings.json)))
     ../../modules/testpkg.nix
     ./hardware.nix
     ./disk.nix

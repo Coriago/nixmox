@@ -1,17 +1,16 @@
-{ lib, nixmox, ... }:
+{ nixmox, ... }:
 {
   imports = [
+    nixmox.nixosModules.installer-vm
     ./base.nix
-    ./nixmox.nix
+    ./vm.nix
   ];
+  # One image for any target; DHCP and normal installer defaults supply boot networking.
+  services.nixmox.config.listen = "0.0.0.0:8080";
   virtualisation = {
-    useBootLoader = lib.mkForce false;
-    diskImage = lib.mkForce null;
+    useBootLoader = false;
+    diskImage = null;
     useNixStoreImage = true;
     writableStore = true;
-    # Stored in this VM's private persistent TMPDIR, never a host block device.
-    emptyDiskImages = [
-      { size = 16384; driveConfig.deviceExtraOpts.serial = "nixmox-vm2"; }
-    ];
   };
 }

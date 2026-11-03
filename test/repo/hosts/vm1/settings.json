@@ -1,0 +1,8 @@
+{
+  "hostName": "vm1",
+  "address": "192.168.77.1",
+  "prefixLength": 24,
+  "mac": "52:54:00:77:00:01",
+  "authorizedKeys": [],
+  "stateVersion": "26.05"
+}

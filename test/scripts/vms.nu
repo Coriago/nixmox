@@ -1,18 +1,48 @@
-# VM lifecycle belongs to the suite, never to an individual phase.
-export def start-vm [root: path, run: path, package: string, name: string, public: path] {
+# Physical VM wiring only; no hostnames, guest addresses or installed configuration.
+export def start-vm [root: path, run: path, name: string, public: path] {
+    let topology = (open ($root | path join "test/vms.json"))
+    let machine = ($topology.machines | get $name)
     mkdir $run
     mkdir ($run | path join "tmp")
-    do --capture-errors { ^nix build $"path:($root)/test/repo#($package)" --override-input nixmox $"git+file://($root)" --no-write-lock-file --out-link ($run | path join "vm") }
-    let disk = if $package == "vm2-installer" { "" } else { $run | path join $"($name).qcow2" }
+    do --capture-errors { ^nix build $"path:($root)/test/repo#($machine.package)" --override-input nixmox $"git+file://($root)" --no-write-lock-file --out-link ($run | path join "vm") }
+    mut options = [$"-pidfile ($run)/qemu.pid" $"-device virtio-net-pci,netdev=cluster,mac=($machine.mac)"]
+    if $machine.listeners? != null {
+        $options = ($options | append [
+            "-netdev hubport,id=cluster,hubid=0"
+            $"-netdev user,id=dhcp,net=($topology.subnet),dhcpstart=($topology.dhcpStart)"
+            "-netdev hubport,id=dhcp-port,hubid=0,netdev=dhcp"
+        ])
+        for port in $machine.listeners {
+            $options = ($options | append [
+                $"-netdev socket,id=peer($port),listen=127.0.0.1:($port)"
+                $"-netdev hubport,id=port($port),hubid=0,netdev=peer($port)"
+            ])
+        }
+    } else {
+        $options = ($options | append $"-netdev socket,id=cluster,connect=127.0.0.1:($machine.connect)")
+    }
+    if $machine.diskSerial? != null {
+        let target = ($run | path join "target.qcow2")
+        if not ($target | path exists) {
+            do --capture-errors { ^qemu-img create -f qcow2 $target $machine.diskSize }
+        }
+        $options = ($options | append [
+            $"-drive file=($target),format=qcow2,if=none,id=target"
+            $"-device virtio-blk-pci,drive=target,serial=($machine.diskSerial)"
+        ])
+    }
+    let runner = (glob ($run | path join "vm/bin/run-*-vm") | first)
+    let disk = if $machine.package == "installer" { "" } else { $run | path join $"($name).qcow2" }
     with-env {
         NIX_DISK_IMAGE: $disk
         NIXMOX_E2E_PUBLIC: $public
         TMPDIR: ($run | path join "tmp")
         USE_TMPDIR: "1"
-        QEMU_OPTS: $"-pidfile ($run)/qemu.pid"
+        QEMU_OPTS: ($options | str join " ")
+        QEMU_NET_OPTS: $"hostfwd=tcp:127.0.0.1:($machine.sshPort)-:22,hostfwd=tcp:127.0.0.1:($machine.httpPort)-:8080"
     } {
         do --capture-errors {
-            ^setsid --fork sh -c 'echo $$ > "$1/session.pid"; exec "$2" > "$1/console.log" 2>&1 < /dev/null' sh $run ($run | path join $"vm/bin/run-($name)-vm")
+            ^setsid --fork sh -c 'echo $$ > "$1/session.pid"; exec "$2" > "$1/console.log" 2>&1 < /dev/null' sh $run $runner
         }
     }
 }

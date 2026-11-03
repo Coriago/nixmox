@@ -297,8 +297,8 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - `test-runtime`: cluster creation and cold restart
 - `test-configurations`: recipe/configuration/API usage and lifecycle checks
 - `test-installers`: installer examples and CLI/API/NATS wiring plus affected packages; no reboot, kexec or disk operations
-- `e2e-phase1`: Nushell CLI acceptance test with a bootloader-backed private VM disk; artifacts under `test/runs`, explicit interrupted-run cleanup via `nu test/scripts/stop.nu RUN_DIRECTORY`
-- phase-1 VM validation passes unjoined startup, cluster/full-stable/bootstrap, credential/cache readiness, streamed telemetry, real GitHub rootDir/discovery, baseline deployment and recipe-backed testpkg activation; fixtures are published on `dev/e2e-phase1`
+- `e2e-phase1` runs independently; `e2e-phase2` runs phase 1 first and inherits its live VM1. Add `--keep-vms` to retain guests on success/failure; `e2e-stop RUN_DIRECTORY` explicitly stops the suite. A retained phase-1-only run can continue with `e2e-phase2 --resume RUN_DIRECTORY`.
+- phase-1 VM validation passes unjoined startup, cluster/full-stable/bootstrap, credential/cache readiness, streamed telemetry, real GitHub rootDir/discovery, baseline deployment and recipe-backed testpkg activation; current fixtures are published on `dev/e2e-phase2`
 - `test-ui`: shared UI examples and HTTP workflows
 - `test-build-monitor`: real Nix build, retained logs, SSE and shared monitor
 - `test-registry`: real Nix configuration discovery
@@ -322,6 +322,9 @@ Checked against the working tree on 2026-11-03, including uncommitted files.
 - passed `nix develop -c just test`, including daemon cold restart and the bootstrap PoC
 - passed `nix develop -c just test-registry test-cache test-build-monitor` with real Nix operations enabled
 - `e2e-phase1` additionally validates the booted NixOS module and two real local deployments on a private bootloader-backed disk, including executing the installed test package
+- `test-host-recipe` renders one reusable host recipe with two configuration input sets and evaluates both generated NixOS systems; its sample hardware observations are template-test data, not live collection evidence
+- phase-2 host differences live in `test/configurations`, are submitted through configuration create/update, and use daemon-collected host/disk choices and raw hardware output; the runner supplies only VM devices, private disks and network wiring
+- phase 2 remains incomplete: discovery/enrollment routes and remote disk/hardware collection are missing, so its acceptance script must fail rather than substitute SSH observations or manually enroll guests
 - these checks do not validate multi-host enrollment, fresh installation, physical hardware or interactive browser/terminal behavior
 
 ## maintenance

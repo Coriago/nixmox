@@ -1,0 +1,25 @@
+{
+  "subnet": "192.168.77.0/24",
+  "dhcpStart": "192.168.77.100",
+  "machines": {
+    "vm1": {
+      "package": "vm1",
+      "mac": "52:54:00:77:00:01",
+      "sshPort": 22221,
+      "httpPort": 18081,
+      "listeners": [
+        23222,
+        23223
+      ]
+    },
+    "vm2": {
+      "package": "installer",
+      "mac": "52:54:00:77:00:02",
+      "sshPort": 22222,
+      "httpPort": 18082,
+      "connect": 23222,
+      "diskSerial": "nixmox-vm2",
+      "diskSize": "16G"
+    }
+  }
+}

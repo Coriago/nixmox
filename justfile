@@ -51,6 +51,10 @@ e2e-phase2 *args:
 e2e-stop run:
     nu test/scripts/stop.nu {{quote(run)}}
 
+# Render the same host recipe with two configurations and evaluate both NixOS systems.
+test-host-recipe:
+    NIXMOX_TEST_NIX=1 go test ./test -run Example_hostRecipe -count=1 -v
+
 # These recipes do not start a cluster.
 build:
     go build -o bin/nixmox ./cmd/nixmox

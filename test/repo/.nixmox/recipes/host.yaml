@@ -1,0 +1,107 @@
+flakeDir: .
+flakeConfiguration: "{{ .Name }}"
+fields:
+  Name:
+    type: text
+  Address:
+    type: text
+  PrefixLength:
+    type: select
+    values: [16, 24]
+  MAC:
+    type: text
+  AuthorizedKey:
+    type: text
+  StateVersion:
+    type: text
+  Modules:
+    type: multiselect
+    values: "{{ .observations.modules }}"
+  TargetHost:
+    type: select
+    values: "{{ .observations.hosts }}"
+    optionValue: "{{ .id }}"
+    optionLabel: "{{ .name }} ({{ .id }})"
+  Disk:
+    type: select
+    values: "{{ .observations.disks }}"
+    optionValue: "{{ .device }}"
+    optionLabel: "{{ .device }} {{ .size }}"
+observations:
+  hosts:
+    type: clusterHosts
+  modules:
+    type: repoCommand
+    repo: "{{ .targetRepo }}"
+    cmd: nix eval --json .#modules.nixos --apply builtins.attrNames
+  disks:
+    type: hostDisks
+    host: "{{ .TargetHost }}"
+  hardware:
+    type: hostHardware
+    host: "{{ .TargetHost }}"
+    noFileSystems: true
+outputs:
+  "hosts/{{ .Name }}/settings.json":
+    template: |
+      {
+        "hostName": {{ printf "%q" .Name }},
+        "address": {{ printf "%q" .Address }},
+        "prefixLength": {{ .PrefixLength }},
+        "mac": {{ printf "%q" .MAC }},
+        "authorizedKeys": [{{ printf "%q" .AuthorizedKey }}],
+        "stateVersion": {{ printf "%q" .StateVersion }},
+        "disk": {{ printf "%q" .Disk }}
+      }
+  "hosts/{{ .Name }}/configuration.nix":
+    template: |
+      { ... }:
+      {
+        imports = [
+          (import ../../modules/host.nix (builtins.fromJSON (builtins.readFile ./settings.json)))
+          ./hardware.nix
+          ./disk.nix
+          {{- range .Modules }}
+          ../../modules/{{ . }}.nix
+          {{- end }}
+        ];
+      }
+  "hosts/{{ .Name }}/hardware.nix":
+    raw: "{{ .observations.hardware }}"
+  "hosts/{{ .Name }}/disk.nix":
+    raw: |
+      { disko, ... }:
+      let settings = builtins.fromJSON (builtins.readFile ./settings.json);
+      in {
+        imports = [ disko.nixosModules.disko ];
+        disko.devices.disk.system = {
+          type = "disk";
+          device = settings.disk;
+          content = {
+            type = "gpt";
+            partitions = {
+              bios = { size = "1M"; type = "EF02"; };
+              ESP = {
+                size = "512M";
+                type = "EF00";
+                content = {
+                  type = "filesystem";
+                  format = "vfat";
+                  mountpoint = "/boot";
+                  mountOptions = [ "umask=0077" ];
+                };
+              };
+              root = {
+                size = "100%";
+                content = { type = "filesystem"; format = "ext4"; mountpoint = "/"; };
+              };
+            };
+          };
+        };
+        boot.loader.grub = {
+          enable = true;
+          devices = [ settings.disk ];
+          efiSupport = true;
+          efiInstallAsRemovable = true;
+        };
+      }

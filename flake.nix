@@ -68,6 +68,7 @@
               just
               nushell # CLI-driven VM E2E scripts.
               openssh
+              qemu_kvm # Create private target disks for installer VMs.
               procps # Verify disposable VM session ownership before cleanup.
               util-linux # Isolate disposable VM processes in their own session.
               nodejs # Execute the shared progress controller tests under Go/WASM.
