@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
@@ -44,7 +45,9 @@ func (m Metrics) Follow(ctx context.Context, id string, handle func(json.RawMess
 		return err
 	}
 	defer subscription.Unsubscribe()
-	if err = m.Connection.FlushWithContext(ctx); err != nil {
+	probe, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err = m.Connection.FlushWithContext(probe); err != nil {
 		return err
 	}
 	for {

@@ -7,5 +7,5 @@ def main [run: path] {
     if not ($processes.stdout | str contains $run) {
         error make {msg: "Refusing to stop a session that no longer belongs to this run"}
     }
-    ^kill -- $"-($session)"
+    ^kill --signal TERM -- $"-($session)"
 }
