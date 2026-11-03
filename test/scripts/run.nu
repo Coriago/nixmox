@@ -1,7 +1,9 @@
 # Phase 1 can run alone; phase 2 always inherits its live VM1.
 # Interrupted runs can be stopped with: nu test/scripts/stop.nu RUN_DIRECTORY
-use helpers.nu [guest]
+use helpers.nu [guest record]
+use std/assert
 use vms.nu [start-vm wait-daemon]
+use telemetry.nu [start-collector wait-collector wait-telemetry]
 
 def main [
     --through: int = 1
@@ -21,7 +23,8 @@ def main [
     let root = ($env.FILE_PWD | path join "../.." | path expand)
     let machines = (open ($root | path join "test/vms.json")).machines
     let first = if $resume == null { [$machines.vm1.sshPort $machines.vm1.httpPort] | append $machines.vm1.listeners } else { [] }
-    let ports = if $through == 2 { $first | append [$machines.vm2.sshPort $machines.vm2.httpPort] } else { $first }
+    let vm_ports = if $through == 2 { $first | append [$machines.vm2.sshPort $machines.vm2.httpPort] } else { $first }
+    let ports = if $resume == null { $vm_ports | append [14318 14333] } else { $vm_ports }
     # Match QEMU's SO_REUSEADDR behavior without treating TCP TIME_WAIT as a live VM.
     do --capture-errors {
         ^python3 -c 'import socket,sys; ports=list(map(int,sys.argv[1:])); sockets=[socket.socket() for _ in ports]; [s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1) for s in sockets]; [s.bind(("127.0.0.1",p)) for s,p in zip(sockets,ports)]' ...$ports
@@ -37,6 +40,7 @@ def main [
     if $resume == null {
         print --stderr "\n=== Suite | Generate the SSH test key ===\n"
 
+        cp ($root | path join "test/vms.json") ($run | path join "vms.json")
         mkdir ($run | path join "public")
         do --capture-errors {
             ^ssh-keygen -q -t ed25519 -N "" -f ($run | path join "id_ed25519")
@@ -61,10 +65,21 @@ def main [
     $env.PATH = ($env.PATH | prepend $run)
     let failure = try {
         if $resume == null {
+            start-collector $root $run
+        } else {
+            print --stderr "\n=== Telemetry | Verify the retained collector ===\n"
+            wait-collector $run
+        }
+        $env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:14318"
+
+        if $resume == null {
             print --stderr "\n=== Suite | Start VM1 ===\n"
 
             start-vm $root $run vm1 ($run | path join "public")
-            wait-daemon "http://127.0.0.1:18081"
+            let health = (wait-daemon "http://127.0.0.1:18081")
+            print --stderr "\n=== Telemetry | Confirm VM1 has no collector service ===\n"
+            assert equal (guest $run "systemctl show opentelemetry-collector.service --property=LoadState --value") "not-found"
+            record $run "telemetry-vm1" (wait-telemetry $run $health.nodeId)
 
             print --stderr "\n=== Suite | Run phase 1 ===\n"
 
@@ -84,7 +99,12 @@ def main [
 
             # No stop, restart or new cluster between the phases.
             start-vm $root ($run | path join "vm2") vm2 ($run | path join "public")
-            wait-daemon "http://127.0.0.1:18082"
+            let health = (wait-daemon "http://127.0.0.1:18082")
+            print --stderr "\n=== Telemetry | Confirm VM2 has no collector service ===\n"
+            assert equal (guest $run "systemctl show opentelemetry-collector.service --property=LoadState --value" --port $machines.vm2.sshPort) "not-found"
+            let telemetry = (wait-telemetry $run $health.nodeId)
+            record $run "telemetry-vm2" $telemetry
+            assert ($telemetry.hostId != (open ($run | path join "telemetry-vm1.json")).hostId) "Guests must have distinct telemetry identities"
 
             print --stderr "\n=== Suite | Run phase 2 ===\n"
 

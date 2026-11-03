@@ -73,7 +73,7 @@ def main [run: path, --handoff-only] {
 
     print --stderr "\n=== Phase 2 | Discover the installer ===\n"
 
-    mut candidate = null
+    mut candidate: any = null
     for attempt in 0..14 {
         print --stderr $"+ nixmox --endpoint ($endpoint) --json discovery list"
         let discovery = (

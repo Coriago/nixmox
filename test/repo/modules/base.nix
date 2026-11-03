@@ -5,6 +5,8 @@
   ...
 }:
 {
+  imports = [ ./telemetry.nix ];
+
   networking.firewall.allowedUDPPorts = lib.optional (
     config.services.nixmox.config.discovery-port != 0
   ) config.services.nixmox.config.discovery-port;

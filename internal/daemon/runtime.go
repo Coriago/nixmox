@@ -22,6 +22,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
+	"go.opentelemetry.io/otel"
 
 	"nixmox/internal/api"
 	"nixmox/internal/cache"
@@ -39,6 +40,7 @@ import (
 	"nixmox/internal/source"
 	"nixmox/internal/task"
 	browser "nixmox/internal/ui/views/browser"
+	"nixmox/internal/util"
 )
 
 const Version = "0.1.0-dev"
@@ -711,6 +713,11 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	defer runtime.Close()
+	metrics, err := host.ObserveMetrics(otel.Meter("nixmox.host"))
+	if err != nil {
+		return err
+	}
+	defer metrics.Unregister()
 	listener, err := net.Listen("tcp", config.Listen)
 	if err != nil {
 		return err
@@ -718,6 +725,7 @@ func Run(ctx context.Context, config Config) error {
 	httpServer := &http.Server{Handler: runtime.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 32 << 10}
 	done := make(chan error, 1)
 	go func() { done <- httpServer.Serve(listener) }()
+	util.From(ctx).Info("daemon listening", "node_id", runtime.Health(ctx).NodeID, "environment", runtime.config.Environment, "listen", listener.Addr().String())
 	select {
 	case <-ctx.Done():
 		err = nil

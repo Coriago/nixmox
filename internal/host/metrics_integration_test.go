@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	collect "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -14,6 +16,43 @@ import (
 	"nixmox/internal/host"
 	"nixmox/internal/testutil"
 )
+
+// The SDK and NATS paths use the same real host sampler, without another agent.
+func TestHostMetricsOTel(t *testing.T) {
+	// --- Test setup ---
+	// ------------------
+	ctx := context.Background()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer provider.Shutdown(ctx)
+
+	// --- Usage ---
+	// -------------
+	registration, err := host.ObserveMetrics(provider.Meter("nixmox.host"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Unregister()
+	var collected metricdata.ResourceMetrics
+	if err = reader.Collect(ctx, &collected); err != nil {
+		t.Fatal(err)
+	}
+
+	// --- Assertions ---
+	// ------------------
+	for _, scope := range collected.ScopeMetrics {
+		for _, value := range scope.Metrics {
+			if value.Name == "system.memory.usage" {
+				gauge, ok := value.Data.(metricdata.Gauge[float64])
+				if !ok || len(gauge.DataPoints) != 2 {
+					t.Fatal("missing memory observations")
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("host metrics did not reach the SDK")
+}
 
 // Exercise the same OTLP producer/NATS path used by host SSE without deadlines
 // on the subscription context (the bug first exposed by the VM acceptance test).

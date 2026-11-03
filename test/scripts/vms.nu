@@ -74,7 +74,7 @@ export def wait-daemon [endpoint: string] {
         )
 
         if $probe.exit_code == 0 {
-            return
+            return ($probe.stdout | from json)
         }
         sleep 2sec
     }

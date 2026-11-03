@@ -1,0 +1,49 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:14318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 1s
+
+exporters:
+  file/logs:
+    path: logs.jsonl
+    rotation: {max_megabytes: 32, max_backups: 3}
+  file/traces:
+    path: traces.jsonl
+    rotation: {max_megabytes: 32, max_backups: 3}
+  file/metrics:
+    path: metrics.jsonl
+    rotation: {max_megabytes: 32, max_backups: 3}
+
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:14333
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      encoding: json
+    metrics:
+      level: none
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [file/logs]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [file/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [file/metrics]

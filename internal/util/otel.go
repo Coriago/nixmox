@@ -32,7 +32,15 @@ type Config struct {
 // An empty Endpoint disables export; a nil Output defaults to stderr.
 // Call shutdown with a live context to flush telemetry before exiting.
 func Start(ctx context.Context, c Config) (shutdown func(context.Context) error, err error) {
-	res := resource.NewSchemaless(attribute.String("service.name", c.Service), attribute.String("service.instance.id", c.InstanceID))
+	attributes := []attribute.KeyValue{attribute.String("service.name", c.Service)}
+	if c.InstanceID != "" {
+		attributes = append(attributes, attribute.String("service.instance.id", c.InstanceID))
+	}
+	res, err := resource.New(ctx, resource.WithHost(), resource.WithHostID(), resource.WithFromEnv(), resource.WithAttributes(attributes...))
+	if err != nil && !errors.Is(err, resource.ErrPartialResource) {
+		return nil, err
+	}
+	err = nil
 	traceOptions := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
 	metricOptions := []sdkmetric.Option{sdkmetric.WithResource(res)}
 	logOptions := []sdklog.LoggerProviderOption{sdklog.WithResource(res)}

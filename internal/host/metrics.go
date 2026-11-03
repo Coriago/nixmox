@@ -45,6 +45,17 @@ func Metrics(ctx context.Context, id string, transport cluster.Metrics) {
 }
 
 func sampleMetrics(ctx context.Context, id string) ([]byte, error) {
+	values, err := collectMetrics(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return protojson.Marshal(&collect.ExportMetricsServiceRequest{ResourceMetrics: []*metrics.ResourceMetrics{{
+		Resource:     &resource.Resource{Attributes: []*common.KeyValue{attribute("host.id", id)}},
+		ScopeMetrics: []*metrics.ScopeMetrics{{Scope: &common.InstrumentationScope{Name: "nixmox.host"}, Metrics: values}},
+	}}})
+}
+
+func collectMetrics(ctx context.Context) ([]*metrics.Metric, error) {
 	now := uint64(time.Now().UnixNano())
 	values := []*metrics.Metric{}
 	grouped := map[string]*metrics.Metric{}
@@ -108,8 +119,5 @@ func sampleMetrics(ctx context.Context, id string) ([]byte, error) {
 		add("system.network.io", "By", float64(value.BytesRecv), true, attribute("device", value.Name), attribute("network.io.direction", "receive"))
 		add("system.network.io", "By", float64(value.BytesSent), true, attribute("device", value.Name), attribute("network.io.direction", "transmit"))
 	}
-	return protojson.Marshal(&collect.ExportMetricsServiceRequest{ResourceMetrics: []*metrics.ResourceMetrics{{
-		Resource:     &resource.Resource{Attributes: []*common.KeyValue{attribute("host.id", id)}},
-		ScopeMetrics: []*metrics.ScopeMetrics{{Scope: &common.InstrumentationScope{Name: "nixmox.host"}, Metrics: values}},
-	}}})
+	return values, nil
 }
