@@ -243,12 +243,16 @@ signature: "<cluster signature>"
 - used for templates, deployments
 - tracked repos can be added or removed through the interface
 - credentials can be associated to a tracked repo for publishing to the repo or private repo auth
+- tracked repos have a rootDir within the repository, defaulting to "."; project paths are relative to this root
+- recipes are automatically discovered in .nixmox/recipes under the tracked root
+- pinned repository references retain rootDir alongside the commit
 
 **Tracked repository without credentials**<br>
 Location: NATS
 ```yaml
 id: repo1
 name: nixos-configs
+rootDir: .
 url: https://github.com/example/nixos-configs.git
 credentialId: null
 ref: main
@@ -260,6 +264,7 @@ Location: NATS
 ```yaml
 id: repo2
 name: private-configs
+rootDir: .
 url: git@github.com:example/private-configs.git
 credentialId: githubCredentialId
 ref: main
@@ -1213,7 +1218,8 @@ result:
 
 ### fresh deployments
 - requires an installer environment; entering it is a separate task
-- select a configuration version, then run install-finalize compatibility checks against the intended installed layout and use the best compatible result before formatting
+- select a configuration version, then run install-finalize compatibility checks 
+- selection of which finalize used can be manually overriden
 - build the system, format the selected disks with disko, and install without a review step
 - run install-finalize
 - complete after validating cluster connectivity, the expected generation, and preserved identity; promote the host to full
@@ -1254,10 +1260,11 @@ result:
 
 ## installers
 - a hardware-specific boot environment containing the daemon and installer TUI; supports fresh deployments only
-- check connectivity on startup and prompt for wired or Wi-Fi setup if needed
-- use preserved identity when supplied; otherwise generate node and SSH host keys and a node id
-- definitions contain hardware requirements and pinned build inputs; artifacts belong to build tasks
-- installers can be built on another capable host
+- has compatibility checks that can be run on a host to determine which installer is appropriate
+- installer tui check connectivity on startup and prompt for wired or Wi-Fi setup if needed
+- use preserved identity when supplied; otherwise generate new node and SSH host keys and a node id
+- definitions contain hardware metadata requirements and pinned build inputs; artifacts belong to build tasks
+- installers artifacts can be built on another capable host
 
 **Installer definition**<br>
 Location: NATS
@@ -1373,7 +1380,8 @@ network:
 ```
 
 ## launch installer task
-- reject if already in an installer; otherwise select an installer and run install-prepare compatibility checks against the current host layout to choose the best compatible result
+- reject if already in an installer; otherwise run installer and install-prepare compatibility checks against the current host layout to choose the best compatible result
+- installer and install-prepare can be manually assigned rather than use automated checks
 - build the installer through a child task and transfer the output to the target host if needed
 - demote full/full-stable hosts to pending, completing server evacuation where required
 - invoke install-prepare; complete when the host returns in the installer environment
