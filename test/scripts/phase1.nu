@@ -8,6 +8,8 @@ def main [
     --ref: string = "dev/e2e-phase1"
 ] {
     let endpoint = "http://127.0.0.1:18081"
+    let available = (guest $run "df --output=avail -B1 / | tail -1" | into int)
+    assert ($available > 8589934592)
     let health = (^nixmox --endpoint $endpoint --json health | from json)
     record $run "01-unjoined" $health
     assert equal $health.status "online"
@@ -64,6 +66,7 @@ def main [
     let initial = ($configurations.items | where name == "vm1" | first)
     do --capture-errors { ^nixmox --endpoint $endpoint host configuration $node --configuration $initial.id --version $initial.version }
     let deployment = (^nixmox --endpoint $endpoint --json deploy --host $node --configuration $initial.id --version $initial.version --approve | from json)
+    record $run "07-baseline-submitted" $deployment
     record $run "07-baseline-deployment" (wait-task $endpoint $deployment.id)
     assert equal (guest $run "hostname") "vm1"
 
@@ -80,6 +83,7 @@ def main [
     let configured = (^nixmox --endpoint $endpoint --json configuration observe $created.id --version $created.version | from json)
     do --capture-errors { ^nixmox --endpoint $endpoint host configuration $node --configuration $configured.id --version $configured.version }
     let changed = (^nixmox --endpoint $endpoint --json deploy --host $node --configuration $configured.id --version $configured.version --approve | from json)
+    record $run "08-recipe-submitted" $changed
     record $run "08-recipe-deployment" (wait-task $endpoint $changed.id)
     assert equal (guest $run "nixmox-e2e-testpkg") "nixmox-e2e-testpkg-v1"
     let final = (^nixmox --endpoint $endpoint --json host show $node | from json)

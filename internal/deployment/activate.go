@@ -48,11 +48,11 @@ func (s Service) Runner(ctx context.Context, execution *task.Execution) (any, er
 	defer log.Close()
 	process := host.Process{Log: log}
 	if !input.AutoApprove {
-		diff, err := process.Run(ctx, "", nil, "nix", "store", "diff-closures", "--json", current, proposed)
+		diff, err := packageChanges(ctx, process, current, proposed)
 		if err != nil {
 			return nil, err
 		}
-		if err = execution.Review(ctx, "deployment-diff", map[string]any{"current": map[string]string{"storePath": current}, "proposed": map[string]string{"storePath": proposed}, "packages": json.RawMessage(diff)}); err != nil {
+		if err = execution.Review(ctx, "deployment-diff", map[string]any{"current": map[string]string{"storePath": current}, "proposed": map[string]string{"storePath": proposed}, "packages": diff}); err != nil {
 			return nil, err
 		}
 	}

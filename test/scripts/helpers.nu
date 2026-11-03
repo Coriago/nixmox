@@ -17,6 +17,7 @@ export def wait-task [endpoint: string, id: string] {
             "manual-review" => { error make {msg: $"task ($id) unexpectedly requires approval"} }
             "failed" | "unknown" | "cancelled" => { error make {msg: ($task | to json)} }
         }
+        if ($attempt mod 15) == 0 { print $"Task ($id): ($task.status)" }
         sleep 2sec
     }
     error make {msg: $"task ($id) exceeded 30 minutes"}
