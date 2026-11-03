@@ -5,16 +5,16 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1793718826,
-        "narHash": "sha256-QAgzicxCVAyGPD2UIP/wz89dC+dBmm4Tu8UrfXnYPko=",
+        "lastModified": 1793725706,
+        "narHash": "sha256-v2UQXp2SJjn243I6rzT3kv6ZXVg8NC4ztxK7ZHAChmA=",
         "owner": "Coriago",
         "repo": "nixmox",
-        "rev": "7f9cb9264e5ca725ae6acbcce4e09495e7b77937",
+        "rev": "c755db88420e2a3e041c1d0229a11904eb9de7cc",
         "type": "github"
       },
       "original": {
         "owner": "Coriago",
-        "ref": "dev/rewrite-foundation",
+        "ref": "dev/e2e-phase1",
         "repo": "nixmox",
         "type": "github"
       }
