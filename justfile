@@ -39,9 +39,17 @@ test-installers:
 build-installer package="installer-vm":
     nix build "path:{{justfile_directory()}}#{{package}}" --out-link result
 
-# CLI-driven single-host VM acceptance test; keeps disk/logs in test/runs.
-e2e-phase1 ref="dev/e2e-phase1":
-    nu test/scripts/run.nu --ref {{quote(ref)}}
+# Independent phase 1 or phase 1 followed by phase 2. Add --keep-vms to retain guests.
+[positional-arguments]
+e2e-phase1 *args:
+    nu test/scripts/run.nu --through 1 "$@"
+
+[positional-arguments]
+e2e-phase2 *args:
+    nu test/scripts/run.nu --through 2 "$@"
+
+e2e-stop run:
+    nu test/scripts/stop.nu {{quote(run)}}
 
 # These recipes do not start a cluster.
 build:
