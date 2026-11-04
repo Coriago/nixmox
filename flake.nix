@@ -33,6 +33,7 @@
             };
             inherit vendorHash;
             nativeCheckInputs = [
+              pkgs.util-linux # Read-only lsblk inventory in daemon integration checks.
               pkgs.sops
               pkgs.ssh-to-age
             ];
