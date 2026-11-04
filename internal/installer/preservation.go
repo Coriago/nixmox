@@ -30,6 +30,29 @@ type Preservation struct {
 	WiFiConfigFiles    []string    `json:"wifiConfigFiles"`
 }
 
+// PreservationRecord adds installation-relative recovery references to the
+// expected boot contract. References are relative to its private state directory.
+type PreservationRecord struct {
+	Preservation
+	Status        string   `json:"status"`
+	Environment   string   `json:"environment"`
+	ResumeTaskIDs []string `json:"resumeTaskIds"`
+	Identity      struct {
+		PrivateKeyFile string `json:"privateKeyFile"`
+		SSHHostKeyFile string `json:"sshHostKeyFile"`
+		AgeKeyFile     string `json:"ageKeyFile"`
+	} `json:"identity"`
+	Cluster struct {
+		ID              string   `json:"id"`
+		CertificateFile string   `json:"certificateFile"`
+		CAFile          string   `json:"caFile"`
+		NATSEndpoints   []string `json:"natsEndpoints"`
+	} `json:"cluster"`
+	Network struct {
+		WiFiConfigFiles []string `json:"wifiConfigFiles"`
+	} `json:"network"`
+}
+
 type PreservedState struct {
 	State      identity.State
 	Startup    json.RawMessage
@@ -125,12 +148,47 @@ func (p PreservedState) Write(root *os.Root) error {
 	if err != nil {
 		return err
 	}
-	validation, err := json.Marshal(p.Validation)
-	if err != nil {
+	var startup struct {
+		NATSEndpoints []string `json:"natsEndpoints"`
+	}
+	if err = json.Unmarshal(p.Startup, &startup); err != nil {
 		return err
 	}
-	if !json.Valid(p.Startup) {
-		return errors.New("invalid preserved startup record")
+	if len(startup.NATSEndpoints) == 0 {
+		return errors.New("preserved cluster endpoints required")
+	}
+	record := PreservationRecord{Preservation: p.Validation, Status: p.State.Status, Environment: p.State.Environment, ResumeTaskIDs: p.State.ResumeTaskIDs}
+	record.Identity.PrivateKeyFile = "node.key"
+	record.Identity.SSHHostKeyFile = "ssh_host_ed25519_key"
+	record.Identity.AgeKeyFile = "age.key"
+	record.Cluster.ID = p.State.ClusterID
+	record.Cluster.CertificateFile = "node.crt"
+	record.Cluster.CAFile = "cluster-ca.crt"
+	record.Cluster.NATSEndpoints = startup.NATSEndpoints
+	if err = identity.WritePrivateAt(root, filepath.Join(stateDir, record.Identity.SSHHostKeyFile), p.Files[keyPath]); err != nil {
+		return err
+	}
+	for _, name := range []string{record.Cluster.CertificateFile, record.Cluster.CAFile} {
+		if len(p.Files[filepath.Join(stateDir, name)]) == 0 {
+			return errors.New("preserved cluster certificates required")
+		}
+	}
+	for _, active := range p.Validation.WiFiConfigFiles {
+		if !filepath.IsLocal(active) || len(p.Files[active]) == 0 {
+			return errors.New("preserved Wi-Fi reference has no copied file")
+		}
+		name := filepath.Join("wifi", active)
+		if err = root.MkdirAll(filepath.Join(stateDir, filepath.Dir(name)), 0700); err != nil {
+			return err
+		}
+		if err = identity.WritePrivateAt(root, filepath.Join(stateDir, name), p.Files[active]); err != nil {
+			return err
+		}
+		record.Network.WiFiConfigFiles = append(record.Network.WiFiConfigFiles, name)
+	}
+	validation, err := json.Marshal(record)
+	if err != nil {
+		return err
 	}
 	if err = root.MkdirAll(filepath.Join(stateDir, "tasks"), 0700); err != nil {
 		return err

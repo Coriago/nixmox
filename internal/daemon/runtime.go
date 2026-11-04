@@ -277,6 +277,12 @@ func (r *Runtime) saveStartup(saved startup) error {
 	if err != nil {
 		return err
 	}
+	if err = identity.WritePrivate(filepath.Join(r.config.StateDir, "node.crt"), []byte(saved.Certificate)); err != nil {
+		return err
+	}
+	if err = identity.WritePrivate(filepath.Join(r.config.StateDir, "cluster-ca.crt"), []byte(saved.Cluster.CA.Certificate)); err != nil {
+		return err
+	}
 	return identity.WritePrivate(filepath.Join(r.config.StateDir, "cluster.json"), data)
 }
 
