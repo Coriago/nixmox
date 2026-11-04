@@ -127,6 +127,7 @@ in
       path = [
         pkgs.bash
         pkgs.util-linux
+        pkgs.systemd
         pkgs.nixos-install-tools
         pkgs.nix
         pkgs.sops

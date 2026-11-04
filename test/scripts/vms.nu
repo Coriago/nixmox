@@ -14,7 +14,7 @@ export def start-vm [root: path, run: path, name: string, public: path, topology
 
     print --stderr $"\n=== VM | Prepare ($name) network devices ===\n"
 
-    mut options = [$"-pidfile ($run)/qemu.pid" $"-device virtio-net-pci,netdev=cluster,mac=($machine.mac)"]
+    mut options = [$"-qmp unix:($run)/qmp.sock,server=on,wait=off" $"-pidfile ($run)/qemu.pid" $"-device virtio-net-pci,netdev=cluster,mac=($machine.mac)"]
     if $machine.listeners? != null {
         $options = ($options | append [
             "-netdev hubport,id=cluster,hubid=0"
@@ -39,14 +39,14 @@ export def start-vm [root: path, run: path, name: string, public: path, topology
         }
         $options = ($options | append [
             $"-drive file=($target),format=qcow2,if=none,id=target"
-            $"-device virtio-blk-pci,drive=target,serial=($machine.diskSerial)"
+            $"-device virtio-blk-pci,drive=target,serial=($machine.diskSerial),bootindex=0"
         ])
     }
 
     print --stderr $"\n=== VM | Launch ($name) in its own session ===\n"
 
     let runner = (glob ($run | path join "vm/bin/run-*-vm") | first)
-    let disk = if $machine.package == "installer" { "" } else { $run | path join $"($name).qcow2" }
+    let disk = ($run | path join $"($name).qcow2")
     with-env {
         NIX_DISK_IMAGE: $disk
         NIXMOX_E2E_PUBLIC: $public

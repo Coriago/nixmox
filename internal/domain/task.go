@@ -23,6 +23,7 @@ func (s TaskStatus) Terminal() bool {
 }
 
 type Task struct {
+	Persist     bool                       `json:"persist,omitempty"`
 	ID          string                     `json:"id"`
 	Type        string                     `json:"tasktype"`
 	HostID      string                     `json:"hostId"`

@@ -4,11 +4,11 @@ test:
 
 # Backend foundation checks while the remaining runtime/UI integration is built.
 test-backend:
-    go test ./internal/identity ./internal/cluster ./internal/task ./internal/source ./internal/host ./internal/cache ./internal/credentials ./internal/client ./internal/cli ./internal/recipe ./internal/configuration ./internal/api ./internal/util -count=1 -timeout=120s
+    go test ./internal/identity ./internal/cluster ./internal/task ./internal/source ./internal/host ./internal/cache ./internal/credentials ./internal/client ./internal/cli ./internal/recipe ./internal/configuration ./internal/api ./internal/util ./internal/membership ./internal/deployment -count=1 -timeout=120s
 
 # Race checks include runtime ownership and backend integrations, not legacy UI.
 test-backend-race:
-    CGO_ENABLED=1 go test -race ./internal/identity ./internal/cluster ./internal/task ./internal/source ./internal/host ./internal/cache ./internal/credentials ./internal/client ./internal/cli ./internal/recipe ./internal/configuration ./internal/api ./internal/util ./internal/daemon -count=1 -timeout=120s
+    CGO_ENABLED=1 go test -race ./internal/identity ./internal/cluster ./internal/task ./internal/source ./internal/host ./internal/cache ./internal/credentials ./internal/client ./internal/cli ./internal/recipe ./internal/configuration ./internal/api ./internal/util ./internal/daemon ./internal/membership ./internal/deployment -count=1 -timeout=120s
 
 # mTLS cluster/enrollment, recipe observations and server/client cold restarts.
 test-runtime:
@@ -37,7 +37,7 @@ test-discovery:
 
 # Installer components and CLI/API/NATS integration; no kexec, reboot or disk writes.
 test-installers:
-    go test ./internal/installer/... ./internal/api ./internal/cli ./internal/task ./internal/daemon -count=1 -timeout=90s
+    go test ./internal/installer/... ./internal/api ./internal/cli ./internal/task ./internal/daemon ./internal/membership ./internal/deployment -count=1 -timeout=90s
 
 # Native architecture; use installer, installer-vm or their -kexec variants.
 build-installer package="installer-vm":

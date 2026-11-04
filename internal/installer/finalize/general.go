@@ -39,6 +39,30 @@ func (General) Check(installation Installation) installers.Check {
 	}
 }
 
+// OpenDestination refuses the live root and requires a distinct mounted target.
+func OpenDestination(ctx context.Context, process host.Process, path string) (*os.Root, error) {
+	root, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
+	destination, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	running, err := os.Stat("/")
+	if err != nil {
+		return nil, err
+	}
+	if root == "/" || os.SameFile(destination, running) {
+		return nil, errors.New("refusing to finalize the running root or a bind mount of it")
+	}
+	// Require a mounted destination, not an arbitrary directory on the live root.
+	if _, err = process.Run(ctx, "", nil, "mountpoint", "--quiet", root); err != nil {
+		return nil, fmt.Errorf("installed root is not a mountpoint: %w", err)
+	}
+	return os.OpenRoot(root)
+}
+
 func (g General) Execute(ctx context.Context, installation Installation) error {
 	if check := g.Check(installation); !check.Compatible {
 		return errors.New(check.Reason)
@@ -46,25 +70,12 @@ func (g General) Execute(ctx context.Context, installation Installation) error {
 	if installation.Preserve == nil {
 		return errors.New("identity/network/task preservation is not configured")
 	}
-	root, err := filepath.EvalSymlinks(installation.Root)
+	destination, err := OpenDestination(ctx, g.Process, installation.Root)
 	if err != nil {
 		return err
 	}
-	destination, err := os.Stat(root)
-	if err != nil {
-		return err
-	}
-	running, err := os.Stat("/")
-	if err != nil {
-		return err
-	}
-	if root == "/" || os.SameFile(destination, running) {
-		return errors.New("refusing to finalize the running root or a bind mount of it")
-	}
-	// Require a mounted destination, not an arbitrary directory on the live root.
-	if _, err = g.Process.Run(ctx, "", nil, "mountpoint", "--quiet", root); err != nil {
-		return fmt.Errorf("installed root is not a mountpoint: %w", err)
-	}
+	defer destination.Close()
+	root := destination.Name()
 	if err = installation.Preserve(ctx, root); err != nil {
 		return err
 	}

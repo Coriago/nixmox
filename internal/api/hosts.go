@@ -7,9 +7,28 @@ import (
 
 	"nixmox/internal/domain"
 	"nixmox/internal/host"
+	"nixmox/internal/membership"
 )
 
 func registerHostRoutes(clustered *gin.RouterGroup) {
+	clustered.POST("/hosts/:id/promote", func(c *gin.Context) {
+		service := services(c).Membership
+		if service == nil {
+			c.Status(503)
+			return
+		}
+		var input membership.Input
+		if !body(c, &input) {
+			return
+		}
+		input.NodeID = c.Param("id")
+		result, err := service.Submit(c.Request.Context(), input)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		c.JSON(202, result)
+	})
 	clustered.GET("/hosts/:id/disks", func(c *gin.Context) {
 		collect := services(c).HostDisks
 		if collect == nil {

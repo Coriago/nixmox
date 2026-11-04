@@ -8,17 +8,15 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
-	"nixmox/internal/api"
+	"nixmox/internal/cache"
 	"nixmox/internal/cluster"
-	"nixmox/internal/discovery"
 	"nixmox/internal/domain"
-	"nixmox/internal/host"
 )
 
-// startPending restores an enrolled installer without creating servers, seeding
+// startClient restores an enrolled member without creating servers, seeding
 // shared state, or reading full-member signing secrets. The contact has already
 // committed membership before sending the certificate.
-func (r *Runtime) startPending(saved startup) error {
+func (r *Runtime) startClient(saved startup) error {
 	ctx, cancel := context.WithTimeout(r.lifetime, 30*time.Second)
 	defer cancel()
 	if err := r.node.VerifyEnrollment([]byte(saved.Certificate), []byte(saved.Cluster.CA.Certificate), time.Now()); err != nil {
@@ -55,31 +53,54 @@ func (r *Runtime) startPending(saved startup) error {
 	if err != nil {
 		return err
 	}
-	if current.Value.ClusterID != saved.Cluster.ID || current.Value.Status != "pending" {
+	if current.Value.ClusterID != saved.Cluster.ID || (current.Value.Status != "pending" && current.Value.Status != "full" && !(current.Value.Status == "full-stable" && len(saved.PeerRoutes) > 0)) {
 		return errors.New("pending startup differs from authoritative membership")
 	}
-	clusters, err := cluster.OpenStore[domain.Cluster](ctx, js, "CLUSTER")
-	if err != nil {
-		return err
-	}
-	discoveries, err := cluster.OpenStore[discovery.Record](ctx, js, "DISCOVERY")
-	if err != nil {
-		return err
-	}
-	metrics := cluster.Metrics{Connection: nc}
-	svc := &api.Services{Pending: true, Cluster: clusters, Members: members, Discovery: discoveries, Metrics: metrics}
-	svc.HostDisks = func(ctx context.Context, nodeID string) (any, error) {
-		if nodeID != r.node.State.NodeID {
-			return nil, errors.New("pending member can only inspect its own disks")
+	saved.Member = current.Value
+	saved.Member.Environment = r.config.Environment
+	if len(saved.PeerRoutes) > 0 {
+		if saved.Member.Status == "pending" {
+			return errors.New("pending member cannot restore a server")
 		}
-		return (host.Process{}).Disks(ctx)
+		peer, err := r.startPeer(ctx, saved, members)
+		if err != nil {
+			return err
+		}
+		endpoint, err := localClientURL(peer)
+		if err != nil {
+			return err
+		}
+		local, err := cluster.Connect([]string{endpoint}, tlsConfig, r.node.State.NodeID)
+		if err != nil {
+			return err
+		}
+		nc.Close()
+		nc = local
+		js, err = jetstream.New(nc)
+		if err != nil {
+			return err
+		}
+	}
+	svc, err := r.wireServices(ctx, js, nc, saved.Member)
+	if err != nil {
+		return err
+	}
+	gateway := svc.Cache.(*cache.Gateway)
+	defer func() {
+		if !success {
+			gateway.Close()
+		}
+	}()
+	if err = r.saveStartup(saved); err != nil {
+		return err
 	}
 	r.mu.Lock()
 	r.node.State.ClusterID = saved.Cluster.ID
-	r.node.State.Status = "pending"
+	r.node.State.Status = saved.Member.Status
 	err = r.node.Save()
 	if err == nil {
 		r.client, r.services, r.status = nc, svc, "online"
+		r.gateway = gateway
 	}
 	r.mu.Unlock()
 	if err != nil {
@@ -89,6 +110,5 @@ func (r *Runtime) startPending(saved startup) error {
 		return err
 	}
 	success = true
-	r.workers.Go(func() { host.Metrics(r.lifetime, r.node.State.NodeID, metrics) })
-	return nil
+	return r.runServices(svc)
 }

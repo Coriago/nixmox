@@ -58,7 +58,7 @@ func (r *Runtime) issueEnrollment(ctx context.Context, request enrollment.Reques
 	if err != nil {
 		return "", err
 	}
-	cert, err := authority.Issue([]byte(request.JoiningNode.CSR), request.JoiningNode.NodeID, request.JoiningNode.PublicKeyThumbprint, []string{endpoint.Hostname()}, time.Now())
+	cert, err := authority.Issue([]byte(request.JoiningNode.CSR), request.JoiningNode.NodeID, request.JoiningNode.PublicKeyThumbprint, []string{endpoint.Hostname(), "localhost", "127.0.0.1", "::1"}, time.Now())
 	return string(cert), err
 }
 

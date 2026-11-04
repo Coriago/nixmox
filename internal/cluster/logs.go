@@ -17,6 +17,7 @@ import (
 const LogRetention = 5 * 24 * time.Hour
 
 var subjectID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+var taskSubjectID = regexp.MustCompile(`^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)?$`)
 
 type Logs struct{ JS jetstream.JetStream }
 
@@ -27,7 +28,13 @@ type LogEntry struct {
 }
 
 func LogSubject(kind, id string) (string, error) {
-	if (kind != "host" && kind != "task") || !subjectID.MatchString(id) {
+	pattern := subjectID
+	if kind == "task" {
+		pattern = taskSubjectID
+	} else if kind != "host" {
+		return "", errors.New("invalid log subject")
+	}
+	if !pattern.MatchString(id) {
 		return "", errors.New("invalid log subject")
 	}
 	return "logs." + kind + "." + id, nil
@@ -35,9 +42,16 @@ func LogSubject(kind, id string) (string, error) {
 
 // Provision is called by the cluster coordinator, not by individual log writers.
 func (l Logs) Provision(ctx context.Context, replicas int) error {
-	_, err := l.JS.CreateStream(ctx, jetstream.StreamConfig{
+	existing, err := l.JS.Stream(ctx, "LOGS")
+	if err == nil && existing.CachedInfo().Config.Replicas > replicas {
+		replicas = existing.CachedInfo().Config.Replicas
+	}
+	if err != nil && !errors.Is(err, jetstream.ErrStreamNotFound) {
+		return err
+	}
+	_, err = l.JS.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     "LOGS",
-		Subjects: []string{"logs.host.*", "logs.task.*"},
+		Subjects: []string{"logs.host.*", "logs.task.>"},
 		Storage:  jetstream.FileStorage,
 		Replicas: replicas,
 		MaxAge:   LogRetention,

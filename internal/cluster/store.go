@@ -104,6 +104,23 @@ func (s Store[T]) List(ctx context.Context, after string, limit int) ([]Record[T
 	return records, "", nil
 }
 
+// All consumes List pages for coordinator operations over a complete bucket.
+func (s Store[T]) All(ctx context.Context) ([]Record[T], error) {
+	var records []Record[T]
+	cursor := ""
+	for {
+		page, next, err := s.List(ctx, cursor, 100)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, page...)
+		if next == "" {
+			return records, nil
+		}
+		cursor = next
+	}
+}
+
 // Watch delivers the initial state followed by updates through one native
 // JetStream watcher, avoiding a list/subscribe gap. nil marks initial completion.
 func (s Store[T]) Watch(ctx context.Context, pattern string, handle func(*Record[T], bool) error) error {
@@ -137,6 +154,40 @@ func (s Store[T]) Watch(ctx context.Context, pattern string, handle func(*Record
 			if err := handle(&record, deleted); err != nil {
 				return err
 			}
+		}
+	}
+}
+
+// WaitStreamReady gates writes on observed replica readiness. A zero minimum
+// requires the configured majority; topology promotion requires every replica.
+func WaitStreamReady(ctx context.Context, stream jetstream.Stream, minimum int) error {
+	for {
+		info, err := stream.Info(ctx)
+		if err != nil {
+			return err
+		}
+		required := minimum
+		if required == 0 {
+			required = info.Config.Replicas/2 + 1
+		}
+		current := 0
+		if info.Config.Replicas <= 1 {
+			current = 1
+		} else if info.Cluster != nil && info.Cluster.Leader != "" {
+			current = 1
+			for _, peer := range info.Cluster.Replicas {
+				if peer.Current && !peer.Offline {
+					current++
+				}
+			}
+		}
+		if current >= required {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }

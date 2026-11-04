@@ -5,7 +5,7 @@ Implementation ownership and code map for [requirements.md](requirements.md). Co
 ## status
 - cluster creation, cold restart, recipe/configuration lifecycles and the local build/log pipeline have integration coverage
 - CLI command availability does not imply backend support
-- cluster-initiated enrollment and pending client startup are implemented; unjoined-initiated approval/rejection, networking management and fresh installation remain incomplete
+- cluster-initiated enrollment, pending client startup, guarded fresh installation and coordinator-owned promotion are implemented; full Phase 2 VM acceptance remains outstanding
 - local installed full-stable deployment is implemented and phase-1 VM-tested; membership/quorum reconciliation, distributed dispatch, rollback, power operations, publication and credential-store reconciliation remain missing or incomplete
 - the code map covers non-UI application code with selected UI integration points; functions are grouped by responsibility, not an exhaustive helper inventory
 - terminal/browser interfaces share the HTTP client and build monitor; component tests do not establish a complete multi-host workflow
@@ -51,11 +51,12 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
   - `configureAccounts`, `routePorts`, `strconvPort`: NATS account and port setup
   - `Close`, `Run`: service cleanup, HTTP lifetime and graceful shutdown
 - main/bootstrap peers start concurrently; bounded bucket-open retries allow restored stream leaders to elect
-- full-stable startup constructs main/bootstrap peers on one host and provisions two replicas; pending startup connects only a client; full-client startup and topology transitions remain unwired
+- initial full-stable startup constructs main/bootstrap peers and provisions two replicas; promoted peers join existing routes without provisioning another bootstrap; cold restoration retains committed replication and waits for stream majorities before writes
 - recipe/configuration services and Git-only refresh are wired; registry discovery has no runtime trigger
 - cluster host/repository/credential-ID observations, member age-key lookup and host-specific NATS disk/hardware observations are wired
-- build/deployment and gated installer runners are registered; pending nodes expose read-only host observations but do not yet execute durable installation tasks
-- [client.go](../internal/daemon/client.go) restores pending certificates/endpoints without servers or signing secrets; [authorization.go](../internal/daemon/authorization.go) watches authoritative membership and reloads certificate-mapped NATS permissions
+- [services.go](../internal/daemon/services.go) shares domain service composition and worker startup between server and client runtimes, including the existing task manager rather than a separate pending scheduler
+- build, deployment, fresh-install and finalization runners share the existing task manager; pending nodes execute only host-owned work; live kexec/demotion remains gated
+- [client.go](../internal/daemon/client.go) restores client certificates/endpoints without servers; signing credentials are decrypted only for authoritative full membership; [authorization.go](../internal/daemon/authorization.go) watches membership and reloads certificate-mapped NATS permissions
 
 ## shared records
 - [internal/domain/cluster.go](../internal/domain/cluster.go): `Cluster`, `ClusterCA`, `Member`, `DaemonInfo`, `Endpoint`, `Health` and `Check`
@@ -72,7 +73,7 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
   - `DeriveIdentity`: SSH host key to private age identity and public recipient
   - `recipientKeys`, `Cipher.run`: recipient validation and isolated, bounded SOPS execution
   - `Encrypt`, `Decrypt`, `Rekey`: secret encryption and recipient rotation
-- shared credential CRUD and membership-driven recipient reconciliation remain pending; recipe `.sops.yaml` editing is separate from encryption
+- promotion re-encrypts every credential before committing the new recipient and full membership; pending NATS permissions expose credential stream metadata, not ciphertext; general credential CRUD/removal reconciliation remains incomplete
 
 ## cluster transport and storage
 - [internal/cluster/transport.go](../internal/cluster/transport.go): mutual TLS, embedded NATS and trace propagation
@@ -88,18 +89,21 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
 - [internal/cluster/logs.go](../internal/cluster/logs.go): retained OTLP host/task logs with five-day retention
   - `LogSubject`, `Logs.Provision`, `Append`: subject validation, stream setup and traced writes
   - `Follow`, `Read`: ordered replay-to-live delivery and bounded history
-- [internal/cluster/authorization.go](../internal/cluster/authorization.go) isolates client reply inboxes and host observation subscriptions; pending clients cannot mutate membership, credentials or JetStream configuration
+- [internal/cluster/authorization.go](../internal/cluster/authorization.go) isolates reply inboxes and host observation subscriptions; pending clients can write only their host-qualified tasks, outputs, logs and host-lock scope, not membership, credentials or stream configuration
+- pending KV reads/watches use native JetStream consumer lifecycle permissions; they do not grant stream provisioning or shared-record mutation
 - planned cluster coordination owns serialized membership transitions, bootstrap placement, replicas, metadata peers and administrator-directed quorum rescue
 
 ## durable tasks
 - [internal/task/manager.go](../internal/task/manager.go): owned-host scheduling; `Runner`, `Manager` and `ErrReview`
   - `Submit`, `Retry`: persist queued work and linked retries
   - `owned`, `Cancel`, `Approve`: ownership, cancellation and exact-output review approval
-  - `Run`, `each`, `reconcile`: consume watches, page tasks and mark interrupted running work unknown
+  - `Run`, `each`, `reconcile`: consume watches, page tasks and mark interrupted nonpersistent work unknown; persistent work resumes with its original identity and resource ownership
+  - new task/output IDs include the owner host as a subject token; scheduling rejects a mismatched key/payload owner while continuing to read legacy unqualified tasks
   - `schedule`, `execute`, `finish`: dependencies, reviews, resources, runner lifetime and completion
 - [internal/task/execution.go](../internal/task/execution.go): `Execution.Task/Checkpoint/Review/save` expose task state and persist checkpoints, outputs and reviews
 - [internal/task/child.go](../internal/task/child.go): linked local child submission and bounded NATS watch delivery; review reentry reuses the child result
-- [internal/task/resources.go](../internal/task/resources.go): CAS-based `Resources` with no TTL; `Acquire`, `Release` and `change` manage task ownership
+- [internal/task/journal.go](../internal/task/journal.go): private local snapshots for `persist` tasks; checkpoints update the journal and node `resumeTaskIds`; `ErrRestart` suspends execution until a new daemon lifetime, and terminal cleanup removes snapshots
+- [internal/task/resources.go](../internal/task/resources.go): CAS-based host/cluster-scoped ownership with no TTL; sorted acquisition rolls back partial grants before any runner starts, and legacy shared locks remain honored during recovery
 - [internal/task/log.go](../internal/task/log.go): `Execution.LogWriter`, `Write` and `Close` frame bounded stderr into retained OTLP logs; redact secrets and report persistence failures
 - `Builder.Runner` attaches the log writer for replayable Nix activity; distributed dispatch and complete workflow recovery remain pending
 
@@ -161,11 +165,13 @@ Location: `internal/configuration`
 - [internal/host/metrics.go](../internal/host/metrics.go) samples CPU, memory, disk and network counters every two seconds using gopsutil and OTLP protobufs
 - [internal/cluster/metrics.go](../internal/cluster/metrics.go) publishes replaceable core-NATS observations and bounded latest-value subscriptions for host SSE; low-frequency inventory and latency metrics remain pending
 
-## local deployment
-- [internal/deployment](../internal/deployment): assignment, linked configuration builds, review and profile activation for the local installed full-stable member; remote dispatch and pending-member promotion remain unavailable
+## deployment
+- [internal/deployment](../internal/deployment): coordinator-owned assignment and owner-host task dispatch; installed full members activate configurations, while pending installers execute persistent fresh deployments
 - [internal/configuration/worktree.go](../internal/configuration/worktree.go): fresh pinned materialization using retained recipe inputs; does not recollect or retarget
 - `service.go`: host/resource checks, assignment CAS, task submission and build runner
 - `activate.go`: reuses the child result, optionally waits for review, records activation intent, sets the system profile, activates and validates the selected system/generation
+- `install.go`, `install_build.go`: reuse pinned materialization/builds, validate explicit unmounted whole disks, execute upstream disko scripts, call the existing finalizer, preserve the installation task, reboot, verify the installed boot and wait for a coordinator promotion child
+- interrupted disk preparation is not automatically reformatted; inspection is required before retrying destructive work
 - `review.go`: structured added/removed closure packages using Nix name parsing; version changes currently appear as removal/addition pairs
 - the daemon module disables deployment-triggered service restarts; reboot recovery, rollback and comprehensive failed-activation recovery are not implemented
 - phase 1 validates auto-approved deployment; manual review is not VM-validated
@@ -179,7 +185,7 @@ Location: `internal/configuration`
   - `NewGateway`, `Gateway.Close`: keep-alive transport lifetime
   - `ReplacePeers`, `ServeHTTP`: validated endpoints and failover before streaming begins
   - `idleConn.Read`: read-idle deadline renewal
-- runtime seeds only its own advertised cache endpoint; membership-driven refresh/reconnect reconciliation is not implemented
+- membership watches refresh cache peers; full-role activation restarts the same daemon composition to load signing credentials and enable local cache service
 - `/cache` and `/store-cache` support GET/HEAD; `/cache-info` exposes signing public-key metadata and relative cache paths
 
 ## HTTP API and client
@@ -249,10 +255,13 @@ Location: `internal/configuration`
 - `internal/network` remains planned: endpoint refresh/preference and installer Wi-Fi scanning/configuration
 
 ## deferred runtime and task work
-- pending client startup is implemented; full-client startup and promotion/demotion transitions still need wiring
-- persistent tasks must be saved locally, exempt from local unknown marking, and resumed from checkpoints when the daemon returns
+- pending/full composition and persistent task recovery share the existing manager; deterministic child IDs prevent duplicate dispatch after lost replies
+- installed-state handoff copies identity, enrollment, SSH/age keys, supported Wi-Fi files and the installation snapshot through a confined `os.Root`; a validation manifest is committed last
+- [internal/membership](../internal/membership) serializes coordinator promotions, re-encrypts credentials, verifies installed-boot proof, stages a peer and checks replication before full-stable completion
+- [daemon membership](../internal/daemon/membership.go) and [peer startup](../internal/daemon/peer.go) reuse normal daemon restart/service composition; a promoted peer restores one server and connects its client locally
+- bootstrap retirement, demotion and the third full-stable transition remain gated
 - global cleanup must mark running tasks unknown after their owner has been offline for 30 minutes; this cleanup is also still missing
-- these requirements are not implemented in this installer work; live transitions remain gated until recovery and safe membership demotion are wired
+- live installer transitions remain gated until destination preservation, boot validation and safe membership changes are wired
 
 ## installer
 Location: [internal/installer](../internal/installer)
@@ -262,9 +271,9 @@ Location: [internal/installer](../internal/installer)
 - `prepare/`: method interface and kexec checks/execution; uses `kexec --load` followed by `systemctl kexec`, not an immediate forced reboot
 - `finalize/`, `finalize.go`: general method checks and task runner; require a separate mounted root and preservation callback, then delegate closure/profile/bootloader setup to `nixos-install --system`
 - built-in prepare/finalize method catalogs are code-owned; registered installer definitions and launch/finalize tasks are NATS-backed
-- daemon registers both runners, but leaves the `Transition` boundary unwired: safe demotion, private boot payload staging, persistent-task registration and installed-state preservation still need implementation
-- launch/finalize return unavailable before submitting work until that boundary is wired; compatibility results report execution readiness separately
-- remote installation dispatch/transfer, fresh disk partitioning/formatting and media writing remain unimplemented
+- finalization has a concrete installed-state preservation callback; `preservation.go` writes private files, the resumable task and validation contract without escaping the mounted destination
+- the live-installer `Transition` boundary remains unwired: safe demotion, private kexec payload staging and transition-specific recovery still need implementation
+- fresh installations build on the target host; separate build-host transfer and media writing remain unimplemented
 - checks cover generic x86_64 and UEFI ARM64 platforms, not board-specific support or proof that a particular kernel will boot
 
 ## installer images
@@ -283,12 +292,12 @@ Location: [internal/installer](../internal/installer)
 - write usage examples and high-level integrations; reuse fixtures rather than new harnesses
 - [poc/jetstream_bootstrap_test.go](../poc/jetstream_bootstrap_test.go): experimental topology coverage, separate from runtime wiring
 - [internal/daemon/runtime_test.go](../internal/daemon/runtime_test.go): HTTP cluster/recipe/configuration lifecycle and cold-restart persistence
-- [internal/daemon/enrollment_test.go](../internal/daemon/enrollment_test.go): contact-owned enrollment with endpoint fallback, certificate-mapped pending permissions, remote disk inventory and client-only cold restart
+- [internal/daemon/enrollment_test.go](../internal/daemon/enrollment_test.go): contact-owned enrollment with endpoint fallback, certificate-mapped pending permissions, host-owned task execution, remote disk inventory and client-only cold restart
 - [internal/configuration/lifecycle_test.go](../internal/configuration/lifecycle_test.go): real Git/JetStream import, sync, fork, independent realizations, upgrades and previews
 - [internal/api/configurations_test.go](../internal/api/configurations_test.go): independent realizations over HTTP
 - [installer examples](../internal/installer/checks_test.go), [return checkpoint test](../internal/installer/launch_test.go) and [installer CLI integration](../internal/api/installers_test.go): selection, finalizer checks, runner return validation and real CLI/API/NATS registration; not boot or task-manager restart recovery tests
 - [identity tests](../internal/identity/identity_test.go): persistence, exclusive ownership and certificate enrollment
-- [task tests](../internal/task/manager_test.go): durable review/approval and linked retries
+- [task tests](../internal/task/manager_test.go): durable review/approval and linked retries; [recovery integration](../internal/task/recovery_test.go) verifies checkpoint retention, lock retention and completion across two daemon lifetimes
 - [source tests](../internal/source/source_test.go): pinned checkout and safe worktree access
 - [registry tests](../internal/configuration/registry_test.go): discovery, preserved pins and explicit refresh
 - [build examples](../internal/host/build_test.go): Nix result/store-path parsing; [build integration](../internal/host/build_integration_test.go): real build/log/monitor pipeline
@@ -338,9 +347,10 @@ Checked against the working tree on 2026-11-03, including uncommitted files.
 - `test/vms.json` centralizes static machine wiring and recipe configuration inputs; configuration creation reuses the machine key as its name and the wired NIC MAC, then uses daemon-collected host/disk choices and raw hardware output
 - the Nushell configuration workflow checks rendered files and retained hardware; VM3 currently has planned static settings but no boot package or launch workflow
 - resumed phase 2 on retained VMs reached `vm2-configured`: real discovery enrollment, pending client restart, remote disk/hardware collection and recipe rendering passed using development binaries and temporary service PATH additions; this is not a clean full-suite pass
-- fresh installation, reboot persistence and promotion remain incomplete; their acceptance gates still fail rather than reporting false success
+- fresh installation, reboot persistence and promotion are wired and component-tested; their VM acceptance gates are implemented but have not passed yet
+- the old retained VM2 used direct-kernel boot and cannot select an installed disk on reboot; new VM fixtures use a persistent bootloader-backed rescue disk, target-first firmware boot order and a QMP control socket
 - the shared guest LAN uses QEMU hub/socket links only; VM1's configuration supplies standard DHCP. Each guest retains separate user-mode NAT for management/internet, avoiding SLIRP processing guest-to-guest traffic
-- these checks do not validate fresh installation, promotion, physical hardware or interactive browser/terminal behavior
+- component checks do not establish fresh-install/promotion VM acceptance, physical hardware compatibility or interactive browser/terminal behavior
 
 ## maintenance
 - update the owning entry when files or responsibilities move

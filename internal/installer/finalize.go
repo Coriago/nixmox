@@ -13,10 +13,16 @@ import (
 
 const FinalizeTask = "install-finalize"
 
+type Destination struct {
+	StateDir   string `json:"stateDir"`
+	SSHHostKey string `json:"sshHostKey"`
+}
+
 type FinalizeInput struct {
-	FinalizeID string `json:"finalizeId,omitempty"`
-	Root       string `json:"root"`
-	SystemPath string `json:"systemPath"`
+	Destination Destination `json:"destination"`
+	FinalizeID  string      `json:"finalizeId,omitempty"`
+	Root        string      `json:"root"`
+	SystemPath  string      `json:"systemPath"`
 }
 
 func (s *Service) Finalize(ctx context.Context, id string, input FinalizeInput) (domain.Task, error) {
@@ -34,14 +40,14 @@ func (s *Service) Finalize(ctx context.Context, id string, input FinalizeInput) 
 	if !check.Compatible {
 		return domain.Task{}, fmt.Errorf("%w: %s", ErrInvalid, check.Reason)
 	}
-	if err = s.ready(ctx, target); err != nil {
-		return domain.Task{}, err
+	if s.PreserveInstalled == nil {
+		return domain.Task{}, fmt.Errorf("%w: installed-state preservation unavailable", ErrUnavailable)
 	}
 	data, err := json.Marshal(input)
 	if err != nil {
 		return domain.Task{}, err
 	}
-	return s.Tasks.Submit(ctx, domain.Task{HostID: id, Type: FinalizeTask, Inputs: data,
+	return s.Tasks.Submit(ctx, domain.Task{HostID: id, Type: FinalizeTask, Persist: true, Inputs: data,
 		Concurrency: domain.TaskConcurrency{ExclusiveResources: []string{"host:" + id + ":system"}}})
 }
 
@@ -67,8 +73,8 @@ func (s *Service) FinalizeRunner(ctx context.Context, execution *task.Execution)
 	if err != nil {
 		return nil, err
 	}
-	if err = s.ready(ctx, target); err != nil {
-		return nil, err
+	if s.PreserveInstalled == nil {
+		return nil, fmt.Errorf("%w: installed-state preservation unavailable", ErrUnavailable)
 	}
 	log := execution.LogWriter(ctx)
 	method := finalize.General{}
@@ -76,7 +82,7 @@ func (s *Service) FinalizeRunner(ctx context.Context, execution *task.Execution)
 	err = method.Execute(ctx, finalize.Installation{
 		Target: target, Root: input.Root, SystemPath: input.SystemPath,
 		Preserve: func(ctx context.Context, root string) error {
-			return s.Transition.PreserveInstalled(ctx, execution, root)
+			return s.PreserveInstalled(ctx, execution, root)
 		},
 	})
 	err = errors.Join(err, log.Close())

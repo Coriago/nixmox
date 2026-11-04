@@ -26,28 +26,33 @@ type Input struct {
 
 type Service struct {
 	HostID         string
+	Environment    string
 	Configurations *configuration.Service
 	Members        cluster.Store[domain.Member]
 	Tasks          *task.Manager
 	Builder        host.Builder
+	Installation   *InstallationRuntime
 }
 
 func (s Service) validate(ctx context.Context, id string, input Input) (domain.Member, error) {
-	if id != s.HostID || (input.BuildHostID != "" && input.BuildHostID != id) {
-		return domain.Member{}, errors.New("remote deployment/build dispatch unavailable")
+	if input.BuildHostID != "" && input.BuildHostID != id {
+		return domain.Member{}, errors.New("separate build-host dispatch unavailable")
 	}
 	member, err := s.Members.Get(ctx, id)
 	if err != nil {
 		return member.Value, err
 	}
-	if member.Value.Environment != "installed" || member.Value.Status != "full-stable" {
-		return member.Value, errors.New("local installed full-stable member required; client-only promotion remains unavailable")
+	if !(member.Value.Status == "pending" && (member.Value.Environment == "installer" || member.Value.Environment == "installed")) && !(member.Value.Environment == "installed" && (member.Value.Status == "full" || member.Value.Status == "full-stable")) {
+		return member.Value, errors.New("pending installer or installed full member required")
 	}
 	_, err = s.Configurations.Get(ctx, input.ConfigurationID, input.ConfigurationVersion)
 	return member.Value, err
 }
 
 func (s Service) Assign(ctx context.Context, id string, input Input) (domain.Member, error) {
+	if err := s.coordinator(ctx); err != nil {
+		return domain.Member{}, err
+	}
 	if _, err := s.validate(ctx, id, input); err != nil {
 		return domain.Member{}, err
 	}
@@ -71,6 +76,9 @@ func (s Service) Assign(ctx context.Context, id string, input Input) (domain.Mem
 }
 
 func (s Service) Submit(ctx context.Context, id string, input Input) (domain.Task, error) {
+	if err := s.coordinator(ctx); err != nil {
+		return domain.Task{}, err
+	}
 	member, err := s.validate(ctx, id, input)
 	if err != nil {
 		return domain.Task{}, err
@@ -82,24 +90,26 @@ func (s Service) Submit(ctx context.Context, id string, input Input) (domain.Tas
 	if err != nil {
 		return domain.Task{}, err
 	}
-	return s.Tasks.Submit(ctx, domain.Task{HostID: id, Type: "deployment", Inputs: data, Concurrency: domain.TaskConcurrency{ExclusiveResources: []string{"host:" + id + ":system"}}})
+	kind, persist := "deployment", false
+	if member.Status == "pending" {
+		kind, persist = InstallationTask, true
+	}
+	return s.Tasks.Submit(ctx, domain.Task{HostID: id, Type: kind, Persist: persist, Inputs: data, Concurrency: domain.TaskConcurrency{ExclusiveResources: []string{"host:" + id + ":system"}}})
 }
 
 func (s Service) Build(ctx context.Context, execution *task.Execution) (any, error) {
-	var input Input
-	if err := json.Unmarshal(execution.Task().Inputs, &input); err != nil {
-		return nil, err
-	}
-	work, directory, name, err := s.Configurations.Materialize(ctx, input.ConfigurationID, input.ConfigurationVersion)
+	return s.buildConfiguration(ctx, execution, false)
+}
+
+func (s Service) coordinator(ctx context.Context) error {
+	local, err := s.Members.Get(ctx, s.HostID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer work.Close()
-	log := execution.LogWriter(ctx)
-	builder := s.Builder
-	builder.Process.Log = log
-	result, err := builder.BuildPath(ctx, directory, "configurations.nixos."+name+".config.system.build.toplevel")
-	return result, errors.Join(err, log.Close())
+	if local.Value.Status != "full" && local.Value.Status != "full-stable" {
+		return errors.New("deployment assignment requires a full coordinator")
+	}
+	return nil
 }
 
 func (s Service) assigned(ctx context.Context, input Input) error {

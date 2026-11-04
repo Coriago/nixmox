@@ -140,12 +140,24 @@ func (n *Node) Close() error {
 // WritePrivate atomically replaces one private file and fsyncs the containing
 // directory. Callers must keep the parent directory private and trusted.
 func WritePrivate(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".nixmox-*")
+	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer root.Close()
+	return WritePrivateAt(root, filepath.Base(path), data)
+}
+
+// WritePrivateAt performs the same atomic private write beneath a pinned root.
+// Destination symlinks cannot redirect installation secrets into the live host.
+func WritePrivateAt(root *os.Root, name string, data []byte) error {
+	dir := filepath.Dir(name)
+	temporary := filepath.Join(dir, ".nixmox-"+uuid.NewString())
+	f, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer root.Remove(temporary)
 	if _, err = f.Write(data); err != nil {
 		f.Close()
 		return err
@@ -157,15 +169,15 @@ func WritePrivate(path string, data []byte) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(f.Name(), path); err != nil {
+	if err = root.Rename(temporary, name); err != nil {
 		return err
 	}
-	d, err := os.Open(dir)
+	directory, err := root.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer d.Close()
-	return d.Sync()
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func (n *Node) CSR() ([]byte, error) {

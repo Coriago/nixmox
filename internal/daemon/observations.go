@@ -12,7 +12,20 @@ import (
 )
 
 func (r *Runtime) startObservations(nc *nats.Conn, nodeID string) error {
-	subscription, err := nc.SubscribeSync("host." + nodeID + ".observe")
+	return r.serveRequests(nc, "host."+nodeID+".observe", func(ctx context.Context, message *nats.Msg) (any, error) {
+		var request host.ObservationRequest
+		if err := json.Unmarshal(message.Data, &request); err != nil {
+			return nil, err
+		}
+		if request.Kind == "runtime" {
+			return r.membershipInfo(ctx)
+		}
+		return host.ObserveLocal(ctx, host.Process{}, request)
+	})
+}
+
+func (r *Runtime) serveRequests(nc *nats.Conn, subject string, handle func(context.Context, *nats.Msg) (any, error)) error {
+	subscription, err := nc.SubscribeSync(subject)
 	if err != nil {
 		return err
 	}
@@ -31,18 +44,17 @@ func (r *Runtime) startObservations(nc *nats.Conn, nodeID string) error {
 				continue
 			}
 			operation, cancel := context.WithTimeout(cluster.Extract(r.lifetime, message), 30*time.Second)
-			var request host.ObservationRequest
-			var response host.ObservationResponse
-			err = json.Unmarshal(message.Data, &request)
+			var response cluster.Response
+			result, err := handle(operation, message)
+			restart := errors.Is(err, errRoleRestart)
+			if restart {
+				err = nil
+			}
 			if err == nil {
-				var result any
-				result, err = host.ObserveLocal(operation, host.Process{}, request)
-				if err == nil {
-					response.Output, err = json.Marshal(result)
-				}
-				if len(response.Output) > 512<<10 {
-					err = errors.New("host observation exceeds 512 KiB")
-				}
+				response.Output, err = json.Marshal(result)
+			}
+			if len(response.Output) > 512<<10 {
+				err = errors.New("node response exceeds 512 KiB")
 			}
 			cancel()
 			if err != nil {
@@ -51,6 +63,14 @@ func (r *Runtime) startObservations(nc *nats.Conn, nodeID string) error {
 			data, err := json.Marshal(response)
 			if err == nil {
 				message.Respond(data)
+			}
+			if restart {
+				nc.FlushTimeout(2 * time.Second)
+				select {
+				case r.failures <- errRoleRestart:
+				default:
+				}
+				return
 			}
 		}
 	})

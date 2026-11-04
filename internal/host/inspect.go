@@ -13,6 +13,7 @@ type Disk struct {
 	Model    string `json:"model"`
 	Serial   string `json:"serial"`
 	ReadOnly bool   `json:"readOnly"`
+	Mounted  bool   `json:"mounted"`
 }
 
 // Disks returns whole disks with stable by-id paths where available. It never
@@ -23,14 +24,7 @@ func (p Process) Disks(ctx context.Context) ([]Disk, error) {
 		return nil, err
 	}
 	var inventory struct {
-		Devices []struct {
-			Path     string `json:"path"`
-			Type     string `json:"type"`
-			Size     uint64 `json:"size"`
-			Model    string `json:"model"`
-			Serial   string `json:"serial"`
-			ReadOnly bool   `json:"ro"`
-		} `json:"blockdevices"`
+		Devices []blockDevice `json:"blockdevices"`
 	}
 	if err = json.Unmarshal(data, &inventory); err != nil {
 		return nil, err
@@ -56,9 +50,34 @@ func (p Process) Disks(ctx context.Context) ([]Disk, error) {
 		if stable[path] != "" {
 			path = stable[path]
 		}
-		disks = append(disks, Disk{Device: path, Size: device.Size, Model: device.Model, Serial: device.Serial, ReadOnly: device.ReadOnly})
+		disks = append(disks, Disk{Device: path, Size: device.Size, Model: device.Model, Serial: device.Serial, ReadOnly: device.ReadOnly, Mounted: device.mounted()})
 	}
 	return disks, nil
+}
+
+type blockDevice struct {
+	Path        string        `json:"path"`
+	Type        string        `json:"type"`
+	Size        uint64        `json:"size"`
+	Model       string        `json:"model"`
+	Serial      string        `json:"serial"`
+	ReadOnly    bool          `json:"ro"`
+	MountPoints []*string     `json:"mountpoints"`
+	Children    []blockDevice `json:"children"`
+}
+
+func (d blockDevice) mounted() bool {
+	for _, mount := range d.MountPoints {
+		if mount != nil && *mount != "" {
+			return true
+		}
+	}
+	for _, child := range d.Children {
+		if child.mounted() {
+			return true
+		}
+	}
+	return false
 }
 
 func (p Process) Hardware(ctx context.Context, noFileSystems bool) (string, error) {

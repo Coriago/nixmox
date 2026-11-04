@@ -28,12 +28,13 @@ type Registration struct {
 }
 
 type Service struct {
-	HostID      string
-	Definitions cluster.Store[installers.Definition]
-	Tasks       *task.Manager
-	Repository  func(context.Context, string) (source.Repository, error)
-	Inspect     func(context.Context) (installers.Target, error)
-	Transition  Transition
+	HostID            string
+	Definitions       cluster.Store[installers.Definition]
+	Tasks             *task.Manager
+	Repository        func(context.Context, string) (source.Repository, error)
+	Inspect           func(context.Context) (installers.Target, error)
+	Transition        Transition
+	PreserveInstalled func(context.Context, *task.Execution, string) error
 }
 
 // Transition is the daemon boundary: it must verify recovery support, complete
@@ -44,7 +45,6 @@ type Transition interface {
 	Demote(context.Context, installers.Target) error
 	Stage(context.Context, *task.Execution, host.BuildResult) (prepare.Boot, error)
 	Persist(context.Context, *task.Execution) error
-	PreserveInstalled(context.Context, *task.Execution, string) error
 }
 
 func (s *Service) Register(ctx context.Context, input Registration) (installers.Definition, error) {

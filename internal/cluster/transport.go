@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -112,6 +113,33 @@ func DispatchContext(ctx context.Context) propagation.MapCarrier {
 
 func ResumeContext(lifetime context.Context, carrier propagation.MapCarrier) context.Context {
 	return otel.GetTextMapPropagator().Extract(lifetime, carrier)
+}
+
+type Response struct {
+	Output json.RawMessage `json:"output,omitempty"`
+	Error  string          `json:"error,omitempty"`
+}
+
+func RequestJSON(ctx context.Context, nc *nats.Conn, subject string, input, output any) error {
+	data, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	message, err := Request(ctx, nc, subject, data)
+	if err != nil {
+		return err
+	}
+	var response Response
+	if err = json.Unmarshal(message.Data, &response); err != nil {
+		return err
+	}
+	if response.Error != "" {
+		return errors.New(response.Error)
+	}
+	if output == nil {
+		return nil
+	}
+	return json.Unmarshal(response.Output, output)
 }
 
 func Request(ctx context.Context, nc *nats.Conn, subject string, data []byte) (*nats.Msg, error) {

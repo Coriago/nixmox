@@ -5,7 +5,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"nixmox/internal/client"
+	"nixmox/internal/cluster"
 	"nixmox/internal/daemon"
 	"nixmox/internal/discovery"
 	"nixmox/internal/domain"
@@ -100,6 +103,26 @@ func TestInstallerEnrollment(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := pending.Health(ctx)
+	// A missing configuration fails before any host mutation. The owning pending
+	// daemon still must journal, execute and finish this remotely submitted task.
+	work, err := contactServices.Tasks.Submit(ctx, domain.Task{HostID: before.NodeID, Type: "configuration-build", Persist: true, Inputs: json.RawMessage(`{"configurationId":"missing","configurationVersion":1}`), Concurrency: domain.TaskConcurrency{ExclusiveResources: []string{"host:" + before.NodeID + ":system"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := errors.New("task finished")
+	var handled domain.Task
+	waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = contactServices.Tasks.Tasks.Watch(waitCtx, work.ID, func(record *cluster.Record[domain.Task], deleted bool) error {
+		if record != nil && !deleted && record.Value.Status.Terminal() {
+			handled = record.Value
+			return finished
+		}
+		return nil
+	})
+	waitCancel()
+	if !errors.Is(err, finished) || handled.Status != domain.Failed {
+		t.Fatalf("pending task execution: %v, %+v", err, handled)
+	}
 	var disks []host.Disk
 	if err = api.Do(ctx, "GET", "/hosts/"+before.NodeID+"/disks", nil, &disks); err != nil {
 		t.Fatal(err)

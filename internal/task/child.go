@@ -24,7 +24,7 @@ func (e *Execution) Child(ctx context.Context, kind, role string, input any) (js
 		if err != nil {
 			return nil, err
 		}
-		child, err := e.manager.Submit(ctx, domain.Task{HostID: e.Task().HostID, Type: kind, Inputs: data, Links: domain.TaskLinks{ParentTaskID: e.Task().ID}})
+		child, err := e.manager.SubmitChild(ctx, domain.Task{HostID: e.Task().HostID, Persist: e.Task().Persist, Type: kind, Inputs: data, Links: domain.TaskLinks{ParentTaskID: e.Task().ID}}, role)
 		if err != nil {
 			return nil, err
 		}
@@ -33,6 +33,11 @@ func (e *Execution) Child(ctx context.Context, kind, role string, input any) (js
 			return nil, err
 		}
 	}
+	return e.WaitChild(ctx, id, kind, e.Task().HostID)
+}
+
+// WaitChild validates parentage and ownership for local or remote linked tasks.
+func (e *Execution) WaitChild(ctx context.Context, id, kind, hostID string) (json.RawMessage, error) {
 	done := errors.New("child completed")
 	var result json.RawMessage
 	err := e.manager.Tasks.Watch(ctx, id, func(record *cluster.Record[domain.Task], deleted bool) error {
@@ -43,7 +48,7 @@ func (e *Execution) Child(ctx context.Context, kind, role string, input any) (js
 			return nil
 		}
 		child := record.Value
-		if child.HostID != e.Task().HostID || child.Type != kind || child.Links.ParentTaskID != e.Task().ID {
+		if child.HostID != hostID || child.Type != kind || child.Links.ParentTaskID != e.Task().ID {
 			return errors.New("child task ownership mismatch")
 		}
 		if !child.Status.Terminal() {

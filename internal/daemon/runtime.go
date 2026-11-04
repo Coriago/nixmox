@@ -27,19 +27,11 @@ import (
 	"nixmox/internal/api"
 	"nixmox/internal/cache"
 	"nixmox/internal/cluster"
-	"nixmox/internal/configuration"
 	"nixmox/internal/credentials"
-	"nixmox/internal/deployment"
 	"nixmox/internal/discovery"
 	"nixmox/internal/domain"
-	"nixmox/internal/enrollment"
 	"nixmox/internal/host"
 	"nixmox/internal/identity"
-	"nixmox/internal/installer"
-	"nixmox/internal/installer/installers"
-	"nixmox/internal/recipe"
-	"nixmox/internal/source"
-	"nixmox/internal/task"
 	browser "nixmox/internal/ui/views/browser"
 	"nixmox/internal/util"
 )
@@ -63,6 +55,7 @@ type Config struct {
 }
 
 type startup struct {
+	PeerRoutes      []string             `json:"peerRoutes,omitempty"`
 	Cluster         domain.Cluster       `json:"cluster"`
 	Member          domain.Member        `json:"member"`
 	Certificate     string               `json:"certificate"`
@@ -288,8 +281,8 @@ func (r *Runtime) saveStartup(saved startup) error {
 }
 
 func (r *Runtime) start(saved startup) (err error) {
-	if saved.Member.Status == "pending" {
-		return r.startPending(saved)
+	if saved.Member.Status == "pending" || saved.Member.Status == "full" || len(saved.PeerRoutes) > 0 {
+		return r.startClient(saved)
 	}
 	if saved.Member.Status != "full-stable" {
 		return errors.New("unsupported startup membership role")
@@ -345,25 +338,8 @@ func (r *Runtime) start(saved startup) (err error) {
 	if err != nil {
 		return err
 	}
-	options := server.Options{
-		ServerName: r.node.State.NodeID,
-		Host:       r.config.NATSHost,
-		Port:       r.config.NATSPort,
-		JetStream:  true,
-		StoreDir:   filepath.Join(r.config.StateDir, "nats", "main"),
-		TLSConfig:  tlsConfig,
-		TLSVerify:  true,
-		TLSMap:     true,
-		Users:      []*server.User{{Username: "CN=" + r.node.State.NodeID}},
-		Routes:     []*url.URL{bootstrapRoute},
-		Cluster: server.ClusterOpts{
-			Name:      saved.Cluster.ID,
-			Host:      r.config.NATSHost,
-			Port:      ports[0],
-			TLSConfig: tlsConfig.Clone(),
-		},
-	}
-	if err = configureAccounts(&options, r.node.State.NodeID); err != nil {
+	options, err := r.peerOptions(saved, tlsConfig, []*url.URL{bootstrapRoute}, ports[0], []domain.Member{{NodeID: r.node.State.NodeID, Status: "full-stable"}})
+	if err != nil {
 		return err
 	}
 	serverOptions = append(serverOptions, options.Clone())
@@ -434,16 +410,35 @@ func (r *Runtime) start(saved startup) (err error) {
 		}
 	}
 	buckets := []string{"CLUSTER", "MEMBERS", "CREDENTIALS", "RECIPIENTS", "TASKS", "OUTPUTS", "LOCKS", "REPOS", "CONFIGURATIONS", "RECIPES", "INSTALLERS", "ENROLLMENT"}
+	configs := make([]jetstream.KeyValueConfig, 0, len(buckets)+1)
 	for _, bucket := range buckets {
-		if _, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 2}); err != nil {
-			return fmt.Errorf("provision bucket %s: %w", bucket, err)
+		configs = append(configs, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 2})
+	}
+	configs = append(configs, jetstream.KeyValueConfig{Bucket: "DISCOVERY", Storage: jetstream.FileStorage, Replicas: 2, TTL: discovery.Lifetime, MaxBytes: 4 << 20, MaxValueSize: 16 << 10})
+	for _, config := range configs {
+		// A cold start must not reset a topology transition's committed replication.
+		_, err = cluster.OpenStore[json.RawMessage](ctx, js, config.Bucket)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, jetstream.ErrBucketNotFound) {
+			return fmt.Errorf("restore bucket %s: %w", config.Bucket, err)
+		}
+		if _, err = js.CreateKeyValue(ctx, config); err != nil {
+			return fmt.Errorf("provision bucket %s: %w", config.Bucket, err)
 		}
 	}
-	if _, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "DISCOVERY", Storage: jetstream.FileStorage, Replicas: 2, TTL: discovery.Lifetime, MaxBytes: 4 << 20, MaxValueSize: 16 << 10}); err != nil {
-		return fmt.Errorf("provision discovery: %w", err)
+	streams := js.StreamNames(ctx)
+	for name := range streams.Name() {
+		stream, err := js.Stream(ctx, name)
+		if err != nil {
+			return fmt.Errorf("restore stream %s: %w", name, err)
+		}
+		if err = cluster.WaitStreamReady(ctx, stream, 0); err != nil {
+			return fmt.Errorf("restore stream quorum %s: %w", name, err)
+		}
 	}
-	discoveryStore, err := cluster.OpenStore[discovery.Record](ctx, js, "DISCOVERY")
-	if err != nil {
+	if err = streams.Err(); err != nil {
 		return err
 	}
 	clusterStore, err := cluster.OpenStore[domain.Cluster](ctx, js, "CLUSTER")
@@ -453,10 +448,6 @@ func (r *Runtime) start(saved startup) (err error) {
 	members, err := cluster.OpenStore[domain.Member](ctx, js, "MEMBERS")
 	if err != nil {
 		return fmt.Errorf("open members: %w", err)
-	}
-	enrollments, err := cluster.OpenStore[enrollment.Request](ctx, js, "ENROLLMENT")
-	if err != nil {
-		return err
 	}
 	credentialStore, err := cluster.OpenStore[credentials.Record](ctx, js, "CREDENTIALS")
 	if err != nil {
@@ -475,7 +466,7 @@ func (r *Runtime) start(saved startup) (err error) {
 		}
 	}
 	if _, err = recipients.Create(ctx, "recipients", credentials.Recipients{ClusterID: saved.Cluster.ID, Recipients: []credentials.Recipient{{NodeID: saved.Member.NodeID, AgePublicKey: saved.Member.AgePublicKey}}}); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
-		return err
+		return fmt.Errorf("seed recipients: %w", err)
 	}
 	publicClientURL, publicRouteURL := *clientURL, *routeURL
 	if endpoint, parseErr := url.Parse(r.config.AdvertiseURL); parseErr == nil && endpoint.Hostname() != "" {
@@ -499,159 +490,16 @@ func (r *Runtime) start(saved startup) (err error) {
 		_, err = members.Update(ctx, member.NodeID, member, current.Revision)
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("publish startup member: %w", err)
 	}
-	tasks, err := cluster.OpenStore[domain.Task](ctx, js, "TASKS")
+	if err = (cluster.Logs{JS: js}).Provision(ctx, 2); err != nil {
+		return fmt.Errorf("restore logs: %w", err)
+	}
+	svc, err := r.wireServices(ctx, js, nc, member)
 	if err != nil {
-		return fmt.Errorf("open tasks: %w", err)
+		return fmt.Errorf("compose services: %w", err)
 	}
-	outputs, err := cluster.OpenStore[domain.TaskOutput](ctx, js, "OUTPUTS")
-	if err != nil {
-		return fmt.Errorf("open outputs: %w", err)
-	}
-	locks, err := cluster.OpenStore[map[string]string](ctx, js, "LOCKS")
-	if err != nil {
-		return fmt.Errorf("open locks: %w", err)
-	}
-	repos, err := cluster.OpenStore[source.Repository](ctx, js, "REPOS")
-	if err != nil {
-		return fmt.Errorf("open repos: %w", err)
-	}
-	configurations, err := cluster.OpenStore[configuration.Version](ctx, js, "CONFIGURATIONS")
-	if err != nil {
-		return fmt.Errorf("open configurations: %w", err)
-	}
-	recipes, err := cluster.OpenStore[recipe.Version](ctx, js, "RECIPES")
-	if err != nil {
-		return fmt.Errorf("open recipes: %w", err)
-	}
-	installerDefinitions, err := cluster.OpenStore[installers.Definition](ctx, js, "INSTALLERS")
-	if err != nil {
-		return fmt.Errorf("open installers: %w", err)
-	}
-	logs := cluster.Logs{JS: js}
-	if err = logs.Provision(ctx, 2); err != nil {
-		return err
-	}
-	signing, err := credentialStore.Get(ctx, "nix-signing-key")
-	if err != nil {
-		return err
-	}
-	secret, err := (credentials.Cipher{KeyFile: filepath.Join(r.config.StateDir, "age.key")}).Decrypt(ctx, signing.Value.Content)
-	if err != nil {
-		return err
-	}
-	defer clear(secret)
-	local, err := cache.NewLocal(string(secret), host.Process{})
-	if err != nil {
-		return err
-	}
-	gateway = cache.NewGateway()
-	if r.config.AdvertiseURL != "" {
-		if err = gateway.ReplacePeers([]cache.Peer{{NodeID: member.NodeID, StoreURL: r.config.AdvertiseURL + "/store-cache"}}); err != nil {
-			return err
-		}
-	}
-	sources := source.Manager{Root: filepath.Join(r.config.StateDir, "worktrees")}
-	builder := host.Builder{
-		Sources: sources,
-		Repository: func(ctx context.Context, id string) (source.Repository, error) {
-			record, err := repos.Get(ctx, id)
-			return record.Value, err
-		},
-	}
-	manager := &task.Manager{
-		HostID:    member.NodeID,
-		Tasks:     tasks,
-		Outputs:   outputs,
-		Logs:      logs,
-		Resources: task.Resources{Store: locks},
-		Runners:   map[string]task.Runner{"build": builder.Runner},
-	}
-
-	installerService := &installer.Service{
-		HostID: member.NodeID, Definitions: installerDefinitions, Tasks: manager,
-		Repository: builder.Repository,
-		Inspect: func(ctx context.Context) (installers.Target, error) {
-			return installer.InspectLocal(ctx, member.NodeID, saved.Member.Environment)
-		},
-	}
-	manager.Runners[installer.LaunchTask] = installerService.Runner
-	manager.Runners[installer.FinalizeTask] = installerService.FinalizeRunner
-
-	recipeService := &recipe.Service{
-		Repository:   recipe.Repository{Records: recipes},
-		Sources:      sources,
-		Repositories: repos,
-	}
-	collector := &configuration.Collector{
-		HostDisks: func(ctx context.Context, nodeID string) (any, error) {
-			if _, err := members.Get(ctx, nodeID); err != nil {
-				return nil, err
-			}
-			var output json.RawMessage
-			err := host.Observe(ctx, nc, nodeID, host.ObservationRequest{Kind: "disks"}, &output)
-			return output, err
-		},
-		HostHardware: func(ctx context.Context, nodeID string, noFileSystems bool) (string, error) {
-			if _, err := members.Get(ctx, nodeID); err != nil {
-				return "", err
-			}
-			var output string
-			err := host.Observe(ctx, nc, nodeID, host.ObservationRequest{Kind: "hardware", NoFileSystems: noFileSystems}, &output)
-			return output, err
-		},
-		Members:      members,
-		Repositories: repos,
-		Sources:      sources,
-		CredentialIDs: func(ctx context.Context) ([]string, error) {
-			return credentialStore.KV.Keys(ctx)
-		},
-		HostAgeKey: func(ctx context.Context, id string) (string, error) {
-			record, err := members.Get(ctx, id)
-			return record.Value.AgePublicKey, err
-		},
-	}
-	configurationService := &configuration.Service{
-		Repository:   configuration.Repository{Records: configurations},
-		Recipes:      recipeService.Repository,
-		Observer:     collector,
-		Sources:      sources,
-		Repositories: repos,
-	}
-	registry := &configuration.Registry{
-		Sources:        sources,
-		Repositories:   repos,
-		Configurations: configurationService,
-		Run:            (host.Process{}).Run,
-	}
-
-	deployments := &deployment.Service{HostID: member.NodeID, Configurations: configurationService, Members: members, Tasks: manager, Builder: builder}
-	manager.Runners["deployment"] = deployments.Runner
-	manager.Runners["configuration-build"] = deployments.Build
-	metrics := cluster.Metrics{Connection: nc}
-	enrollmentService := &enrollment.Service{NodeID: member.NodeID, Requests: enrollments, Members: members, Clusters: clusterStore, Discovery: discoveryStore, Issue: r.issueEnrollment, Authorize: func(ctx context.Context) error { return r.refreshAuthorization(ctx, members) }}
-	svc := &api.Services{
-		HostDisks:      collector.HostDisks,
-		Enrollment:     enrollmentService,
-		Discovery:      discoveryStore,
-		Metrics:        metrics,
-		Deployments:    deployments,
-		Credentials:    credentialStore,
-		CachePublicKey: local.PublicKey(),
-		Cluster:        clusterStore,
-		Members:        members,
-		Repositories:   repos,
-		Sources:        sources,
-		Configurations: configurationService,
-		Registry:       registry,
-		Recipes:        recipeService,
-		Installers:     installerService,
-		Tasks:          manager,
-		Logs:           logs,
-		Cache:          gateway,
-		StoreCache:     local,
-	}
+	gateway = svc.Cache.(*cache.Gateway)
 	r.mu.Lock()
 	r.node.State.ClusterID = saved.Cluster.ID
 	r.node.State.Status = "full-stable"
@@ -676,41 +524,13 @@ func (r *Runtime) start(saved startup) (err error) {
 	r.authorizedMembers = authorizationKey([]domain.Member{{NodeID: member.NodeID, Status: "full-stable"}})
 	r.authorization.Unlock()
 	if err = r.refreshAuthorization(ctx, members); err != nil {
-		return err
+		return fmt.Errorf("restore authorization: %w", err)
 	}
 	if err = r.startObservations(nc, member.NodeID); err != nil {
 		return err
 	}
 	success = true
-	r.workers.Go(func() {
-		err := members.Watch(r.lifetime, ">", func(_ *cluster.Record[domain.Member], _ bool) error {
-			return r.refreshAuthorization(r.lifetime, members)
-		})
-		if err != nil && r.lifetime.Err() == nil {
-			select {
-			case r.failures <- err:
-			default:
-			}
-		}
-	})
-	r.workers.Go(func() {
-		if err := enrollmentService.Run(r.lifetime); err != nil && r.lifetime.Err() == nil {
-			select {
-			case r.failures <- err:
-			default:
-			}
-		}
-	})
-	r.workers.Go(func() { host.Metrics(r.lifetime, member.NodeID, metrics) })
-	r.workers.Go(func() {
-		if err := manager.Run(r.lifetime); err != nil && r.lifetime.Err() == nil {
-			select {
-			case r.failures <- err:
-			default:
-			}
-		}
-	})
-	return nil
+	return r.runServices(svc)
 }
 
 // Every embedded server needs independent account instances and an explicitly
@@ -769,7 +589,18 @@ func (r *Runtime) Close() error {
 	return r.node.Close()
 }
 
+var errRoleRestart = errors.New("membership role requires daemon restart")
+
 func Run(ctx context.Context, config Config) error {
+	for {
+		err := runOnce(ctx, config)
+		if !errors.Is(err, errRoleRestart) || ctx.Err() != nil {
+			return err
+		}
+	}
+}
+
+func runOnce(ctx context.Context, config Config) error {
 	runtime, err := Open(ctx, config)
 	if err != nil {
 		return err

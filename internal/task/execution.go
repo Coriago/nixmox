@@ -18,6 +18,18 @@ type Execution struct {
 
 func (e *Execution) Task() domain.Task { return e.record.Value }
 
+// ReleaseResources ends a host-mutating phase before waiting for a coordinator
+// child that needs the same host lock. The runner must checkpoint validation
+// first and perform no further host mutations after yielding ownership.
+func (e *Execution) ReleaseResources(ctx context.Context) error {
+	value := e.record.Value
+	value.Concurrency.ExclusiveResources = nil
+	if err := e.save(ctx, value); err != nil {
+		return err
+	}
+	return e.manager.Resources.Release(ctx, value.ID)
+}
+
 // LinkChild retains the child operation on the parent without replacing its inputs.
 func (e *Execution) LinkChild(ctx context.Context, child domain.ChildTask) error {
 	task := e.record.Value
@@ -45,6 +57,7 @@ func (e *Execution) save(ctx context.Context, task domain.Task) error {
 	if err == nil {
 		e.record.Value = task
 		e.record.Revision = revision
+		err = e.manager.persist(task)
 	}
 	return err
 }
@@ -62,7 +75,7 @@ func (e *Execution) Review(ctx context.Context, kind string, content any) error 
 	if err != nil {
 		return err
 	}
-	output := domain.TaskOutput{ID: uuid.NewString(), TaskID: e.record.Key, Kind: kind, Content: data}
+	output := domain.TaskOutput{ID: e.Task().HostID + "." + uuid.NewString(), TaskID: e.record.Key, Kind: kind, Content: data}
 	if _, err = e.manager.Outputs.Create(ctx, output.ID, output); err != nil {
 		return err
 	}

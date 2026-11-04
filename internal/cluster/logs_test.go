@@ -26,7 +26,7 @@ func TestLogReplayThenLive(t *testing.T) {
 	appendLog := func(body string) uint64 {
 		t.Helper()
 		payload := &collectlogs.ExportLogsServiceRequest{ResourceLogs: []*logs.ResourceLogs{{ScopeLogs: []*logs.ScopeLogs{{LogRecords: []*logs.LogRecord{{Body: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: body}}}}}}}}}
-		sequence, err := retained.Append(ctx, "task", "build1", payload)
+		sequence, err := retained.Append(ctx, "task", "cedar.build1", payload)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,14 +37,14 @@ func TestLogReplayThenLive(t *testing.T) {
 
 	// --- Usage ---
 	// -------------
-	history, err := retained.Read(ctx, "task", "build1", 0, 100)
+	history, err := retained.Read(ctx, "task", "cedar.build1", 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := errors.New("received live event")
 	var sequences []uint64
 	var live uint64
-	err = retained.Follow(ctx, "task", "build1", first, func(entry cluster.LogEntry) error {
+	err = retained.Follow(ctx, "task", "cedar.build1", first, func(entry cluster.LogEntry) error {
 		sequences = append(sequences, entry.Sequence)
 		if entry.Sequence == second {
 			live = appendLog("activated")

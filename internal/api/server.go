@@ -17,12 +17,14 @@ import (
 	"nixmox/internal/domain"
 	"nixmox/internal/enrollment"
 	"nixmox/internal/installer"
+	"nixmox/internal/membership"
 	"nixmox/internal/recipe"
 	"nixmox/internal/source"
 	"nixmox/internal/task"
 )
 
 type Services struct {
+	Membership     *membership.Service
 	HostDisks      func(context.Context, string) (any, error)
 	Enrollment     *enrollment.Service
 	Pending        bool

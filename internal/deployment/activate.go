@@ -21,6 +21,16 @@ type Result struct {
 }
 
 func (s Service) Runner(ctx context.Context, execution *task.Execution) (any, error) {
+	if s.Environment != "installed" {
+		return nil, errors.New("activation requires the installed environment")
+	}
+	member, err := s.Members.Get(ctx, s.HostID)
+	if err != nil {
+		return nil, err
+	}
+	if member.Value.Status != "full" && member.Value.Status != "full-stable" {
+		return nil, errors.New("activation requires full membership")
+	}
 	var input Input
 	if err := json.Unmarshal(execution.Task().Inputs, &input); err != nil {
 		return nil, err

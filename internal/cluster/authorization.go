@@ -35,22 +35,24 @@ func ConfigureAccounts(options *server.Options, members []domain.Member) error {
 		switch member.Status {
 		case "full", "full-stable":
 			u.Permissions = &permissions{
-				Publish:        []string{"$JS.API.>", "$JS.ACK.>", "$KV.>", "logs.task.*", "logs.host." + member.NodeID, "metrics.host." + member.NodeID, "host.*.observe"},
-				Subscribe:      []string{"_INBOX." + member.NodeID + ".>", "metrics.host.>", "host." + member.NodeID + ".observe"},
+				Publish:        []string{"$JS.API.>", "$JS.ACK.>", "$KV.>", "logs.task.>", "logs.host." + member.NodeID, "metrics.host." + member.NodeID, "host.*.observe", "host.*.membership", "membership.*.request." + member.NodeID},
+				Subscribe:      []string{"_INBOX." + member.NodeID + ".>", "metrics.host.>", "host." + member.NodeID + ".observe", "host." + member.NodeID + ".membership", "membership." + member.NodeID + ".request.*"},
 				AllowResponses: map[string]any{"max": 1, "expires": "1m"},
 			}
 		case "pending":
 			u.Permissions = &permissions{
-				Publish:        []string{"$JS.API.INFO", "metrics.host." + member.NodeID},
-				Subscribe:      []string{"_INBOX." + member.NodeID + ".>", "metrics.host.>", "host." + member.NodeID + ".observe"},
+				Publish:        []string{"$JS.API.INFO", "$JS.ACK.>", "metrics.host." + member.NodeID, "logs.task." + member.NodeID + ".>", "$KV.TASKS." + member.NodeID + ".>", "$KV.OUTPUTS." + member.NodeID + ".>", "$KV.LOCKS.host." + member.NodeID, "membership.*.request." + member.NodeID, "$JS.API.STREAM.INFO.KV_CREDENTIALS", "$JS.API.STREAM.INFO.KV_RECIPIENTS"},
+				Subscribe:      []string{"_INBOX." + member.NodeID + ".>", "metrics.host.>", "host." + member.NodeID + ".observe", "host." + member.NodeID + ".membership"},
 				AllowResponses: map[string]any{"max": 1, "expires": "1m"},
 			}
-			for _, bucket := range []string{"CLUSTER", "MEMBERS", "DISCOVERY"} {
+			for _, bucket := range []string{"CLUSTER", "MEMBERS", "DISCOVERY", "TASKS", "OUTPUTS", "LOCKS", "REPOS", "CONFIGURATIONS", "RECIPES", "INSTALLERS", "ENROLLMENT"} {
 				stream := "KV_" + bucket
 				u.Permissions.Publish = append(u.Permissions.Publish,
 					"$JS.API.STREAM.INFO."+stream,
 					"$JS.API.DIRECT.GET."+stream+".>",
-					"$JS.API.STREAM.MSG.GET."+stream)
+					"$JS.API.STREAM.MSG.GET."+stream,
+					"$JS.API.CONSUMER.CREATE."+stream+".>",
+					"$JS.API.CONSUMER.DELETE."+stream+".*")
 			}
 		default:
 			// Removed/unjoined identities are not authorized, even with a valid cert.
