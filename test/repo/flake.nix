@@ -1,6 +1,6 @@
 {
   description = "Nixmox CLI E2E GitOps fixture";
-  inputs.nixmox.url = "github:Coriago/nixmox/dev/e2e-phase2";
+  inputs.nixmox.url = "github:Coriago/nixmox/dev/e2e-phase3";
   inputs.nixpkgs.follows = "nixmox/nixpkgs";
   inputs.disko.url = "github:nix-community/disko";
   inputs.disko.inputs.nixpkgs.follows = "nixpkgs";
