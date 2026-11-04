@@ -59,12 +59,13 @@ func (c Collector) collectClusterHosts(ctx context.Context, observation recipe.O
 	if c.Members.KV == nil {
 		return result, errors.New("membership store unavailable")
 	}
-	members, err := listAll(ctx, c.Members)
+	members, err := c.Members.All(ctx)
 	if err != nil {
 		return result, err
 	}
 	hosts := make([]map[string]string, 0, len(members))
-	for _, member := range members {
+	for _, record := range members {
+		member := record.Value
 		if member.Status == "removed" {
 			continue
 		}
@@ -79,9 +80,16 @@ func (c Collector) collectClusterRepos(ctx context.Context, observation recipe.O
 	if c.Repositories.KV == nil {
 		return result, errors.New("repository store unavailable")
 	}
-	repositories, err := listAll(ctx, c.Repositories)
+	records, err := c.Repositories.All(ctx)
+	if err != nil {
+		return result, err
+	}
+	repositories := make([]source.Repository, 0, len(records))
+	for _, record := range records {
+		repositories = append(repositories, record.Value)
+	}
 	result.Output = repositories
-	return result, err
+	return result, nil
 }
 
 func (c Collector) collectClusterCredentials(ctx context.Context, observation recipe.Observation) (ObservationResult, error) {
@@ -189,24 +197,6 @@ func (c Collector) checkoutObservation(ctx context.Context, reference any) (*sou
 	return work, pin, err
 }
 
-func listAll[T any](ctx context.Context, store cluster.Store[T]) ([]T, error) {
-	result := []T{}
-	cursor := ""
-	for {
-		records, next, err := store.List(ctx, cursor, 100)
-		if err != nil {
-			return nil, err
-		}
-		for _, record := range records {
-			result = append(result, record.Value)
-		}
-		if next == "" {
-			return result, nil
-		}
-		cursor = next
-	}
-}
-
 func (c Collector) repository(ctx context.Context, value any) (source.Repository, source.Pin, error) {
 	var requested struct {
 		RootDir string `json:"rootDir"`
@@ -237,11 +227,12 @@ func (c Collector) repository(ctx context.Context, value any) (source.Repository
 		if requested.URL == "" || requested.Ref == "" {
 			return repo, pin, errors.New("observation repository URL and reference required")
 		}
-		tracked, err := listAll(ctx, c.Repositories)
+		tracked, err := c.Repositories.All(ctx)
 		if err != nil {
 			return repo, pin, err
 		}
-		for _, candidate := range tracked {
+		for _, record := range tracked {
+			candidate := record.Value
 			if candidate.URL == requested.URL && candidate.Ref == requested.Ref {
 				repo = candidate
 				break

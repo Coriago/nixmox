@@ -132,7 +132,6 @@ in
         pkgs.nixos-install-tools
         pkgs.nix
         pkgs.sops
-        pkgs.ssh-to-age
         pkgs.git
         pkgs.openssh
       ];

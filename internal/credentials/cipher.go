@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
+	agessh "github.com/Mic92/ssh-to-age"
 
 	"nixmox/internal/host"
 	"nixmox/internal/identity"
@@ -38,15 +39,23 @@ type Record struct {
 
 type Cipher struct{ KeyFile string }
 
-// DeriveIdentity converts the real SSH host key, not the node's TLS key, using
-// ssh-to-age. Only the private node directory receives the derived age identity.
+// DeriveIdentity uses the upstream ssh-to-age converter in-process so an
+// unjoined bootstrap agent needs no helper executable. It derives from the SSH
+// host key, never the node's TLS key, and keeps the existing X25519 identity.
 func DeriveIdentity(ctx context.Context, sshHostKey, destination string) (string, error) {
-	data, err := (host.Process{}).Run(ctx, "", nil, "ssh-to-age", "-private-key", "-i", sshHostKey)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(sshHostKey)
+	if err != nil {
+		return "", errors.New("could not read SSH host key")
+	}
+	defer clear(data)
+	private, _, err := agessh.SSHPrivateKeyToAge(data, nil)
 	if err != nil {
 		return "", errors.New("could not derive age identity from SSH host key")
 	}
-	defer clear(data)
-	key, err := age.ParseX25519Identity(strings.TrimSpace(string(data)))
+	key, err := age.ParseX25519Identity(*private)
 	if err != nil {
 		return "", errors.New("invalid derived age identity")
 	}

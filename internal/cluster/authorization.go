@@ -11,6 +11,10 @@ import (
 	"nixmox/internal/domain"
 )
 
+// SystemIdentity names a separate certificate-mapped management principal.
+// Colons are forbidden in member IDs, keeping this namespace disjoint.
+func SystemIdentity(nodeID string) string { return "system:" + nodeID }
+
 // ConfigureAccounts builds independent server accounts from authoritative
 // membership. A pending certificate grants reads and its own telemetry, never
 // membership writes or JetStream administration. Enrollment is contact-owned.
@@ -18,22 +22,28 @@ func ConfigureAccounts(options *server.Options, members []domain.Member) error {
 	type permissions struct {
 		Publish        []string       `json:"publish"`
 		Subscribe      []string       `json:"subscribe"`
-		AllowResponses map[string]any `json:"allow_responses"`
+		AllowResponses map[string]any `json:"allow_responses,omitempty"`
 	}
 	type user struct {
 		Name        string       `json:"user"`
 		Permissions *permissions `json:"permissions,omitempty"`
 	}
 	users := []user{}
+	systemUsers := []user{}
 	seen := map[string]bool{}
 	for _, member := range members {
-		if member.NodeID == "" || strings.ContainsAny(member.NodeID, " .*><\t\r\n") || seen[member.NodeID] {
+		if member.NodeID == "" || strings.ContainsAny(member.NodeID, " :.*><\t\r\n") || seen[member.NodeID] {
 			return errors.New("invalid or duplicate member identity")
 		}
 		seen[member.NodeID] = true
 		u := user{Name: "CN=" + member.NodeID}
 		switch member.Status {
 		case "full", "full-stable":
+			systemID := SystemIdentity(member.NodeID)
+			systemUsers = append(systemUsers, user{Name: "CN=" + systemID, Permissions: &permissions{
+				Publish:   []string{server.JSApiRemoveServer},
+				Subscribe: []string{"_INBOX." + systemID + ".>"},
+			}})
 			u.Permissions = &permissions{
 				Publish:        []string{"$JS.API.>", "$JS.ACK.>", "$KV.>", "logs.task.>", "logs.host." + member.NodeID, "metrics.host." + member.NodeID, "host.*.observe", "host.*.membership", "membership.*.request." + member.NodeID},
 				Subscribe:      []string{"_INBOX." + member.NodeID + ".>", "metrics.host.>", "host." + member.NodeID + ".observe", "host." + member.NodeID + ".membership", "membership." + member.NodeID + ".request.*"},
@@ -66,11 +76,15 @@ func ConfigureAccounts(options *server.Options, members []domain.Member) error {
 	var data bytes.Buffer
 	encoder := json.NewEncoder(&data)
 	encoder.SetEscapeHTML(false) // NATS config strings do not accept JSON Unicode escapes.
-	if err := encoder.Encode(users); err != nil {
+	accounts := map[string]any{
+		"APP": map[string]any{"jetstream": "enabled", "users": users},
+		"SYS": map[string]any{"users": systemUsers},
+	}
+	if err := encoder.Encode(accounts); err != nil {
 		return err
 	}
 	var parsed server.Options
-	if err := parsed.ProcessConfigString(fmt.Sprintf(`accounts { APP { jetstream: enabled, users: %s }, SYS {} }
+	if err := parsed.ProcessConfigString(fmt.Sprintf(`accounts %s
 system_account: SYS`, data.String())); err != nil {
 		return err
 	}

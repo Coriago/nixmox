@@ -2,6 +2,10 @@
 test:
     go test ./... -count=1 -timeout=120s
 
+# Native replicated-stream, bootstrap retirement and quorum recovery scenario.
+test-quorum:
+    go test ./poc -run TestBootstrapPeer -count=1 -v -timeout=5m
+
 # Backend foundation checks while the remaining runtime/UI integration is built.
 test-backend:
     go test ./internal/identity ./internal/cluster ./internal/task ./internal/source ./internal/host ./internal/cache ./internal/credentials ./internal/client ./internal/cli ./internal/recipe ./internal/configuration ./internal/api ./internal/util ./internal/enrollment ./internal/membership ./internal/deployment -count=1 -timeout=120s
@@ -12,7 +16,7 @@ test-backend-race:
 
 # mTLS cluster/enrollment, recipe observations and server/client cold restarts.
 test-runtime:
-    go test ./internal/daemon -run 'Test(ClusterLifecycle|InstallerEnrollment|RequestedEnrollment)' -count=1 -v -timeout=90s
+    go test ./internal/daemon -run 'Test(ClusterLifecycle|InstallerEnrollment|RequestedEnrollment|ScopedManagement)' -count=1 -v -timeout=90s
 
 # Shared UI/component and HTTP workflow tests.
 test-ui:
@@ -64,6 +68,10 @@ e2e-stop run:
 # These recipes do not start a cluster.
 build:
     go build -o bin/nixmox ./cmd/nixmox
+
+# Reproducible native/browser package, including sandboxed integration checks.
+build-package:
+    nix build "git+file://{{justfile_directory()}}#default" --no-link
 
 run *args:
     go run ./cmd/nixmox {{args}}

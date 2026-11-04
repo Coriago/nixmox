@@ -90,20 +90,9 @@ func (c console) daemonCommand() *cobra.Command {
 		Short: "Start the daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			config := daemon.Config{
-				DiscoveryPort:      c.config.GetInt("discovery-port"),
-				UIAssets:           c.config.GetString("ui-assets"),
-				Environment:        c.config.GetString("environment"),
-				StateDir:           c.config.GetString("state-dir"),
-				Name:               c.config.GetString("name"),
-				Listen:             c.config.GetString("listen"),
-				AdvertiseURL:       c.config.GetString("advertise"),
-				NATSHost:           c.config.GetString("nats-host"),
-				NATSPort:           c.config.GetInt("nats-port"),
-				RoutePort:          c.config.GetInt("route-port"),
-				BootstrapPort:      c.config.GetInt("bootstrap-port"),
-				BootstrapRoutePort: c.config.GetInt("bootstrap-route-port"),
-				SSHHostKey:         c.config.GetString("ssh-host-key"),
+			var config daemon.Config
+			if err := c.config.Unmarshal(&config); err != nil {
+				return err
 			}
 			return daemon.Run(cmd.Context(), config)
 		},

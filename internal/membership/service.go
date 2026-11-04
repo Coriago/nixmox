@@ -220,14 +220,14 @@ func (s *Service) Runner(ctx context.Context, execution *task.Execution) (any, e
 		if len(routes) == 0 {
 			return nil, errors.New("existing full-stable routes required")
 		}
-		// Phase2 keeps the existing bootstrap; three full-stable hosts require the
-		// separate bootstrap retirement transition before this path can extend further.
+		// Retirement must use shared bootstrap ownership, not inferred server
+		// counts. Keep this boundary gated until that transition is implemented.
 		plan, err := cluster.Plan(stable)
 		if err != nil {
 			return nil, err
 		}
 		if !plan.Bootstrap {
-			return nil, errors.New("bootstrap retirement must precede a third full-stable promotion")
+			return nil, errors.New("bootstrap retirement is unavailable")
 		}
 		if err = s.Apply(ctx, input.NodeID, Change{Role: "prepare-server", Certificate: certificate, Routes: routes}); err != nil {
 			return nil, err

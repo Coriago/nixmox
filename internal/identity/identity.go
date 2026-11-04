@@ -181,7 +181,12 @@ func WritePrivateAt(root *os.Root, name string, data []byte) error {
 }
 
 func (n *Node) CSR() ([]byte, error) {
-	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: n.State.NodeID}}, n.Key)
+	return CreateCSR(n.Key, n.State.NodeID)
+}
+
+// CreateCSR binds a certificate subject to an Ed25519 signing key.
+func CreateCSR(key ed25519.PrivateKey, subject string) ([]byte, error) {
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: subject}}, key)
 	if err != nil {
 		return nil, err
 	}

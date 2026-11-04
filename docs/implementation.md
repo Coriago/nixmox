@@ -15,8 +15,11 @@ Implementation ownership and code map for [requirements.md](requirements.md). Co
 - go-nix: store paths, NAR, narinfo, signatures, hashes and base32; derivation parsing is not currently used
 - Gin: HTTP routing and middleware
 - Cobra: commands, flags and help
-- Viper: files, environment and flag bindings; not shared application state
+- Viper: files, environment and flag precedence decoded into `daemon.Config`; not shared application state
+- [nats.go](https://github.com/nats-io/nats.go): application KV, watches, streams and transport; [jsm.go](https://github.com/nats-io/jsm.go): native administrative operations, already used by the quorum integration scenario
+- no additional workflow/state-machine library: the existing task manager already owns persistence, review, concurrency and recovery
 - OpenTelemetry: traces, metrics and correlated logs
+- [ssh-to-age](https://github.com/Mic92/ssh-to-age) v1.2.0: upstream in-process SSH-host-key conversion, retaining the existing age version and derived keys; removes the helper executable from daemon PATH, not the compatibility-test tools
 
 ## ownership
 These are implementation rules, not claims that every planned integration is complete.
@@ -29,6 +32,16 @@ These are implementation rules, not claims that every planned integration is com
 - reuse domain and owner-specific wire models rather than parallel API/client records
 - add task runners, not independent queues, review state machines or lock systems
 - keep components focused; split packages only for distinct dependency boundaries, not a custom plugin framework
+
+## upcoming integration boundaries
+The seed, SSH bootstrap and daemon-configuration requirements are WIP. These boundaries account for them without inventing token formats, new API contracts or placeholder implementations.
+
+- Cluster seeds are enrollment authorization, not cluster-creation secrets. A future valid seed should feed the existing contact-owned CSR/decision/confirmation flow; it must not bypass identity checks or grant full membership. Existing identity, cluster recovery state and pending enrollment take precedence over a configured seed.
+- SSH bootstrap should only verify the remote SSH identity, transfer/start Nixmox with a seed, then hand control to normal enrollment and installer tasks. Prefer the existing process runner with OpenSSH for agent/config support; the existing [x/crypto/ssh](https://pkg.go.dev/golang.org/x/crypto/ssh) dependency is an embedded alternative. Neither needs a separate SSH deployment engine or relaxed host-key checking.
+- Operator configuration stays in `daemon.Config`, decoded by Viper. Persisted node/cluster state and immutable deployment configurations are different data, not alternate configuration-file sources. No final WIP configuration schema is assumed here.
+- Configuration preview, deployment and future publication share pinned materialization. Collection changes configuration versions; rendering consumes retained evidence and never implicitly refreshes Git or observes a host.
+- Membership owns serialized topology decisions; the daemon owns local server/client/cache lifetimes. The upcoming shared bootstrap ownership record must drive placement and transfer. Do not infer ownership from live server counts or add a polling topology controller.
+- The unintegrated retirement draft was removed rather than maintained as another orchestrator. Native evacuation/metadata removal and scoped SYS authentication remain the intended tools; retirement, demotion and kexec are still gated.
 
 ## instrumentation
 Tracing helpers and provider setup exist; these rules also apply to future workflows.
@@ -43,20 +56,19 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
 
 ## entrypoints and runtime
 - [cmd/nixmox/main.go](../cmd/nixmox/main.go): native entrypoint; `main` sets Gin mode, creates a signal context and runs the CLI
-- [internal/daemon/runtime.go](../internal/daemon/runtime.go): composition root; `Config` holds runtime settings, `startup` persists bootstrap inputs and `Runtime` owns services
-  - `Open`: lock identity and restore startup state; unjoined nodes do not start NATS
-  - `Handler`, `Services`, `Health`: expose HTTP wiring, connected services and readiness
-  - `CreateCluster`: persist bootstrap inputs, derive the age recipient, issue certificates and encrypt CA/cache credentials
-  - `saveStartup`, `start`: persist private state, start peers, provision stores and wire services/build workers
-  - `configureAccounts`, `routePorts`, `strconvPort`: NATS account and port setup
-  - `Close`, `Run`: service cleanup, HTTP lifetime and graceful shutdown
+- [runtime.go](../internal/daemon/runtime.go): operator `Config`, process-owned `Runtime`, HTTP lifetime and shutdown; `Open` locks identity and restores existing state without silently treating failed recovery as a fresh node
+- [cluster.go](../internal/daemon/cluster.go): `CreateCluster` persists initial CA/cache credentials; `startBootstrap` creates or restores the creator's two peers and provisions initial shared records
+- [startup.go](../internal/daemon/startup.go): private `startup` recovery record, role dispatch, peer/client startup and one `activate` commit path for service wiring, persisted identity, authorization and observations
+  - `InitialCredentials` retains the legacy `seedCredentials` JSON key for interrupted creation; it is not a join token
+  - prepared peers start routes before reading cluster state, initially with restricted local permissions; authoritative membership grants normal access
+  - a peer keeps its original local connection instead of reconnecting through a second startup path
 - main/bootstrap peers start concurrently; bounded bucket-open retries allow restored stream leaders to elect
 - initial full-stable startup constructs main/bootstrap peers and provisions two replicas; promoted peers join existing routes without provisioning another bootstrap; cold restoration retains committed replication and waits for stream majorities before writes
 - recipe/configuration services and Git-only refresh are wired; registry discovery has no runtime trigger
 - cluster host/repository/credential-ID observations, member age-key lookup and host-specific NATS disk/hardware observations are wired
 - [services.go](../internal/daemon/services.go) shares domain service composition and worker startup between server and client runtimes, including the existing task manager rather than a separate pending scheduler
 - build, deployment, fresh-install and finalization runners share the existing task manager; pending nodes execute only host-owned work; live kexec/demotion remains gated
-- [client.go](../internal/daemon/client.go) restores client certificates/endpoints without servers; signing credentials are decrypted only for authoritative full membership; [authorization.go](../internal/daemon/authorization.go) watches membership and reloads certificate-mapped NATS permissions
+- [authorization.go](../internal/daemon/authorization.go) owns persisted TLS validation, CA-backed certificate issuance, membership-driven NATS permission reloads and ephemeral SYS management connections; signing credentials are decrypted only for authoritative full membership
 
 ## shared records
 - [internal/domain/cluster.go](../internal/domain/cluster.go): `Cluster`, `ClusterCA`, `Member`, `DaemonInfo`, `Endpoint`, `Health` and `Check`
@@ -70,7 +82,7 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
   - `Node.CSR`, `Thumbprint`, `ParseCertificate`: certificate inputs and key fingerprints
   - `NewAuthority`, `Authority.Issue`, `Node.VerifyEnrollment`: CA creation, CSR validation and certificate/key/identity verification
 - [internal/credentials/cipher.go](../internal/credentials/cipher.go): `Cipher`, credential/recipient records and bounded secrets
-  - `DeriveIdentity`: SSH host key to private age identity and public recipient
+  - `DeriveIdentity`: SSH host key to private age identity and public recipient using the upstream Go converter, with no subprocess dependency; compatibility is tested against the original CLI with PATH then emptied
   - `recipientKeys`, `Cipher.run`: recipient validation and isolated, bounded SOPS execution
   - `Encrypt`, `Decrypt`, `Rekey`: secret encryption and recipient rotation
 - promotion re-encrypts every credential before committing the new recipient and full membership; pending NATS permissions expose credential stream metadata, not ciphertext; general credential CRUD/removal reconciliation remains incomplete
@@ -143,16 +155,15 @@ Location: `internal/recipe`
 **Configuration realizations**<br>
 Location: `internal/configuration`
 - [model.go](../internal/configuration/model.go): versioned Git configurations or recipe realizations, fields and observation evidence; `Create` accepts user inputs, not forged observations
-- [service.go](../internal/configuration/service.go): `Service.Create/SetInputs/UpgradeRecipe/RefreshTarget`; `loadRecipe` retrieves the exact reference
+- [service.go](../internal/configuration/service.go): `Service.Create/SetInputs/Observe/UpgradeRecipe/RefreshTarget` owns version changes; observation ordering, fingerprints and invalidation stay with that lifecycle
 - [repository.go](../internal/configuration/repository.go): immutable persistence and expected-version checks
 - [inputs.go](../internal/configuration/inputs.go): `templateInputs`, `dependenciesReady`, `invalidateStaleInputs`, `validateSubmitted`; pure processing, no Git refresh or collection
-- [observe.go](../internal/configuration/observe.go): `Service.Observe` owns ordered collection, fingerprints, timestamps, invalidation and persistence; `resolveObservation` fingerprints original/resolved definitions
 - [collector.go](../internal/configuration/collector.go): `Collector.Collect` dispatches fixed built-ins
   - `collectClusterHosts/Repos/Credentials`: cluster metadata
   - `collectHostDisks/Hardware/AgeKey`: supplied host callbacks, never a local fallback
   - `collectRepositoryFile/Command`: pinned worktrees and bounded outputs
-  - `checkoutObservation`, `repository`, `listAll`: source resolution and paged reads
-- [render.go](../internal/configuration/render.go): `Service.Render` requires a recipe-backed configuration, loads exact versions and checks readiness; owns a fresh worktree and returns files before cleanup without recollecting
+  - `checkoutObservation`, `repository`: pinned source resolution; shared metadata reads reuse `cluster.Store.All`
+- [render.go](../internal/configuration/render.go): `Render` and `Materialize` share `materializeVersion`, exact recipe/target pins and stale-input checks; preview closes its worktree, while deployment receives ownership
 - upgrades affect only the selected configuration; publication of an exact version by commit or pull request remains pending
 
 ## host execution
@@ -167,7 +178,7 @@ Location: `internal/configuration`
 
 ## deployment
 - [internal/deployment](../internal/deployment): coordinator-owned assignment and owner-host task dispatch; installed full members activate configurations, while pending installers execute persistent fresh deployments
-- [internal/configuration/worktree.go](../internal/configuration/worktree.go): fresh pinned materialization using retained recipe inputs; does not recollect or retarget
+- [configuration materialization](../internal/configuration/render.go): deployment consumes the same pinned render as preview, without recollecting or retargeting
 - `service.go`: host/resource checks, assignment CAS, task submission and build runner
 - `activate.go`: reuses the child result, optionally waits for review, records activation intent, sets the system profile, activates and validates the selected system/generation
 - `install.go`, `install_build.go`: reuse pinned materialization/builds, validate explicit unmounted whole disks, execute upstream disko scripts, call the existing finalizer, preserve the installation task, reboot, verify the installed boot and wait for a coordinator promotion child
@@ -251,18 +262,20 @@ Location: `internal/configuration`
 - [internal/enrollment](../internal/enrollment) owns shared invitation records and contact-owned processing through KV watches; discovery retains the selected identity and candidate endpoints, with identity-checked endpoint fallback
 - [daemon enrollment](../internal/daemon/enrollment.go) persists invitations, validates CSR/key continuity, signs with the contact's encrypted CA credential, and verifies confirmation before saving pending startup state
 - issued proofs are saved before membership/notification; membership records bind the enrollment request ID so retries cannot authorize a different invitation against an existing identity
-- [request decisions](../internal/enrollment/request.go) validate joining CSR/age identity, reuse matching requests, block uncleared rejections, and permit CAS approval/rejection by full members without changing the issuing contact
-- [unjoined requests](../internal/daemon/enrollment_request.go) accept an address or recent cluster discovery, persist contact/CA trust, and restrict forwarded status to the saved request; enrollment removal and automatic missed-confirmation polling remain unimplemented
+- [enrollment service](../internal/enrollment/service.go) validate joining CSR/age identity, reuse matching requests, block uncleared rejections, and permit CAS approval/rejection by full members without changing the issuing contact
+- [daemon enrollment](../internal/daemon/enrollment.go) accept an address or recent cluster discovery, persist contact/CA trust, and restrict forwarded status to the saved request; enrollment removal and automatic missed-confirmation polling remain unimplemented
 - `internal/network` remains planned: endpoint refresh/preference and installer Wi-Fi scanning/configuration
 
 ## deferred runtime and task work
 - pending/full composition and persistent task recovery share the existing manager; deterministic child IDs prevent duplicate dispatch after lost replies
 - installed-state handoff copies identity, enrollment, SSH/age keys, supported Wi-Fi files and the installation snapshot through a confined `os.Root`; a validation manifest is committed last
 - [internal/membership](../internal/membership) serializes coordinator promotions, re-encrypts credentials, verifies installed-boot proof, stages a peer and checks replication before full-stable completion
-- [daemon membership](../internal/daemon/membership.go) and [peer startup](../internal/daemon/peer.go) reuse normal daemon restart/service composition; a promoted peer restores one server and connects its client locally
-- bootstrap retirement, demotion and the third full-stable transition remain gated
+- [daemon membership](../internal/daemon/membership.go) and [peer startup](../internal/daemon/startup.go) reuse normal daemon restart/service composition; a promoted peer restores one server and connects its client locally
+- bootstrap retirement, demotion and the third full-stable transition remain gated; two native `DisableJetStream` trials left metadata membership at four. Scoped SYS authentication is implemented and integration-tested, but shared bootstrap ownership and the membership transition are not wired
 - global cleanup must mark running tasks unknown after their owner has been offline for 30 minutes; this cleanup is also still missing
 - live installer transitions remain gated until destination preservation, boot validation and safe membership changes are wired
+- `just test-quorum` runs the existing native bootstrap/stream-evacuation/recovery integration scenario, including SYS-account metadata peer removal
+- the subsequent simplification shares activation, TLS validation and rendering instead of adding orchestration layers; `just build-package` verifies native/WASM packaging and sandboxed integration checks
 
 ## installer
 Location: [internal/installer](../internal/installer)
@@ -321,8 +334,8 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - `e2e-phase1` runs independently; `e2e-phase2` inherits its live VM1. Phase 3 has a normal unjoined VM3 fixture and checkpoints through `vm3-full` in `phase3.nu`: VM3 requests enrollment, VM2 approves while VM1 issues, and VM3 is explicitly promoted to full. Bootstrap retirement, demotion and kexec acceptance remain explicitly gated. The additional stress/destruction work in `test/plan.md` remains planned.
 - `--keep-vms` retains guests and the sole suite collector on success/failure; `e2e-stop RUN_DIRECTORY` stops them. Resume is explicit: `e2e-phase1 --resume RUN_DIRECTORY --after baseline-submitted --keep-vms` or `e2e-phase2 --resume RUN_DIRECTORY --after vm2-discovered --keep-vms`. To enter phase 2 after completed phase 1, select `--after phase1-complete`.
 - Each phase uses named Nushell functions and an ordered checkpoint/artifact list. `checkpoint.json` records the last successfully completed step, atomically, after assertions. `--after` is selected by the operator, not inferred from that file; unknown names and missing prerequisite artifacts fail before infrastructure changes. Retained processes/daemon IDs are checked, but the operator must inspect partial mutations, active tasks and discovery freshness before choosing a checkpoint. There is no automatic recovery or reconciliation.
-- Phase 3 startup checks distinct identity, no NATS client/server, a unique unmounted target disk and guest-LAN access. `suite-m6K6ov` passed Phase 2 and VM3 startup with the labelled runtime, then diagnostic resumes using temporary binaries passed request/approval, pending identity continuity, forced full promotion and shared cache-key checks. This is not clean Phase 3 acceptance; older incompatible retained topologies remain rejected.
-- Peer restart diagnostics identified a fatal task-worker deadline. A real-JetStream integration test reproduces scheduler read-timeout shutdown; transient read retries now release the scheduler mutex between attempts and preserve active runners. Ambiguous writes and non-transient failures retain existing recovery behavior. Clean published-runtime validation remains outstanding.
+- Phase 3 startup checks distinct identity, no NATS client/server, a unique unmounted target disk and guest-LAN access. Frozen worktree `4e2d460`, runtime `edc17f5`, passed clean Phase 1→2 and checkpoints through `vm3-full` in `/tmp/nixmox-phase3-acceptance/test/runs/suite-CAVCeQ`. The suite then stopped at the explicit unfinished quorum/kexec gate: not full Phase 3 acceptance and not validation of this subsequent refactor.
+- Peer restart diagnostics identified a fatal task-worker deadline. A real-JetStream integration test reproduces scheduler read-timeout shutdown; transient read retries release the scheduler mutex between attempts and preserve active runners. Ambiguous writes and non-transient failures retain existing recovery behavior; the isolated run above includes the published read-retry implementation.
 - Task polling allows at most ten seconds of initial HTTP 404 visibility lag for an already-submitted task, reflecting NATS KV follower direct-read consistency; disappearance after observation and other errors still fail immediately.
 - Resume reuses the saved CLI, topology, collector and VM processes; it does not rebuild or restart retained guests. Updating the CLI or daemon after code changes is a separate operator action. Deployment-submitted checkpoints preserve task IDs, so resumed waits follow existing tasks instead of resubmitting them.
 - phase-1 VM validation passes unjoined startup, cluster/full-stable/bootstrap, credential/cache readiness, streamed telemetry, real GitHub rootDir/discovery, baseline deployment and recipe-backed testpkg activation; current fixtures are published on `dev/e2e-phase2`

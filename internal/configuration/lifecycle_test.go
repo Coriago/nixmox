@@ -167,6 +167,16 @@ func TestRecipeConfigurationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Deployment consumes exactly the preview in a separately owned worktree.
+	work, directory, configurationName, err := configs.Materialize(ctx, first.ID, first.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer work.Close()
+	materialized, err := os.ReadFile(filepath.Join(directory, "hosts/vm2/configuration.nix"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	rename := "Custom VM"
 	fork, err := recipes.Edit(ctx, imported.ID, imported.Version, recipe.Edit{Name: &rename})
 	if err != nil {
@@ -254,6 +264,9 @@ func TestRecipeConfigurationLifecycle(t *testing.T) {
 	}
 	if rendered.Contents["hosts/vm2/configuration.nix"] != "host=vm2 disk=/dev/vm2\n" || detachedRender.Contents["hosts/vm3/configuration.nix"] != "host=vm3 disk=/dev/vm3\n" {
 		t.Fatal("rendered content or isolated host inputs changed")
+	}
+	if configurationName != "vm2" || string(materialized) != rendered.Contents["hosts/vm2/configuration.nix"] {
+		t.Fatal("deployment worktree differs from its pinned preview")
 	}
 	if calls != 3 {
 		t.Fatalf("rendering/forking unexpectedly recollected observations: %d", calls)

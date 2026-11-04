@@ -6,14 +6,66 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	"golang.org/x/crypto/ssh"
 	"nixmox/internal/credentials"
 )
+
+// A copied bootstrap binary derives the same host identity without helper tools.
+func TestBootstrapIdentity(t *testing.T) {
+	// --- Test setup ---
+	// ------------------
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	directory := t.TempDir()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKey(key, "bootstrap-example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostKey := filepath.Join(directory, "host.key")
+	if err = os.WriteFile(hostKey, pem.EncodeToMemory(block), 0600); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := exec.CommandContext(ctx, "ssh-to-age", "-private-key", "-i", hostKey).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(legacy)
+	t.Setenv("PATH", t.TempDir()) // Restored automatically; no executable can be used.
+
+	// --- Usage ---
+	// -------------
+	destination := filepath.Join(directory, "age.key")
+	public, err := credentials.DeriveIdentity(ctx, hostKey, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(persisted)
+	identity, err := age.ParseX25519Identity(strings.TrimSpace(string(legacy)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// --- Assertions ---
+	// ------------------
+	if string(persisted) != string(legacy) || public != identity.Recipient().String() {
+		t.Fatal("in-process conversion changed the existing host identity")
+	}
+}
 
 func TestSOPSRecipients(t *testing.T) {
 	// --- Test setup ---

@@ -2,64 +2,30 @@ package daemon
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/google/uuid"
+
+	"nixmox/internal/client"
 	"nixmox/internal/credentials"
+	"nixmox/internal/discovery"
 	"nixmox/internal/domain"
 	"nixmox/internal/enrollment"
 	"nixmox/internal/identity"
 )
 
 func (r *Runtime) issueEnrollment(ctx context.Context, request enrollment.Request) (string, error) {
-	svc, err := r.Services()
-	if err != nil {
-		return "", err
-	}
-	record, err := svc.Credentials.Get(ctx, "cluster-ca")
-	if err != nil {
-		return "", err
-	}
-	secret, err := (credentials.Cipher{KeyFile: filepath.Join(r.config.StateDir, "age.key")}).Decrypt(ctx, record.Value.Content)
-	if err != nil {
-		return "", err
-	}
-	defer clear(secret)
-	block, rest := pem.Decode(secret)
-	if block == nil || block.Type != "PRIVATE KEY" || len(rest) != 0 {
-		return "", errors.New("invalid CA private key")
-	}
-	defer clear(block.Bytes)
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return "", err
-	}
-	private, ok := key.(ed25519.PrivateKey)
-	if !ok {
-		return "", errors.New("CA key must be Ed25519")
-	}
-	defer clear(private)
-	ca, err := identity.ParseCertificate([]byte(request.Cluster.CACertificate))
-	if err != nil {
-		return "", err
-	}
-	if !private.Public().(ed25519.PublicKey).Equal(ca.PublicKey) {
-		return "", errors.New("CA signing key mismatch")
-	}
-	authority := identity.Authority{Certificate: ca, PEM: []byte(request.Cluster.CACertificate), Key: private}
 	endpoint, err := url.Parse(request.JoiningNode.Endpoint)
 	if err != nil {
 		return "", err
 	}
-	cert, err := authority.Issue([]byte(request.JoiningNode.CSR), request.JoiningNode.NodeID, request.JoiningNode.PublicKeyThumbprint, []string{endpoint.Hostname(), "localhost", "127.0.0.1", "::1"}, time.Now())
-	return string(cert), err
+	joining := request.JoiningNode
+	return r.issueCertificate(ctx, request.Cluster.CACertificate, []byte(joining.CSR), joining.NodeID, joining.PublicKeyThumbprint, []string{endpoint.Hostname(), "localhost", "127.0.0.1", "::1"})
 }
 
 func (r *Runtime) inviteEnrollment(ctx context.Context, request enrollment.Request) (enrollment.JoiningNode, error) {
@@ -181,5 +147,118 @@ func (r *Runtime) confirmEnrollment(ctx context.Context, confirmation enrollment
 	if err = r.saveStartup(saved); err != nil {
 		return err
 	}
-	return r.start(saved)
+	return r.startCluster(saved)
+}
+
+func (r *Runtime) requestEnrollment(ctx context.Context, input enrollment.Input) (enrollment.Request, error) {
+	r.transition.Lock()
+	defer r.transition.Unlock()
+	r.mu.RLock()
+	joined := r.node.State.ClusterID != ""
+	r.mu.RUnlock()
+	if joined {
+		return enrollment.Request{}, errors.New("node already joined")
+	}
+	if (input.Address == "") == (input.DiscoveryID == "") || input.ContactHostID != "" {
+		return enrollment.Request{}, errors.New("one cluster discovery ID or address is required")
+	}
+	endpoints := []string{input.Address}
+	clusterID, fingerprint := "", ""
+	if input.DiscoveryID != "" {
+		if r.discovery == nil {
+			return enrollment.Request{}, errors.New("discovery unavailable")
+		}
+		record, err := r.discovery.Get(ctx, input.DiscoveryID)
+		if err != nil {
+			return enrollment.Request{}, err
+		}
+		ad := record.Advertisement
+		if ad.ClusterID == nil || ad.Identity.Kind != "cluster-ca" || time.Since(record.LastSeenAt) >= discovery.Lifetime || len(ad.Endpoints) == 0 {
+			return enrollment.Request{}, errors.New("recent cluster discovery required")
+		}
+		clusterID, fingerprint = *ad.ClusterID, ad.Identity.PublicKeyThumbprint
+		endpoints = ad.Endpoints
+	}
+	if data, err := os.ReadFile(filepath.Join(r.config.StateDir, "enrollment.json")); err == nil {
+		var saved enrollment.Request
+		if err = json.Unmarshal(data, &saved); err != nil {
+			return enrollment.Request{}, err
+		}
+		if (clusterID != "" && saved.Cluster.ID == clusterID && saved.Cluster.CAPublicKeyThumbprint == fingerprint) || (input.Address != "" && input.Address == saved.Cluster.ContactNode.Endpoint) {
+			return saved, nil
+		}
+		return enrollment.Request{}, errors.New("another enrollment is already in progress")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return enrollment.Request{}, err
+	}
+	joining, err := r.joiningIdentity(ctx)
+	if err != nil {
+		return enrollment.Request{}, err
+	}
+	if err = enrollment.Endpoint(joining.Endpoint); err != nil {
+		return enrollment.Request{}, errors.New("reachable advertised HTTP endpoint required for enrollment")
+	}
+	var failures []error
+	for _, endpoint := range endpoints {
+		if err = enrollment.Endpoint(endpoint); err != nil {
+			return enrollment.Request{}, err
+		}
+		peer, err := client.New(endpoint, nil)
+		if err != nil {
+			return enrollment.Request{}, err
+		}
+		attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
+		var request enrollment.Request
+		err = peer.Do(attempt, "POST", "/internal/enrollment/request", joining, &request)
+		cancel()
+		peer.Close()
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if _, err = uuid.Parse(request.ID); err != nil {
+			return enrollment.Request{}, errors.New("invalid enrollment request ID")
+		}
+		if request.Initiator != joining.NodeID || request.JoiningNode.NodeID != joining.NodeID || request.JoiningNode.PublicKeyThumbprint != joining.PublicKeyThumbprint {
+			return enrollment.Request{}, errors.New("enrollment response changed joining identity")
+		}
+		if clusterID != "" && (request.Cluster.ID != clusterID || request.Cluster.CAPublicKeyThumbprint != fingerprint) {
+			failures = append(failures, errors.New("discovered cluster identity changed"))
+			continue
+		}
+		if _, err = r.acceptEnrollment(ctx, request); err != nil {
+			return enrollment.Request{}, err
+		}
+		return request, nil
+	}
+	return enrollment.Request{}, errors.Join(failures...)
+}
+
+// Local status is restricted to the persisted invitation, including after the
+// node joins as pending. The saved contact/CA cannot be replaced by a response.
+func (r *Runtime) enrollmentStatus(ctx context.Context, id string) (enrollment.Request, error) {
+	data, err := os.ReadFile(filepath.Join(r.config.StateDir, "enrollment.json"))
+	if err != nil {
+		return enrollment.Request{}, err
+	}
+	var saved enrollment.Request
+	if err = json.Unmarshal(data, &saved); err != nil {
+		return enrollment.Request{}, err
+	}
+	if id == "" || id != saved.ID {
+		return enrollment.Request{}, errors.New("enrollment request identity mismatch")
+	}
+	peer, err := client.New(saved.Cluster.ContactNode.Endpoint, nil)
+	if err != nil {
+		return enrollment.Request{}, err
+	}
+	defer peer.Close()
+	var current enrollment.Request
+	if err = peer.Do(ctx, "GET", "/enrollment/"+id, nil, &current); err != nil {
+		return enrollment.Request{}, err
+	}
+	if current.ID != saved.ID || current.Cluster.ID != saved.Cluster.ID || current.Cluster.CACertificate != saved.Cluster.CACertificate || current.Cluster.ContactNode != saved.Cluster.ContactNode || current.JoiningNode.NodeID != saved.JoiningNode.NodeID || current.JoiningNode.PublicKeyThumbprint != saved.JoiningNode.PublicKeyThumbprint {
+		return enrollment.Request{}, errors.New("enrollment status changed saved trust")
+	}
+	return current, nil
 }
