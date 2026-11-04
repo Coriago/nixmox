@@ -128,6 +128,7 @@ in
         pkgs.bash
         pkgs.util-linux
         pkgs.systemd
+        pkgs.kexec-tools
         pkgs.nixos-install-tools
         pkgs.nix
         pkgs.sops

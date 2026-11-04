@@ -281,7 +281,7 @@ func (r *Runtime) runServices(svc *api.Services) error {
 		})
 		if err != nil && r.lifetime.Err() == nil {
 			select {
-			case r.failures <- err:
+			case r.failures <- fmt.Errorf("membership/cache worker: %w", err):
 			default:
 			}
 		}
@@ -290,7 +290,7 @@ func (r *Runtime) runServices(svc *api.Services) error {
 		r.workers.Go(func() {
 			if err := svc.Enrollment.Run(r.lifetime); err != nil && r.lifetime.Err() == nil {
 				select {
-				case r.failures <- err:
+				case r.failures <- fmt.Errorf("enrollment worker: %w", err):
 				default:
 				}
 			}
@@ -300,7 +300,7 @@ func (r *Runtime) runServices(svc *api.Services) error {
 	r.workers.Go(func() {
 		if err := svc.Tasks.Run(r.lifetime); err != nil && r.lifetime.Err() == nil {
 			select {
-			case r.failures <- err:
+			case r.failures <- fmt.Errorf("task worker: %w", err):
 			default:
 			}
 		}

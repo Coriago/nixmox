@@ -272,7 +272,7 @@ Location: [internal/installer](../internal/installer)
 - `finalize/`, `finalize.go`: general method checks and task runner; require a separate mounted root and preservation callback, then delegate closure/profile/bootloader setup to `nixos-install --system`
 - built-in prepare/finalize method catalogs are code-owned; registered installer definitions and launch/finalize tasks are NATS-backed
 - finalization has a concrete installed-state preservation callback; `preservation.go` writes private files, the resumable task and validation contract without escaping the mounted destination
-- the live-installer `Transition` boundary remains unwired: safe demotion, private kexec payload staging and transition-specific recovery still need implementation
+- the live-installer `Transition` boundary remains unwired: safe demotion, private kexec payload staging and transition-specific recovery still need implementation; the prepare method uses `kexec --load` followed by `systemctl kexec`, but no live kexec acceptance has passed
 - fresh installations build on the target host; separate build-host transfer and media writing remain unimplemented
 - checks cover generic x86_64 and UEFI ARM64 platforms, not board-specific support or proof that a particular kernel will boot
 
@@ -320,7 +320,7 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - `e2e-phase1` runs independently; `e2e-phase2` inherits its live VM1. Phase 3 has a normal unjoined VM3 fixture and a `vm3-started` checkpoint in `phase3.nu`; request-based enrollment, quorum transitions and kexec acceptance remain explicitly gated. The additional stress/destruction work in `test/plan.md` remains planned.
 - `--keep-vms` retains guests and the sole suite collector on success/failure; `e2e-stop RUN_DIRECTORY` stops them. Resume is explicit: `e2e-phase1 --resume RUN_DIRECTORY --after baseline-submitted --keep-vms` or `e2e-phase2 --resume RUN_DIRECTORY --after vm2-discovered --keep-vms`. To enter phase 2 after completed phase 1, select `--after phase1-complete`.
 - Each phase uses named Nushell functions and an ordered checkpoint/artifact list. `checkpoint.json` records the last successfully completed step, atomically, after assertions. `--after` is selected by the operator, not inferred from that file; unknown names and missing prerequisite artifacts fail before infrastructure changes. Retained processes/daemon IDs are checked, but the operator must inspect partial mutations, active tasks and discovery freshness before choosing a checkpoint. There is no automatic recovery or reconciliation.
-- Phase 3 startup checks distinct identity, no NATS client/server, a unique unmounted target disk and guest-LAN access; its initial fixture build and script parsing pass, while live startup acceptance is still pending. Older retained topologies without a VM3 package are rejected rather than rewritten.
+- Phase 3 startup checks distinct identity, no NATS client/server, a unique unmounted target disk and guest-LAN access; its image build, script parsing and retained-run startup assertions pass in `suite-BeXmtM`. The initial handoff failed when VM1 exited on a context deadline after promotion; both daemons recovered automatically before the resumed startup check, so this is not a clean Phase 3 pass. Older retained topologies without a VM3 package are rejected rather than rewritten.
 - Resume reuses the saved CLI, topology, collector and VM processes; it does not rebuild or restart retained guests. Updating the CLI or daemon after code changes is a separate operator action. Deployment-submitted checkpoints preserve task IDs, so resumed waits follow existing tasks instead of resubmitting them.
 - phase-1 VM validation passes unjoined startup, cluster/full-stable/bootstrap, credential/cache readiness, streamed telemetry, real GitHub rootDir/discovery, baseline deployment and recipe-backed testpkg activation; current fixtures are published on `dev/e2e-phase2`
 - `test-ui`: shared UI examples and HTTP workflows
@@ -336,7 +336,7 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - [flake.lock](../flake.lock): pinned Nix inputs
 - [.envrc](../.envrc): `use flake` through direnv
 - [go.mod](../go.mod), [go.sum](../go.sum): Go toolchain/dependencies and checksums
-- [nix/module.nix](../nix/module.nix): `services.nixmox`, typed configuration, boot environment, package override, private state and systemd service; service PATH includes Bash, util-linux and NixOS installation tools for recipe commands and host inventory
+- [nix/module.nix](../nix/module.nix): `services.nixmox`, typed configuration, boot environment, package override, private state and systemd service; service PATH includes Bash, util-linux, kexec-tools and NixOS installation tools for host operations; kexec execution remains gated by safe demotion and private handoff
 - [justfile](../justfile): build, run and test recipes; installer builds/evaluations use Git-filtered inputs so retained VM sockets are excluded
 - the NixOS module does not configure cache trust, firewall access or SSH host-key provisioning; its generated configuration is public in the Nix store
 
