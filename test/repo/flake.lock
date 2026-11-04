@@ -25,11 +25,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1793762252,
-        "narHash": "sha256-NMuIZdeAe3+33mDcX6mBtT5HN3sZFu3H2QmbtTK/fIc=",
+        "lastModified": 1793765891,
+        "narHash": "sha256-hfZzIWqQI79El0BfNhYSI2HF5GqrROArSOzAO2Hd8TM=",
         "owner": "Coriago",
         "repo": "nixmox",
-        "rev": "033ef2c7787f95a68eed280148c0a9f88b4c8a2f",
+        "rev": "edc17f5942081493396ad8d1d0b0d350fe9ba7b5",
         "type": "github"
       },
       "original": {
