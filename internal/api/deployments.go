@@ -8,7 +8,7 @@ import (
 func registerDeploymentRoutes(routes *gin.RouterGroup) {
 	routes.PUT("/hosts/:id/configuration", func(c *gin.Context) {
 		svc := services(c).Deployments
-		if svc == nil || c.Param("id") != svc.HostID {
+		if svc == nil {
 			c.Status(503)
 			return
 		}
@@ -25,7 +25,7 @@ func registerDeploymentRoutes(routes *gin.RouterGroup) {
 	})
 	routes.POST("/hosts/:id/deployments", func(c *gin.Context) {
 		svc := services(c).Deployments
-		if svc == nil || c.Param("id") != svc.HostID {
+		if svc == nil {
 			c.Status(503)
 			return
 		}

@@ -39,7 +39,7 @@ export def start-vm [root: path, run: path, name: string, public: path, topology
         }
         $options = ($options | append [
             $"-drive file=($target),format=qcow2,if=none,id=target"
-            $"-device virtio-blk-pci,drive=target,serial=($machine.diskSerial),bootindex=0"
+            $"-device virtio-blk-pci,drive=target,serial=($machine.diskSerial),bootindex=2"
         ])
     }
 

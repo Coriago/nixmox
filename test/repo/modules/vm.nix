@@ -12,6 +12,10 @@
       install -D -m 600 /run/e2e-public/id_ed25519.pub /run/e2e-authorized-keys/root
     '';
   };
+  # qemu-vm overlays a minimal backing image; grow its partition and filesystem
+  # to the requested private disk size before builds consume the writable store.
+  boot.growPartition = true;
+  virtualisation.fileSystems."/".autoResize = true;
   virtualisation = {
     memorySize = 4096;
     cores = 4;

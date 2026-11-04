@@ -159,14 +159,27 @@ def vm2-installation-submitted [run: path, endpoint: string] {
 import json,socket,sys
 s=socket.socket(socket.AF_UNIX);s.settimeout(5);s.connect(sys.argv[1]);f=s.makefile("rwb")
 json.loads(f.readline())
-for command in ["qmp_capabilities","query-status"]:
-    f.write((json.dumps({"execute":command})+"\n").encode());f.flush()
+def call(command,arguments=None):
+    f.write((json.dumps({"execute":command,"arguments":arguments or {}})+"\n").encode());f.flush()
     while True:
         response=json.loads(f.readline())
         if "error" in response: raise RuntimeError(response["error"])
-        if "return" in response: break
-print(json.dumps(response["return"]))
-' ($run | path join "vm2/qmp.sock") | from json)
+        if "return" in response: return response["return"]
+call("qmp_capabilities")
+selected=[]
+for group in ["/machine/peripheral","/machine/peripheral-anon"]:
+    for device in call("qom-list",{"path":group}):
+        if device["type"] != "child<virtio-blk-pci>": continue
+        path=group+"/"+device["name"]
+        if call("qom-get",{"path":path,"property":"serial"}) == sys.argv[2]: selected.append(path)
+if len(selected)!=1: raise RuntimeError("unique installation disk required")
+if call("qom-get",{"path":selected[0],"property":"bootindex"}) != 0:
+    call("qom-set",{"path":selected[0],"property":"bootindex","value":0})
+status=call("query-status")
+status["targetBootIndex"]=call("qom-get",{"path":selected[0],"property":"bootindex"})
+print(json.dumps(status))
+' ($run | path join "vm2/qmp.sock") $machine.diskSerial | from json)
+    assert equal $recovery.targetBootIndex 0
     assert $recovery.running
     let before = {
         bootId: (guest $run "cat /proc/sys/kernel/random/boot_id" --port $machine.sshPort)

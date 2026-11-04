@@ -7,7 +7,7 @@
   ];
   # One image for any target; DHCP and normal installer defaults supply boot networking.
   services.nixmox.config.listen = "0.0.0.0:8080";
-  # Firmware boots the blank target first, then this persistent rescue disk.
-  # After installation the same reboot selects the target's real bootloader.
+  # Start from a persistent rescue disk; after SSH readiness, the acceptance
+  # harness selects the installation target for the next firmware boot.
   virtualisation.useBootLoader = true;
 }
