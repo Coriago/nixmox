@@ -5,8 +5,8 @@ Implementation ownership and code map for [requirements.md](requirements.md). Co
 ## status
 - cluster creation, cold restart, recipe/configuration lifecycles and the local build/log pipeline have integration coverage
 - CLI command availability does not imply backend support
-- cluster-initiated enrollment, pending client startup, guarded fresh installation and coordinator-owned promotion are implemented; full Phase 2 VM acceptance remains outstanding
-- local installed full-stable deployment is implemented and phase-1 VM-tested; membership/quorum reconciliation, distributed dispatch, rollback, power operations, publication and credential-store reconciliation remain missing or incomplete
+- cluster-initiated enrollment, pending client startup, guarded fresh installation and coordinator-owned promotion pass clean Phase 1→2 VM acceptance
+- local installed full-stable deployment is implemented and phase-1 VM-tested; bootstrap retirement/demotion, separate build-host dispatch, rollback, power operations, publication and general credential-store reconciliation remain missing or incomplete
 - the code map covers non-UI application code with selected UI integration points; functions are grouped by responsibility, not an exhaustive helper inventory
 - terminal/browser interfaces share the HTTP client and build monitor; component tests do not establish a complete multi-host workflow
 
@@ -91,7 +91,7 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
   - `Follow`, `Read`: ordered replay-to-live delivery and bounded history
 - [internal/cluster/authorization.go](../internal/cluster/authorization.go) isolates reply inboxes and host observation subscriptions; pending clients can write only their host-qualified tasks, outputs, logs and host-lock scope, not membership, credentials or stream configuration
 - pending KV reads/watches use native JetStream consumer lifecycle permissions; they do not grant stream provisioning or shared-record mutation
-- planned cluster coordination owns serialized membership transitions, bootstrap placement, replicas, metadata peers and administrator-directed quorum rescue
+- membership promotion serializes transitions and replica changes; bootstrap retirement, metadata-peer removal and administrator-directed quorum rescue remain deferred
 
 ## durable tasks
 - [internal/task/manager.go](../internal/task/manager.go): owned-host scheduling; `Runner`, `Manager` and `ErrReview`
@@ -101,11 +101,11 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
   - new task/output IDs include the owner host as a subject token; scheduling rejects a mismatched key/payload owner while continuing to read legacy unqualified tasks
   - `schedule`, `execute`, `finish`: dependencies, reviews, resources, runner lifetime and completion
 - [internal/task/execution.go](../internal/task/execution.go): `Execution.Task/Checkpoint/Review/save` expose task state and persist checkpoints, outputs and reviews
-- [internal/task/child.go](../internal/task/child.go): linked local child submission and bounded NATS watch delivery; review reentry reuses the child result
+- [internal/task/child.go](../internal/task/child.go): deterministic child submission, linked results and bounded NATS watch delivery; review reentry reuses the child result
 - [internal/task/journal.go](../internal/task/journal.go): private local snapshots for `persist` tasks; checkpoints update the journal and node `resumeTaskIds`; `ErrRestart` suspends execution until a new daemon lifetime, and terminal cleanup removes snapshots
 - [internal/task/resources.go](../internal/task/resources.go): CAS-based host/cluster-scoped ownership with no TTL; sorted acquisition rolls back partial grants before any runner starts, and legacy shared locks remain honored during recovery
 - [internal/task/log.go](../internal/task/log.go): `Execution.LogWriter`, `Write` and `Close` frame bounded stderr into retained OTLP logs; redact secrets and report persistence failures
-- `Builder.Runner` attaches the log writer for replayable Nix activity; distributed dispatch and complete workflow recovery remain pending
+- `Builder.Runner` attaches the log writer for replayable Nix activity; remote task control and comprehensive offline recovery remain deferred
 
 ## sources and configuration discovery
 - [internal/source/source.go](../internal/source/source.go): `Repository`, immutable `Pin`, `Manager` and temporary go-git `Worktree`
@@ -173,7 +173,7 @@ Location: `internal/configuration`
 - `install.go`, `install_build.go`: reuse pinned materialization/builds, validate explicit unmounted whole disks, execute upstream disko scripts, call the existing finalizer, preserve the installation task, reboot, verify the installed boot and wait for a coordinator promotion child
 - interrupted disk preparation is not automatically reformatted; inspection is required before retrying destructive work
 - `review.go`: structured added/removed closure packages using Nix name parsing; version changes currently appear as removal/addition pairs
-- the daemon module disables deployment-triggered service restarts; reboot recovery, rollback and comprehensive failed-activation recovery are not implemented
+- the daemon module disables deployment-triggered service restarts; fresh-install reboot recovery is implemented, while rollback and comprehensive failed-activation recovery remain deferred
 - phase 1 validates auto-approved deployment; manual review is not VM-validated
 
 ## binary cache
@@ -195,7 +195,7 @@ Location: `internal/configuration`
   - [cluster.go](../internal/api/cluster.go): creation and identity
   - [hosts.go](../internal/api/hosts.go): host reads, remote disk inventory, local builds and NATS-backed telemetry SSE
   - [enrollment.go](../internal/api/enrollment.go): cluster invitations, request reads and internal CSR/confirmation adapters
-  - [deployments.go](../internal/api/deployments.go): local assignment and deployment submission
+  - [deployments.go](../internal/api/deployments.go): coordinator-owned assignment and local/remote deployment submission
   - [credentials.go](../internal/api/credentials.go): public credential metadata only
   - [installers.go](../internal/api/installers.go): pinned installer registration, method catalogs, compatibility checks and gated launch/finalize submission
   - [repositories.go](../internal/api/repositories.go): repository reads, creation and refresh
@@ -206,7 +206,7 @@ Location: `internal/configuration`
   - [cache.go](../internal/api/cache.go): forwarding
   - [http.go](../internal/api/http.go): bounded JSON, errors, paging, versions and SSE framing
 - credential list/show expose public metadata only; cache-info exposes the signing public key and cache route paths
-- cluster destroy/recover, repository update/remove, credential mutations/recipient APIs, unjoined enrollment requests/approval/rejection, membership/power, fresh install and publication routes are absent
+- cluster destroy/recover, repository update/remove, credential mutations/recipient APIs, unjoined enrollment requests/approval/rejection, demotion/power and publication routes are absent; fresh deployments and full/full-stable promotions are wired
 - pending APIs reject cluster mutations; only cluster identity, host reads/metrics and local disk inventory are currently exposed
 - task lists implement cursor/limit only; CLI host/status/type filters are ignored
 - task events deliver the current KV snapshot and changes, not historical replay from `Last-Event-ID`; log streams do replay by sequence
@@ -285,7 +285,7 @@ Location: [internal/installer](../internal/installer)
 - networking belongs in the Nixmox TUI; its network controls/backend remain unimplemented, not replaced with an external setup UI
 - customize through `nixosModules.installer` or `nixosModules.installer-vm`; add authorized keys or network settings in the consuming configuration
 - run `nix develop -c just check-installers` to evaluate all variants and `nix develop -c just build-installer installer-vm` to build the native VM ISO
-- ARM64 builds require an ARM64 builder or configured emulation; live prepare/finalize integration and fresh installation remain unavailable
+- ARM64 builds require an ARM64 builder or configured emulation; live kexec transition integration remains unavailable; fresh installation uses the wired finalizer and preservation callback
 
 ## tests and development
 - [internal/testutil/nats.go](../internal/testutil/nats.go): reusable `JetStream` TLS fixture with cleanup; not a production multi-peer bootstrap test
@@ -295,6 +295,7 @@ Location: [internal/installer](../internal/installer)
 - [internal/daemon/enrollment_test.go](../internal/daemon/enrollment_test.go): contact-owned enrollment with endpoint fallback, certificate-mapped pending permissions, host-owned task execution, remote disk inventory and client-only cold restart
 - [internal/configuration/lifecycle_test.go](../internal/configuration/lifecycle_test.go): real Git/JetStream import, sync, fork, independent realizations, upgrades and previews
 - [internal/api/configurations_test.go](../internal/api/configurations_test.go): independent realizations over HTTP
+- [internal/api/deployments_test.go](../internal/api/deployments_test.go): contact-owned HTTP assignment and persistent dispatch to a pending remote owner
 - [installer examples](../internal/installer/checks_test.go), [return checkpoint test](../internal/installer/launch_test.go) and [installer CLI integration](../internal/api/installers_test.go): selection, finalizer checks, runner return validation and real CLI/API/NATS registration; not boot or task-manager restart recovery tests
 - [identity tests](../internal/identity/identity_test.go): persistence, exclusive ownership and certificate enrollment
 - [task tests](../internal/task/manager_test.go): durable review/approval and linked retries; [recovery integration](../internal/task/recovery_test.go) verifies checkpoint retention, lock retention and completion across two daemon lifetimes
@@ -339,18 +340,19 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - the NixOS module does not configure cache trust, firewall access or SSH host-key provisioning; its generated configuration is public in the Nix store
 
 ## validation
-Checked against the working tree on 2026-11-03, including uncommitted files.
+Validated on 2026-11-03 with runtime `6c2c899` and fixture pin commit `2fcf85d`; subsequent changes here document the results.
 - reviewed non-UI source ownership, API/CLI mappings, daemon callers, test assertions and Nix/just configuration
 - passed `nix develop -c just test`, including daemon cold restart and the bootstrap PoC
-- passed `nix develop -c just test-registry test-cache test-build-monitor` with real Nix operations enabled
+- opt-in registry/cache/build-monitor checks were not rerun for this acceptance; the VM suite exercised real Nix operations
 - `e2e-phase1` additionally validates the booted NixOS module and two real local deployments on a private bootloader-backed disk, including executing the installed test package
 - `test/vms.json` centralizes static machine wiring and recipe configuration inputs; configuration creation reuses the machine key as its name and the wired NIC MAC, then uses daemon-collected host/disk choices and raw hardware output
 - the Nushell configuration workflow checks rendered files and retained hardware; VM3 currently has planned static settings but no boot package or launch workflow
-- resumed phase 2 on retained VMs reached `vm2-configured`: real discovery enrollment, pending client restart, remote disk/hardware collection and recipe rendering passed using development binaries and temporary service PATH additions; this is not a clean full-suite pass
-- fresh installation, reboot persistence and promotion are wired and component-tested; their VM acceptance gates are implemented but have not passed yet
-- the old retained VM2 used direct-kernel boot and cannot select an installed disk on reboot; new VM fixtures use a persistent bootloader-backed rescue disk, target-first firmware boot order and a QMP control socket
+- clean `nix develop -c just e2e-phase2 --keep-vms` passed both phases in `test/runs/suite-95UBUt`, without development binaries, manual guest repairs or skipped checkpoints
+- phase 2 validates discovery enrollment, pending client restart, remote disk/hardware collection, recipe rendering, disko/finalization, installed reboot, node/SSH/age identity preservation, generation/system selection, automatic full membership and cache access, then explicit full-stable promotion with three replicas and the bootstrap retained
+- the preceding clean attempt timed out during Phase 1 repository registration after intermittent 50–74 second Git checkouts; the successful fresh retry changed neither timeouts nor acceptance checks
+- the old retained VM2 used direct-kernel boot and cannot select an installed disk on reboot; new VM fixtures grow the persistent rescue filesystem to the requested disk size, boot rescue-first, then use QMP to select the unique target by serial for the installed reboot
 - the shared guest LAN uses QEMU hub/socket links only; VM1's configuration supplies standard DHCP. Each guest retains separate user-mode NAT for management/internet, avoiding SLIRP processing guest-to-guest traffic
-- component checks do not establish fresh-install/promotion VM acceptance, physical hardware compatibility or interactive browser/terminal behavior
+- full Go tests, backend race checks, installer integration tests and installer matrix evaluation pass; VM acceptance does not establish physical hardware compatibility or interactive browser/terminal behavior
 
 ## maintenance
 - update the owning entry when files or responsibilities move
