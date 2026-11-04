@@ -28,6 +28,7 @@ environment: installed # installed or installer; independent of membership statu
 agePublicKey: "<SSH-derived host age public key>"
 configurationId: cedar-uuid
 configurationVersion: 1
+bootstrapOwner: true
 daemon:
   version: "0.1.0"
   startedAt: "2026-10-29T18:00:00Z"
@@ -202,7 +203,7 @@ result:
 - these actions are not a recommended path, they are here for testing and fallback scenarios.
 
 ### force removal
-- hosts can also me force removed from the cluster when they are no longer online
+- hosts can also be force removed from the cluster when they are no longer online
 - if a host that was force removed comes online, it will query a force removal http endpoint after it failed to connect.
 - the endpoint will respond if the host was removed and the node will change its state to unjoined.
 - the removal payload from the cluster will be signed by the cluster so the node can confirm its validity
@@ -510,6 +511,12 @@ advertisement: # Received cluster or unjoined node broadcast.
     kind: node
     publicKeyThumbprint: "sha256:<node public key digest>"
 ```
+
+## cluster seeding WIP
+- a cluster seed can be set inside of the nixmox config which allows it to automatically connect into a cluster
+- on startup, if the node does not already have persistence with another cluster, it uses the cluster seed to join that cluster
+- seed embeds the cluster endpoint to connect to and a token which allows it to automatically go through enrollment without approval
+- cluster seed is generated through POST /cluster/seed on a cluster node
 
 ## configurations
 - configurations are versioned NixOS configurations, automatically registered from tracked repos or realized from an exact recipe version.
@@ -1465,6 +1472,14 @@ links:
 result: null
 ```
 
+## ssh-straping WIP
+- when the host is already running linux with ssh, this method can be used instead of boot media
+- give a ssh address to perform ssh-straping
+- host must have root access over ssh
+- transfers a nixmox binary over into the ssh target
+- runs nixmox and enrolls into the cluster with a cluster seed 
+- once connected, a launch task can be used to launch into an installer to format
+
 ## Status / Health Checking
 - reachability/status of other hosts should come from nats, not a custom hookup
 - a /health endpoint is added to the daemon so user interfaces connected to it can check reachability to the daemon
@@ -1515,14 +1530,46 @@ endpoints:
 ## NATS quorum
 - NATS/JetStream servers run only on full-stable hosts; all server counts below refer to full-stable hosts
 - full and pending members use NATS clients connected to full-stable members
-- a bootstrap JetStream server is launched on the first full-stable node to start the configured clustered topology
-- the bootstrap stays a JetStream peer until 3 full-stable nodes are healthy, then is removed
-- demotion or removal that drops the full-stable count below 3 starts the bootstrap on a surviving full-stable host before the transition is finalized
-- a bootstrap record is shared to establish which full-stable host launches it; prefer hosts that previously hosted it
-- with 2 full-stable hosts, the cluster can tolerate losing the host that does not run the bootstrap server
-- going offline does not remove a member or change its status; a sleeping client-only full member does not affect server quorum or replication counts
+- There is a bootstrap JetStream server launched, otherwise jetstream and quorum cannot exist 
+- bootstrap jetstream server is added and removed using the same processes as the primary jetstream server except:
+  - it has the name boostrap-nodeid-uuid
+  - it has a seperate directory store
+  - it uses seperate ports
+- bootstrap owner uses a leader election process to determine ownership. It is run at daemon start and during runtime but behaves different in each.
+
+Persist:
+- the number of full-stable hosts is persisted on each host
+- bootstrap owner is persisted and saved with full-stable count in a local file
+
+Startup Bootstrap Election:
+  - if full-stable members is only 1, ownership is that daemon
+  - if full-stable members is > 1, and ownership of bootstrap is persisted, continue ownership
+  - if full-stable members is > 1, no ownership if ownership was not persisted.
+
+Runtime Bootstrap Election:
+  - must have quorum
+  - triggered by host removal, host shutdown/reboot or demotion where future full-stable members will be < 3
+  - a bootstrap owner candidate must have these qualities:
+    - currently reachable
+    - is not in the process of shutting down, demoting or removal
+    - is a full-stable member
+  - the candidate with the highest id is chosen as the bootstrap owner
+  - bootstrap startup must be preemptive and become healthy before scale down
+
+Runtime Bootstrap Shutdown:
+  - triggered by promotion to full-stable and full-stable is >= 3
+  - owner removes the bootstrap as a peer and wipes the store.
+  - bootstrap shutdown should be delayed on this scale up event until the new jestream server is healthy
+
+- ownership transfer requires quorum unless full-stable is only 1
+- bootstrap ownership is announced over nats on member record and persisted
+- bootstrap ownership is not released until full-stable goes to 3 or the host relinquishes it through demotion, removal or shutdown eviction
+- there can be more than one bootstrap server temporarily if a bootstrap owner is going to be removed from the cluster. Election will choose the next viable host to own the bootstrap and wait for it to be healthy before the previous owner is shutdown. 
+- with 2 full-stable hosts, the cluster can tolerate disconnection with the host that does not run the bootstrap server
+- bootstrap handling should be seamless and automatic based on the above rules
+
+- going offline does not remove a full-stable member or change its status; a sleeping client-only full member does not affect server quorum or replication counts
 - removing a full-stable member requires evacuating replicas (if online) and removing its metadata peer; removing a client-only full member requires neither
-- bootstrap handling should be seamless and automatic
 - data replication should go as follows:
   - One full-stable host + bootstrap: R2.
   - Two full-stable hosts + bootstrap: R3.
@@ -1531,22 +1578,13 @@ endpoints:
   - Five+ full-stable hosts: R3 and R5 on critical data.
 - critical data would be cluster essentials like credentials, membership related.
 
-**Bootstrap ownership record**<br>
-Location: NATS
-```yaml
-clusterId: cluster1
-bootstrap:
-  hostId: node1
-  previousHostIds: [node1]
-```
-
 ## NATS Disaster Recovery
 - the cluster is placed in a state where quorum is lost and forceful recovery is desired to recover
 - for instance: 2 full-stable members go offline in a cluster with 3 full-stable hosts, and the 2 are known to be unrecoverable
 - it is desired that the remaining node take full ownership under admin oversight to recover the cluster and reinstate new hosts
 - quorum disaster recovery can be enacted in this case through an interface connected to the surviving full-stable member
 - it will use nats metadata rescue to set $JS.API.META.RESCUE to "quorum_needed":1
-- then the unrecoverable nodes may be removed from the cluster and the bootstrap server should start up if needed.
+- then the unrecoverable nodes may be removed from the cluster. the bootstrap server should start up automatically since full-stable members would drop below 3 and the surviving host is the only eligible candidate 
 
 ## Daemon Handling
 - use nats subscriptions for any logic that is triggered, do not use pollers or looping processes 
@@ -1568,6 +1606,8 @@ bootstrap:
   - interface deploy to host -> api dispatch deploy host task -> nats -> process deploy host task
   - api handles things like paging/filters
 
+## configuration WIP
+TODO: refine configuration
 
 ## security posture v1
 - backend systems use encrypted traffic when talking with nats.
@@ -1586,6 +1626,17 @@ bootstrap:
 
 - no user or role management. access to the api is limited to network connectivity
 - interfaces are not limited to the local daemon api, they can talk directly to other daemon interfaces over the network.
+
+
+## Primary Libraries
+- go-git: cloning, revision resolution and pinned checkouts; production commit/push publication is not implemented
+- go-nix: store paths, NAR, narinfo, signatures, hashes and base32; derivation parsing is not currently used
+- Gin: HTTP routing and middleware
+- Cobra: commands, flags and help
+- Viper: config management 
+- [nats.go](https://github.com/nats-io/nats.go): application KV, watches, streams and transport; [jsm.go](https://github.com/nats-io/jsm.go): native administrative operations, already used by the quorum integration scenario
+- OpenTelemetry: traces, metrics and correlated logs
+- ssh-to-age: converting ssh keys to age keys
 
 ## NOT SUPPORTED
 - backup and restore

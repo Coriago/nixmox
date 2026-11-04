@@ -103,7 +103,7 @@ Tracing helpers and provider setup exist; these rules also apply to future workf
   - `Follow`, `Read`: ordered replay-to-live delivery and bounded history
 - [internal/cluster/authorization.go](../internal/cluster/authorization.go) isolates reply inboxes and host observation subscriptions; pending clients can write only their host-qualified tasks, outputs, logs and host-lock scope, not membership, credentials or stream configuration
 - pending KV reads/watches use native JetStream consumer lifecycle permissions; they do not grant stream provisioning or shared-record mutation
-- membership promotion serializes transitions and replica changes; bootstrap retirement, metadata-peer removal and administrator-directed quorum rescue remain deferred
+- membership promotion/removal serialize transitions and replica changes. The current removal implementation includes bootstrap election/transfer and native evacuation/metadata removal; acceptance remains incomplete because expanded validation exposes native NATS reload races and intermittent transition stalls. Administrator-directed quorum rescue remains deferred.
 
 ## durable tasks
 - [internal/task/manager.go](../internal/task/manager.go): owned-host scheduling; `Runner`, `Manager` and `ErrReview`
@@ -271,10 +271,10 @@ Location: `internal/configuration`
 - installed-state handoff copies identity, enrollment, SSH/age keys, supported Wi-Fi files and the installation snapshot through a confined `os.Root`; a validation manifest is committed last
 - [internal/membership](../internal/membership) serializes coordinator promotions, re-encrypts credentials, verifies installed-boot proof, stages a peer and checks replication before full-stable completion
 - [daemon membership](../internal/daemon/membership.go) and [peer startup](../internal/daemon/startup.go) reuse normal daemon restart/service composition; a promoted peer restores one server and connects its client locally
-- bootstrap retirement, demotion and the third full-stable transition remain gated; two native `DisableJetStream` trials left metadata membership at four. Scoped SYS authentication is implemented and integration-tested, but shared bootstrap ownership and the membership transition are not wired
+- bootstrap retirement and member removal are wired through shared peer configuration/start/stop and native SYS evacuation/removal. `just test-membership` exercises three-to-two-to-one removal, owner transfer and cold restart; this scenario has passed, but full validation is not complete. Demotion, power-task integration, signed offline-removal reconciliation and administrator-directed recovery remain unfinished.
 - global cleanup must mark running tasks unknown after their owner has been offline for 30 minutes; this cleanup is also still missing
 - live installer transitions remain gated until destination preservation, boot validation and safe membership changes are wired
-- `just test-quorum` runs the existing native bootstrap/stream-evacuation/recovery integration scenario, including SYS-account metadata peer removal
+- `just test-peer-lifecycle` checks native retirement and recreation with a unique peer incarnation; `just test-membership` checks the runtime removal workflow. Race validation currently exposes options-reload races inside the pinned NATS dependency.
 - the subsequent simplification shares activation, TLS validation and rendering instead of adding orchestration layers; `just build-package` verifies native/WASM packaging and sandboxed integration checks
 
 ## installer
