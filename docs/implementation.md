@@ -317,9 +317,10 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - `test-runtime`: cluster creation, installer enrollment, remote inventory and server/client cold restart
 - `test-configurations`: recipe/configuration/API usage and lifecycle checks
 - `test-installers`: installer examples and CLI/API/NATS wiring plus affected packages; no reboot, kexec or disk operations
-- `e2e-phase1` runs independently; `e2e-phase2` inherits its live VM1. Phase 3 is separated into `phase3.nu` and `e2e-phase3`, but VM3/quorum/kexec acceptance is still explicitly blocked. The additional stress/destruction work in `test/plan.md` remains planned.
+- `e2e-phase1` runs independently; `e2e-phase2` inherits its live VM1. Phase 3 has a normal unjoined VM3 fixture and a `vm3-started` checkpoint in `phase3.nu`; request-based enrollment, quorum transitions and kexec acceptance remain explicitly gated. The additional stress/destruction work in `test/plan.md` remains planned.
 - `--keep-vms` retains guests and the sole suite collector on success/failure; `e2e-stop RUN_DIRECTORY` stops them. Resume is explicit: `e2e-phase1 --resume RUN_DIRECTORY --after baseline-submitted --keep-vms` or `e2e-phase2 --resume RUN_DIRECTORY --after vm2-discovered --keep-vms`. To enter phase 2 after completed phase 1, select `--after phase1-complete`.
 - Each phase uses named Nushell functions and an ordered checkpoint/artifact list. `checkpoint.json` records the last successfully completed step, atomically, after assertions. `--after` is selected by the operator, not inferred from that file; unknown names and missing prerequisite artifacts fail before infrastructure changes. Retained processes/daemon IDs are checked, but the operator must inspect partial mutations, active tasks and discovery freshness before choosing a checkpoint. There is no automatic recovery or reconciliation.
+- Phase 3 startup checks distinct identity, no NATS client/server, a unique unmounted target disk and guest-LAN access; its initial fixture build and script parsing pass, while live startup acceptance is still pending. Older retained topologies without a VM3 package are rejected rather than rewritten.
 - Resume reuses the saved CLI, topology, collector and VM processes; it does not rebuild or restart retained guests. Updating the CLI or daemon after code changes is a separate operator action. Deployment-submitted checkpoints preserve task IDs, so resumed waits follow existing tasks instead of resubmitting them.
 - phase-1 VM validation passes unjoined startup, cluster/full-stable/bootstrap, credential/cache readiness, streamed telemetry, real GitHub rootDir/discovery, baseline deployment and recipe-backed testpkg activation; current fixtures are published on `dev/e2e-phase2`
 - `test-ui`: shared UI examples and HTTP workflows
@@ -340,13 +341,13 @@ Run through the devshell: `nix develop -c just <recipe>`. Registry, cache and re
 - the NixOS module does not configure cache trust, firewall access or SSH host-key provisioning; its generated configuration is public in the Nix store
 
 ## validation
-Validated on 2026-11-03 with runtime `6c2c899` and fixture pin commit `2fcf85d`; subsequent changes here document the results.
+Phase 2 was validated on 2026-11-03 with runtime `6c2c899` and fixture pin commit `2fcf85d`; Phase 3 additions have only the checks noted above.
 - reviewed non-UI source ownership, API/CLI mappings, daemon callers, test assertions and Nix/just configuration
 - passed `nix develop -c just test`, including daemon cold restart and the bootstrap PoC
 - opt-in registry/cache/build-monitor checks were not rerun for this acceptance; the VM suite exercised real Nix operations
 - `e2e-phase1` additionally validates the booted NixOS module and two real local deployments on a private bootloader-backed disk, including executing the installed test package
 - `test/vms.json` centralizes static machine wiring and recipe configuration inputs; configuration creation reuses the machine key as its name and the wired NIC MAC, then uses daemon-collected host/disk choices and raw hardware output
-- the Nushell configuration workflow checks rendered files and retained hardware; VM3 currently has planned static settings but no boot package or launch workflow
+- the Nushell configuration workflow checks rendered files and retained hardware; VM3 has a separate normal-boot fixture under `test/repo/boot`, leaving `hosts/vm3` for recipe generation; the suite owns its launch, telemetry and private installation disk
 - clean `nix develop -c just e2e-phase2 --keep-vms` passed both phases in `test/runs/suite-95UBUt`, without development binaries, manual guest repairs or skipped checkpoints
 - phase 2 validates discovery enrollment, pending client restart, remote disk/hardware collection, recipe rendering, disko/finalization, installed reboot, node/SSH/age identity preservation, generation/system selection, automatic full membership and cache access, then explicit full-stable promotion with three replicas and the bootstrap retained
 - the preceding clean attempt timed out during Phase 1 repository registration after intermittent 50–74 second Git checkouts; the successful fresh retry changed neither timeouts nor acceptance checks

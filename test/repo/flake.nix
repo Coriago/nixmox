@@ -23,6 +23,11 @@
           modules = [ (./hosts + "/${name}/configuration.nix") ];
         }
       ) directories;
+      unjoined = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        specialArgs = { inherit nixmox; };
+        modules = [ ./modules/unjoined.nix ];
+      };
       installer = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = { inherit nixmox; };
@@ -36,6 +41,7 @@
       packages.x86_64-linux = {
         vm1 = hosts.vm1.config.system.build.vm;
         installer = installer.config.system.build.vm;
+        unjoined = unjoined.config.system.build.vm;
       };
     };
 }

@@ -28,6 +28,9 @@
       }
     },
     "vm3": {
+      "package": "unjoined",
+      "diskSerial": "nixmox-vm3",
+      "diskSize": "16G",
       "mac": "52:54:00:77:00:03",
       "sshPort": 22223,
       "httpPort": 18083,

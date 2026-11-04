@@ -53,7 +53,7 @@ e2e-phase1 *args:
 e2e-phase2 *args:
     nu test/scripts/run.nu --through 2 "$@"
 
-# Phase 3 inherits phases 1/2; VM3/quorum/kexec operations remain unimplemented.
+# Phase 3 inherits phases 1/2; VM3 startup is wired, later transitions remain gated.
 [positional-arguments]
 e2e-phase3 *args:
     nu test/scripts/run.nu --through 3 "$@"

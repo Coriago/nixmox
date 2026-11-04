@@ -1,0 +1,8 @@
+{
+  "hostName": "vm3-unjoined",
+  "address": "192.168.77.13",
+  "prefixLength": 24,
+  "mac": "52:54:00:77:00:03",
+  "authorizedKeys": [],
+  "stateVersion": "26.05"
+}
