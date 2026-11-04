@@ -146,7 +146,7 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 }
 
 func (r *Runtime) Handler() http.Handler {
-	return (api.Server{InviteEnrollment: r.inviteEnrollment, ConfirmEnrollment: r.confirmEnrollment, Discovery: r.discovery, Health: r.Health, CreateCluster: r.CreateCluster, Services: r.Services, UI: r.ui}).Handler()
+	return (api.Server{RequestEnrollment: r.requestEnrollment, EnrollmentStatus: r.enrollmentStatus, InviteEnrollment: r.inviteEnrollment, ConfirmEnrollment: r.confirmEnrollment, Discovery: r.discovery, Health: r.Health, CreateCluster: r.CreateCluster, Services: r.Services, UI: r.ui}).Handler()
 }
 
 func (r *Runtime) Services() (*api.Services, error) {

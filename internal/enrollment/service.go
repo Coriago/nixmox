@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"time"
 
-	"filippo.io/age"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 	"nixmox/internal/client"
@@ -39,7 +38,9 @@ func full(member domain.Member) bool {
 	return member.Status == "full" || member.Status == "full-stable"
 }
 
-func (s *Service) Submit(ctx context.Context, input Input) (Request, error) {
+// prepareRequest captures contact-owned trust and endpoints before persistence.
+// Callers explicitly record the initiator and any approval.
+func (s *Service) prepareRequest(ctx context.Context, input Input) (Request, error) {
 	if (input.Address == "") == (input.DiscoveryID == "") || input.ContactHostID == "" {
 		return Request{}, errors.New("one discovery ID or address and a contact host are required")
 	}
@@ -67,8 +68,7 @@ func (s *Service) Submit(ctx context.Context, input Input) (Request, error) {
 		return Request{}, err
 	}
 	now := time.Now().UTC()
-	request := Request{ID: uuid.NewString(), Status: "pending", CreatedAt: now, Initiator: s.NodeID,
-		Decision:    &Decision{Result: "approved", ByNodeID: s.NodeID, DecidedAt: now},
+	request := Request{ID: uuid.NewString(), Status: "pending", CreatedAt: now,
 		JoiningNode: JoiningNode{Endpoint: input.Address, DiscoveryID: input.DiscoveryID},
 		Cluster:     Cluster{ID: identityRecord.Value.ID, CACertificate: identityRecord.Value.CA.Certificate, CAPublicKeyThumbprint: thumbprint, ContactNode: Contact{NodeID: input.ContactHostID}},
 	}
@@ -125,6 +125,16 @@ func (s *Service) Submit(ctx context.Context, input Input) (Request, error) {
 	if err = Endpoint(request.JoiningNode.Endpoint); err != nil {
 		return Request{}, err
 	}
+	return request, nil
+}
+
+func (s *Service) Submit(ctx context.Context, input Input) (Request, error) {
+	request, err := s.prepareRequest(ctx, input)
+	if err != nil {
+		return Request{}, err
+	}
+	request.Initiator = s.NodeID
+	request.Decision = &Decision{Result: "approved", ByNodeID: s.NodeID, DecidedAt: time.Now().UTC()}
 	if _, err = s.Requests.Create(ctx, request.ID, request); err != nil {
 		return Request{}, err
 	}
@@ -229,14 +239,8 @@ func (s *Service) complete(ctx context.Context, record *cluster.Record[Request])
 		if request.JoiningNode.PublicKeyThumbprint != "" && joining.PublicKeyThumbprint != request.JoiningNode.PublicKeyThumbprint {
 			return errors.New("discovered node key changed")
 		}
-		if _, err = uuid.Parse(joining.NodeID); err != nil {
-			return errors.New("invalid joining node ID")
-		}
-		if joining.Name == "" || len(joining.Name) > 128 || (joining.Environment != "installer" && joining.Environment != "installed") {
-			return errors.New("invalid joining node metadata")
-		}
-		if _, err = age.ParseX25519Recipient(joining.AgePublicKey); err != nil {
-			return errors.New("invalid joining node age recipient")
+		if err = validateJoining(joining); err != nil {
+			return err
 		}
 		joining.Endpoint, joining.DiscoveryID = request.JoiningNode.Endpoint, request.JoiningNode.DiscoveryID
 		request.JoiningNode = joining

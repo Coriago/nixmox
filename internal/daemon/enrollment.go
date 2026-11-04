@@ -65,6 +65,11 @@ func (r *Runtime) issueEnrollment(ctx context.Context, request enrollment.Reques
 func (r *Runtime) inviteEnrollment(ctx context.Context, request enrollment.Request) (enrollment.JoiningNode, error) {
 	r.transition.Lock()
 	defer r.transition.Unlock()
+	return r.acceptEnrollment(ctx, request)
+}
+
+// acceptEnrollment runs under the transition lock for both invitation directions.
+func (r *Runtime) acceptEnrollment(ctx context.Context, request enrollment.Request) (enrollment.JoiningNode, error) {
 	r.mu.RLock()
 	state := r.node.State
 	r.mu.RUnlock()
@@ -111,6 +116,20 @@ func (r *Runtime) inviteEnrollment(ctx context.Context, request enrollment.Reque
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return enrollment.JoiningNode{}, readErr
 	}
+	joining, err := r.joiningIdentity(ctx)
+	if err != nil {
+		return enrollment.JoiningNode{}, err
+	}
+	request.JoiningNode = joining
+	data, err := json.Marshal(request)
+	if err != nil {
+		return joining, err
+	}
+	return joining, identity.WritePrivate(path, data)
+}
+
+// joiningIdentity is called with the transition lock held.
+func (r *Runtime) joiningIdentity(ctx context.Context) (enrollment.JoiningNode, error) {
 	publicAge, err := credentials.DeriveIdentity(ctx, r.config.SSHHostKey, filepath.Join(r.config.StateDir, "age.key"))
 	if err != nil {
 		return enrollment.JoiningNode{}, err
@@ -119,13 +138,14 @@ func (r *Runtime) inviteEnrollment(ctx context.Context, request enrollment.Reque
 	if err != nil {
 		return enrollment.JoiningNode{}, err
 	}
-	joining := enrollment.JoiningNode{NodeID: state.NodeID, Name: state.Name, CSR: string(csr), PublicKeyThumbprint: nodeFingerprint, Environment: state.Environment, AgePublicKey: publicAge, Daemon: domain.DaemonInfo{Version: Version, StartedAt: r.started}}
-	request.JoiningNode = joining
-	data, err := json.Marshal(request)
+	fingerprint, err := identity.Thumbprint(r.node.Key.Public())
 	if err != nil {
-		return joining, err
+		return enrollment.JoiningNode{}, err
 	}
-	return joining, identity.WritePrivate(path, data)
+	r.mu.RLock()
+	state := r.node.State
+	r.mu.RUnlock()
+	return enrollment.JoiningNode{NodeID: state.NodeID, Name: state.Name, Endpoint: r.config.AdvertiseURL, CSR: string(csr), PublicKeyThumbprint: fingerprint, Environment: state.Environment, AgePublicKey: publicAge, Daemon: domain.DaemonInfo{Version: Version, StartedAt: r.started}}, nil
 }
 
 func (r *Runtime) confirmEnrollment(ctx context.Context, confirmation enrollment.Confirmation) error {

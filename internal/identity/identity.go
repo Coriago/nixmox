@@ -245,9 +245,8 @@ func NewAuthority(clusterID string, now time.Time) (*Authority, error) {
 	return &Authority{Certificate: cert, Key: key, PEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}, nil
 }
 
-// Issue takes connection names from the trusted enrollment coordinator, never
-// from untrusted CSR extensions. Identity and key continuity are both checked.
-func (a *Authority) Issue(csrPEM []byte, nodeID, expectedThumbprint string, names []string, now time.Time) ([]byte, error) {
+// ParseCSR verifies the request signature and binds it to a node and key.
+func ParseCSR(csrPEM []byte, nodeID, expectedThumbprint string) (*x509.CertificateRequest, error) {
 	block, rest := pem.Decode(csrPEM)
 	if block == nil || block.Type != "CERTIFICATE REQUEST" || len(rest) != 0 {
 		return nil, errors.New("invalid CSR PEM")
@@ -268,6 +267,16 @@ func (a *Authority) Issue(csrPEM []byte, nodeID, expectedThumbprint string, name
 	}
 	if expectedThumbprint == "" || fingerprint != expectedThumbprint {
 		return nil, errors.New("CSR public key mismatch")
+	}
+	return csr, nil
+}
+
+// Issue takes connection names from the trusted enrollment coordinator, never
+// from untrusted CSR extensions. Identity and key continuity are both checked.
+func (a *Authority) Issue(csrPEM []byte, nodeID, expectedThumbprint string, names []string, now time.Time) ([]byte, error) {
+	csr, err := ParseCSR(csrPEM, nodeID, expectedThumbprint)
+	if err != nil {
+		return nil, err
 	}
 	number, err := serial()
 	if err != nil {

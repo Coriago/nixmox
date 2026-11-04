@@ -17,10 +17,18 @@ export def wait-task [endpoint: string, id: string] {
     print --stderr $"+ nixmox --endpoint ($endpoint) --json task show ($id) [poll until terminal status]"
     mut previous = ""
     for attempt in 0..899 {
-        let task = (
-            ^nixmox --endpoint $endpoint --json task show $id
-            | from json
-        )
+        let probe = (^nixmox --endpoint $endpoint --json task show $id | complete)
+        if $probe.exit_code != 0 {
+            # Acknowledged KV writes can briefly be absent from a follower's
+            # direct reads. Only allow initial visibility lag for this known ID;
+            # all other failures and disappearance after observation fail now.
+            if $previous == "" and $attempt < 5 and ($probe.stderr | str contains "HTTP 404") {
+                sleep 2sec
+                continue
+            }
+            error make {msg: ($probe.stderr | str trim)}
+        }
+        let task = ($probe.stdout | from json)
         let response = ($task | to json --indent 2)
         if $response != $previous {
             print --stderr $response

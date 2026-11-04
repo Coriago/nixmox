@@ -25,6 +25,36 @@ import (
 	"nixmox/internal/identity"
 )
 
+func openEnrollmentNode(t *testing.T, ctx context.Context, name string) (*daemon.Runtime, daemon.Config, *httptest.Server) {
+	t.Helper()
+	root := t.TempDir()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKey(key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(root, "host.key")
+	if err = os.WriteFile(keyPath, pem.EncodeToMemory(block), 0600); err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewUnstartedServer(nil)
+	config := daemon.Config{StateDir: filepath.Join(root, "state"), Name: name, SSHHostKey: keyPath, AdvertiseURL: "http://" + httpServer.Listener.Addr().String(), NATSHost: "127.0.0.1", NATSPort: -1, RoutePort: -1, BootstrapPort: -1, BootstrapRoutePort: -1}
+	if name == "installer" {
+		config.Environment = "installer"
+	}
+	runtime, err := daemon.Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { httpServer.Close(); runtime.Close() })
+	httpServer.Config.Handler = runtime.Handler()
+	httpServer.Start()
+	return runtime, config, httpServer
+}
+
 // TestInstallerEnrollment exercises public contact-owned enrollment, restricted
 // pending membership and a cold installer restart over real mutual-TLS NATS.
 func TestInstallerEnrollment(t *testing.T) {
@@ -32,37 +62,8 @@ func TestInstallerEnrollment(t *testing.T) {
 	// ------------------
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	open := func(name string) (*daemon.Runtime, daemon.Config, *httptest.Server) {
-		t.Helper()
-		root := t.TempDir()
-		_, key, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		block, err := ssh.MarshalPrivateKey(key, "test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		keyPath := filepath.Join(root, "host.key")
-		if err = os.WriteFile(keyPath, pem.EncodeToMemory(block), 0600); err != nil {
-			t.Fatal(err)
-		}
-		httpServer := httptest.NewUnstartedServer(nil)
-		config := daemon.Config{StateDir: filepath.Join(root, "state"), Name: name, SSHHostKey: keyPath, AdvertiseURL: "http://" + httpServer.Listener.Addr().String(), NATSHost: "127.0.0.1", NATSPort: -1, RoutePort: -1, BootstrapPort: -1, BootstrapRoutePort: -1}
-		if name == "installer" {
-			config.Environment = "installer"
-		}
-		runtime, err := daemon.Open(ctx, config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { httpServer.Close(); runtime.Close() })
-		httpServer.Config.Handler = runtime.Handler()
-		httpServer.Start()
-		return runtime, config, httpServer
-	}
-	contact, _, contactHTTP := open("contact")
-	pending, pendingConfig, pendingHTTP := open("installer")
+	contact, _, contactHTTP := openEnrollmentNode(t, ctx, "contact")
+	pending, pendingConfig, pendingHTTP := openEnrollmentNode(t, ctx, "installer")
 	api, err := client.New(contactHTTP.URL, nil)
 	if err != nil {
 		t.Fatal(err)

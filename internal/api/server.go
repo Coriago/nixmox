@@ -48,6 +48,8 @@ type Services struct {
 }
 
 type Server struct {
+	RequestEnrollment func(context.Context, enrollment.Input) (enrollment.Request, error)
+	EnrollmentStatus  func(context.Context, string) (enrollment.Request, error)
 	InviteEnrollment  func(context.Context, enrollment.Request) (enrollment.JoiningNode, error)
 	ConfirmEnrollment func(context.Context, enrollment.Confirmation) error
 	Discovery         *discovery.Service

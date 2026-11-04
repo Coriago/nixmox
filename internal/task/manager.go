@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -184,12 +185,14 @@ func (m *Manager) Run(ctx context.Context) error {
 	return group.Wait()
 }
 
+var errSchedulerRead = errors.New("task scheduler read failed")
+
 func (m *Manager) each(ctx context.Context, visit func(cluster.Record[domain.Task]) error) error {
 	cursor := ""
 	for {
 		records, next, err := m.Tasks.List(ctx, cursor, 100)
 		if err != nil {
-			return err
+			return errors.Join(errSchedulerRead, err)
 		}
 		for _, record := range records {
 			owner, _, qualified := strings.Cut(record.Key, ".")
@@ -230,7 +233,38 @@ func (m *Manager) reconcile(ctx context.Context) error {
 	})
 }
 
+// Retry transient reads without shutting down the peer or active runners.
+// Writes with ambiguous outcomes still use the existing recovery path; this
+// does not retry writes or task runners. Release the mutex between attempts.
 func (m *Manager) schedule(ctx context.Context) error {
+	warned := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := m.scheduleOnce(ctx)
+		transient := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) || errors.Is(err, jetstream.ErrNoStreamResponse)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !errors.Is(err, errSchedulerRead) || !transient {
+			return err
+		}
+		if !warned {
+			util.From(ctx).Warn("task scheduling waiting for JetStream", "error", util.Error(err))
+			warned = true
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (m *Manager) scheduleOnce(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.each(ctx, func(record cluster.Record[domain.Task]) error {
@@ -248,7 +282,7 @@ func (m *Manager) schedule(ctx context.Context) error {
 		for _, id := range task.Links.AfterSuccessOfTaskIDs {
 			dependency, err := m.Tasks.Get(ctx, id)
 			if err != nil {
-				return err
+				return errors.Join(errSchedulerRead, err)
 			}
 			if dependency.Value.Status == domain.Succeeded {
 				continue

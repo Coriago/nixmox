@@ -237,6 +237,11 @@ def vm2-promoted [run: path, endpoint: string] {
     let machine = (open ($run | path join "vms.json")).machines.vm2
     let target = $"http://127.0.0.1:($machine.httpPort)"
     print --stderr "\n=== Phase 2 | Explicitly promote the installed full member to full-stable ===\n"
+    let daemonPIDs = {
+        vm1: (guest $run "systemctl show nixmox --property=MainPID --value")
+        vm2: (guest $run "systemctl show nixmox --property=MainPID --value" --port $machine.sshPort)
+    }
+    assert ($daemonPIDs.vm1 != "0" and $daemonPIDs.vm2 != "0")
     print --stderr $"+ nixmox --endpoint ($endpoint) --json host promote ($installed.member.nodeId) --to full-stable"
     let submitted = (^nixmox --endpoint $endpoint --json host promote $installed.member.nodeId --to full-stable | from json | tee { to json --indent 2 | print --stderr })
     record $run "phase2-promotion-submitted" $submitted
@@ -256,7 +261,20 @@ def vm2-promoted [run: path, endpoint: string] {
     assert ((guest $run "ss -lntH 'sport = :4222'" --port $machine.sshPort) | is-not-empty)
     assert ((guest $run "ss -lntH 'sport = :4223'" --port $machine.sshPort) | is-empty)
     assert ((guest $run "ss -lntH 'sport = :4223'") | is-not-empty)
-    record $run "phase2" {endpoint: $endpoint, nodeId: $member.nodeId, clusterId: $member.clusterId, member: $member, health: $health, promotion: $promotion, bootId: $installed.bootId}
+    print --stderr "\n=== Phase 2 | Require healthy peers without process restarts after promotion ===\n"
+    # Role changes reopen the runtime in-process. A systemd restart is recovery
+    # from a failure, not a successful membership transition.
+    for attempt in 0..4 {
+        sleep 3sec
+        assert equal (guest $run "systemctl show nixmox --property=MainPID --value") $daemonPIDs.vm1
+        assert equal (guest $run "systemctl show nixmox --property=MainPID --value" --port $machine.sshPort) $daemonPIDs.vm2
+        for peer in [$endpoint $target] {
+            print --stderr $"+ nixmox --endpoint ($peer) --json health"
+            let stable = (^nixmox --endpoint $peer --json health | from json)
+            for check in [natsClient natsServer cluster] { assert equal ($stable.checks | get $check).status "healthy" }
+        }
+    }
+    record $run "phase2" {endpoint: $endpoint, nodeId: $member.nodeId, clusterId: $member.clusterId, member: $member, health: $health, promotion: $promotion, bootId: $installed.bootId, daemonPIDs: $daemonPIDs}
 }
 
 def main [run: path, --after: string = "", --handoff-only] {
