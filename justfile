@@ -1,3 +1,11 @@
+# Embedded JetStream server and TCP client publish/consume example.
+example-jetstream:
+    go run ./examples/jetstream
+
+# Documentation-style integration check using a real embedded server.
+test-example-jetstream:
+    go test ./examples/jetstream -count=1 -v -timeout=30s
+
 # Run through direnv, or with: nix develop -c just test
 test:
     go test ./... -count=1 -timeout=120s
@@ -91,3 +99,11 @@ test-logging:
 
 test-otel:
     go test ./internal/util -run '^ExampleStart$' -count=1 -v
+
+# Native retirement and immediate recreation with a unique peer incarnation.
+test-peer-lifecycle:
+    go test ./internal/daemon -run TestBootstrapPeerRecreation -count=1 -v -timeout=60s
+
+# Real member removal, bootstrap transfer, retirement and cold recovery.
+test-membership:
+    go test ./internal/daemon -run TestMemberRemoval -count=1 -v -timeout=120s
