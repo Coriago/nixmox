@@ -1,86 +1,54 @@
-// daemon.go defines daemon ownership and the public lifecycle/action API.
 package main
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"sync/atomic"
+	"errors"
+
+	"nixmox/examples/jetstream/controllers"
+	"nixmox/examples/jetstream/records"
+	"nixmox/examples/jetstream/runtime"
+	"nixmox/examples/jetstream/stores"
 )
 
-var daemonCount atomic.Uint64
-
-// Daemon owns its NATS manager and local controllers.
-// Persistence, stores, watchers, and controller scheduling are not implemented yet.
+// Internal wiring/lifecycle only. Public entry points are in interface.go.
 type Daemon struct {
-	ID        string
-	Name      string
-	Directory string
-	NATS      *NATSManager
-	Members   *MemberController
+	HostID          string
+	NATS            *runtime.NATSManager
+	Members         *stores.MembershipStore
+	Tasks           *stores.TaskStore
+	TaskEvents      *stores.TaskEvents
+	Dispatcher      *Dispatcher
+	Bootstrap       *controllers.BootstrapController
+	NATSService     *controllers.NATSServiceController
+	Scheduler       *controllers.TaskSchedulerController
+	MembershipTasks map[string]*controllers.MembershipTaskController
+	CommandTasks    map[string]*controllers.CommandTaskController
+	MemberWrites    *records.MemberWriter
+	TaskWrites      *records.TaskWriter
 }
 
-// NewDaemon assigns a count-based name and prepares the supplied directory.
-// A blank directory creates temporary storage. No servers or clients start here;
-// loading an existing directory's persisted identity remains unimplemented.
-func NewDaemon(directory string) (*Daemon, error) {
-	if directory == "" {
-		var err error
-		directory, err = os.MkdirTemp("", "jetstream-daemon-")
-		if err != nil {
-			return nil, err
-		}
-	} else if err := os.MkdirAll(directory, 0700); err != nil {
-		return nil, err
-	}
-
-	name := fmt.Sprintf("daemon-%d", daemonCount.Add(1))
-	d := &Daemon{
-		ID:        name,
-		Name:      name,
-		Directory: directory,
-		NATS:      &NATSManager{ID: name, Directory: directory},
-	}
-	d.Members = &MemberController{Daemon: d}
-	return d, nil
+func (d *Daemon) initialize(ctx context.Context) error {
+	// Construct stores, record writers, controllers and dispatcher.
+	// Use each controller's constructor with its concrete stores/records/manager.
+	// Give each instance a Wake callback for Dispatcher.ControllerChanged(instance.ID()).
+	// Task instances are keyed by task ID, not shared across unrelated tasks.
+	// Register controllers using THEIR declared interests, not a routing switch.
+	// Scheduler consumes task commands separately; it is not a dispatched controller.
+	return errors.ErrUnsupported
 }
 
-// CreateCluster will start the initial primary and bootstrap before waiting for quorum.
-func (d *Daemon) CreateCluster(ctx context.Context) error {
-	return ErrNotImplemented
+func (d *Daemon) start(ctx context.Context) error {
+	// Start each store's independent Watch handler; each maintains its own cache.
+	// Wait for required initial snapshots before enabling dependent controller steps.
+	// Start the task-event consumer with Scheduler.Handle as its handler.
+	// Request an initial dispatcher pass to evaluate already-satisfied conditions.
+	return errors.ErrUnsupported
 }
 
-// Enroll will join an existing cluster as a client-only member.
-func (d *Daemon) Enroll(ctx context.Context, seed *Daemon) error {
-	return ErrNotImplemented
-}
-
-// Promote will send a promotion task event to the target and await completion.
-func (d *Daemon) Promote(ctx context.Context, target string) error {
-	return ErrNotImplemented
-}
-
-// Demote will send a demotion task event without immediately stopping the target's primary.
-func (d *Daemon) Demote(ctx context.Context, target string) error {
-	return ErrNotImplemented
-}
-
-// Remove will request permanent membership removal, not temporary shutdown.
-func (d *Daemon) Remove(ctx context.Context, target string) error {
-	return ErrNotImplemented
-}
-
-// Stop will announce planned termination and always stop after optional bounded evacuation.
-func (d *Daemon) Stop(ctx context.Context, evict bool) error {
-	return ErrNotImplemented
-}
-
-// Ready will wait for shared-state attachment after retained peers have started.
-func (d *Daemon) Ready(ctx context.Context) error {
-	return ErrNotImplemented
-}
-
-// Close will release local resources without removing retained peers or their storage.
-func (d *Daemon) Close() error {
-	return ErrNotImplemented
+func (d *Daemon) close(ctx context.Context) error {
+	// Stop accepting commands; cancel watches and dispatcher scheduling.
+	// Call Stop on each controller to cancel/join its jobs, then close the NATS manager.
+	// Stop must not run concurrently with Step; ignore wake-ups once dispatch is stopped.
+	// Example temporary-storage cleanup is distinct from membership retirement.
+	return errors.ErrUnsupported
 }
